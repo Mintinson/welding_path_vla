@@ -1,0 +1,308 @@
+<?xml version="1.0" ?>
+<!-- =================================================================================== -->
+<!-- |  Elfin5 + Bent Fronius Welding Torch                                              | -->
+<!-- |                                                                                   | -->
+<!-- |  Combined URDF for PyBullet.                                                      | -->
+<!-- |  Robot:  Elfin5 (6-DOF, from elfin5_pybullet/elfin5.urdf)                         | -->
+<!-- |  Tool:   Bent Fronius welding torch (from roboweld_pybullet/welding_torch/)       | -->
+<!-- |                                                                                   | -->
+<!-- |  Torch mount parameters (relative to elfin_link6, the wrist flange):              | -->
+<!-- |    Position:  xyz="0 0 0.22"   — 220 mm forward along wrist Z axis                | -->
+<!-- |    Orientation: rpy="-0.96 0 0"  — -55 deg roll (bent torch characteristic)       | -->
+<!-- |                                                                                   | -->
+<!-- |  The torch mesh (frontorch1-4.stl) is stored in mm; scale=0.001 converts to m.    | -->
+<!-- |  The mesh has an intrinsic rpy="0 pi 0" (180 deg Y) rotation baked into the       | -->
+<!-- |  torch_body link definition, matching the original roboweld tool0 frame.           | -->
+<!-- =================================================================================== -->
+<robot name="elfin5_bent_torch">
+  <!-- ===== Elfin5 Robot (from elfin5_pybullet/elfin5.urdf) ===== -->
+
+  <link name="world"/>
+  <joint name="world_base" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="world"/>
+    <child link="elfin_base_link"/>
+  </joint>
+
+  <link name="elfin_base_link"/>
+  <joint name="elfin_base_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="elfin_base_link"/>
+    <child link="elfin_base"/>
+  </joint>
+
+  <link name="elfin_base">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000763828012447035 5.78534761012293E-06 0.0304416599943415"/>
+      <mass value="0.970239706050223"/>
+      <inertia ixx="0.00157696245666968" ixy="1.16231027909909E-07" ixz="-2.16838482265701E-05" iyy="0.00144565496079807" iyz="-6.75796232258151E-08" izz="0.00236570554301517"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_base.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_base.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="elfin_link1">
+    <inertial>
+      <origin rpy="0 0 0" xyz="2.74291280953301E-06 -0.00431106908088009 -0.0357493000420958"/>
+      <mass value="3.25128102774055"/>
+      <inertia ixx="0.0131139015939654" ixy="1.53830686193548E-07" ixz="4.14641049481189E-07" iyy="0.0123861178713592" iyz="0.00240614664669851" izz="0.00712273876232631"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link1.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link1.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint1" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 0.22"/>
+    <parent link="elfin_base"/>
+    <child link="elfin_link1"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="420" lower="-3.14" upper="3.14" velocity="1.57"/>
+  </joint>
+
+  <link name="elfin_link2">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-4.61141935425826E-06 0.1591743105703 0.127676233728645"/>
+      <mass value="2.80251415493372"/>
+      <inertia ixx="0.0472004127058612" ixy="-3.78127975165949E-06" ixz="2.96484076164975E-07" iyy="0.00279445987467469" iyz="0.0015424585085081" izz="0.0478757132444163"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link2.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link2.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint2" type="revolute">
+    <origin rpy="1.5708 0 0" xyz="0 0 0"/>
+    <parent link="elfin_link1"/>
+    <child link="elfin_link2"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="420" lower="-2.35" upper="2.35" velocity="1.57"/>
+  </joint>
+
+  <link name="elfin_link3">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0290082764878195 8.22344830496747E-06 -0.00396673307172194"/>
+      <mass value="1.985771603253"/>
+      <inertia ixx="0.00325219349943707" ixy="-2.70050556242264E-07" ixz="-0.00114506857457687" iyy="0.00594604197825752" iyz="7.00611683851371E-07" izz="0.00528005541994704"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link3.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link3.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint3" type="revolute">
+    <origin rpy="3.1416 0 1.5708" xyz="0 0.38 0"/>
+    <parent link="elfin_link2"/>
+    <child link="elfin_link3"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="200" lower="-2.61" upper="2.61" velocity="1.57"/>
+  </joint>
+
+  <link name="elfin_link4">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-3.37325284266827E-05 -0.059246634833044 0.248712399920572"/>
+      <mass value="1.3966627675706"/>
+      <inertia ixx="0.0146417786566676" ixy="-1.72570245202171E-06" ixz="6.27583250069289E-06" iyy="0.0128389262643824" iyz="0.00385606704922265" izz="0.00311370666742545"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link4.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link4.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint4" type="revolute">
+    <origin rpy="1.5708 0 1.5708" xyz="0 0 0"/>
+    <parent link="elfin_link3"/>
+    <child link="elfin_link4"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="200" lower="-3.14" upper="3.14" velocity="1.57"/>
+  </joint>
+
+  <link name="elfin_link5">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-1.05027528186624E-06 -0.0219935502961173 -0.00313939707023243"/>
+      <mass value="1.18717984150567"/>
+      <inertia ixx="0.00223607662459616" ixy="7.69598109537055E-08" ixz="1.87231135997621E-07" iyy="0.00135159849023817" iyz="0.000420977801546637" izz="0.00193236500760183"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link5.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link5.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint5" type="revolute">
+    <origin rpy="-1.5708 0 0" xyz="0 0 0.42"/>
+    <parent link="elfin_link4"/>
+    <child link="elfin_link5"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="69" lower="-2.56" upper="2.56" velocity="1.57"/>
+  </joint>
+
+  <link name="elfin_link6">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-1.59841620089968E-05 -0.00034491847744483 0.128921909891105"/>
+      <mass value="0.281755133133711"/>
+      <inertia ixx="0.000141506869040406" ixy="-3.26513406770626E-08" ixz="7.38940963331507E-08" iyy="0.000144516478405932" iyz="-8.86072913302242E-08" izz="0.000252050888055838"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link6.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/visual/elfin_link6.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="elfin_joint6" type="revolute">
+    <origin rpy="1.5708 0 0" xyz="0 0 0"/>
+    <parent link="elfin_link5"/>
+    <child link="elfin_link6"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="69" lower="-3.14" upper="3.14" velocity="1.57"/>
+  </joint>
+
+  <!-- Original elfin end-link (kept for reference but not used for torch) -->
+  <link name="elfin_end_link"/>
+  <joint name="elfin_end_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.1565"/>
+    <parent link="elfin_link6"/>
+    <child link="elfin_end_link"/>
+    <axis xyz="0 0 0"/>
+  </joint>
+
+  <!-- ===================================================================== -->
+  <!-- Bent Welding Torch                                                     -->
+  <!-- ===================================================================== -->
+
+  <!--
+    The torch_body link contains the bent Fronius welding torch mesh.
+    Mesh source: frontorch1-4.stl (498 KiB, stored in mm)
+    Scale: 0.001 (mm -> m)
+    Intrinsic rotation: rpy="0 pi 0" flips the mesh 180 deg around Y
+      to match the original roboweld tool0 coordinate frame.
+  -->
+  <link name="torch_body">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/visual/frontorch1-4.stl"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin rpy="0 3.141592653589793 0" xyz="0 0 0"/>
+      <material name="torch_metal">
+        <color rgba="0.35 0.35 0.35 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/visual/frontorch1-4.stl"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin rpy="0 3.141592653589793 0" xyz="0 0 0"/>
+    </collision>
+    <inertial>
+      <mass value="1.5"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.002"/>
+    </inertial>
+  </link>
+
+  <!--
+    Fixed joint attaching the torch to the elfin5 wrist flange (elfin_link6).
+
+    POSITION: xyz="0 0 0.22"
+      The torch body extends 220 mm along elfin_link6's local +Z axis.
+      At the initial pose (40,0,90,0,90,0 deg), link6's Z points
+      downward-forward [0, 0.64, -0.77], placing the torch in a natural
+      welding orientation over the table.
+
+    ORIENTATION: rpy="-0.95993107 0 0"  ( -55 deg roll = -0.96 rad )
+      This gives the bent torch its characteristic ~55 deg angle.
+      The roll happens around link6's local X axis (right-hand rule).
+
+    Combined with the mesh's intrinsic rpy="0 pi 0" inside torch_body,
+    the total orientation from link6 to the visible mesh is:
+      R_link6_to_mesh = Rz(0)*Ry(0)*Rx(-0.96) * Rz(0)*Ry(pi)*Rx(0)
+                       = Roll(-55 deg) * Pitch(180 deg)
+
+    To adjust the torch angle, modify the Roll value in the joint rpy.
+    To flip the torch 180 deg, add/subtract pi to the Yaw component.
+  -->
+  <joint name="elfin_link6_torch_fixed" type="fixed">
+    <origin rpy="-0.95993107 0 0" xyz="0 0 0.22"/>
+    <parent link="elfin_link6"/>
+    <child link="torch_body"/>
+  </joint>
+
+</robot>

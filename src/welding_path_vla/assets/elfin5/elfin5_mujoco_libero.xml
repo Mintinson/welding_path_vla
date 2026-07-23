@@ -1,0 +1,148 @@
+<mujoco model="elfin5_libero">
+  <!--
+    LIBERO-aligned Elfin5 scene.
+    - Robot base mesh + link1 elevated to table height (0.625 m) directly
+      via z offsets (NOT a wrapper body — a joint-less/inertia-less wrapper
+      body gets welded by the MuJoCo compiler and kills the kinematic chain).
+    - Position actuators with per-joint kp + kv damping (low-stiffness +
+      torque damping) to mimic real joint compliance.
+    - armature on joints for motor-rotor inertia (kills high-freq chatter).
+    - Contact groups:
+        link meshes  : contype=0 conaffinity=0  (no self-collision)
+        table        : contype=1 conaffinity=2
+        target block : contype=2 conaffinity=5
+        ee collision : contype=4 conaffinity=2
+      -> table<->block touch, ee<->block touch, ee does NOT touch table.
+    - Explicit <contact><exclude> for adjacent links as a safety net.
+  -->
+  <compiler angle="radian" />
+  <option timestep="0.00416667" gravity="0 0 -9.81" />
+
+  <default>
+    <joint damping="5.0" frictionloss="1.0" armature="0.15" />
+    <geom contype="0" conaffinity="0" />
+    <position kv="60" />
+  </default>
+
+  <asset>
+    <mesh name="elfin_base"    content_type="model/stl" file="meshes/visual/elfin_base.STL" />
+    <mesh name="elfin_link1"   content_type="model/stl" file="meshes/visual/elfin_link1.STL" />
+    <mesh name="elfin_link2"   content_type="model/stl" file="meshes/visual/elfin_link2.STL" />
+    <mesh name="elfin_link3"   content_type="model/stl" file="meshes/visual/elfin_link3.STL" />
+    <mesh name="elfin_link4"   content_type="model/stl" file="meshes/visual/elfin_link4.STL" />
+    <mesh name="elfin_link5"   content_type="model/stl" file="meshes/visual/elfin_link5.STL" />
+    <mesh name="elfin_link6"   content_type="model/stl" file="meshes/visual/elfin_link6.STL" />
+    <mesh name="frontorch1-4"  content_type="model/stl" file="meshes/visual/frontorch1-4.stl"
+      scale="0.001 0.001 0.001" />
+  </asset>
+
+  <worldbody>
+    <light pos="0.5 0 2.2" dir="-0.2 0 -1" diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3" castshadow="true" />
+    <!-- Global camera: oblique top-down on workspace.
+         Matches PyBullet: eye=(base+1,0,0.5)=(1.0,0,1.125), target=(base+0,0,0.1)=(0,0,0.725),
+         up=(0,0,1).  Euler yaw~1.19rad rotates default -z gaze toward workspace center. -->
+    <camera name="global_cam" pos="1.00 0.00 1.125" fovy="60" euler="0 0.785 1.57" />
+
+    <!-- Ground (visual only) -->
+    <geom name="floor" type="plane" pos="0 0 0" size="5 5 0.1" rgba="0.9 0.9 0.9 1"
+          contype="0" conaffinity="0" />
+
+    <!-- Tabletop: top surface at z = 0.6125 + 0.0125 = 0.625 m -->
+    <geom name="table" type="box" pos="0.40 0.00 0.6125" size="0.45 0.35 0.0125"
+          rgba="0.65 0.55 0.42 1" contype="1" conaffinity="2"
+          friction="0.6 0.10 0.10" solref="0.01 1" solimp="0.9 0.95 0.001" />
+
+    <!-- Robot base mesh elevated to table height (0.625 m) -->
+    <geom type="mesh" pos="0 0 0.625" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_base" />
+    <!-- link1 starts at 0.625 + 0.22 = 0.845 m -->
+    <body name="elfin_link1" pos="0 0 0.845">
+      <inertial pos="2.74291e-06 -0.00431107 -0.0357493" quat="0.695517 0.13026 -0.130108 0.694522"
+        mass="3.25128" diaginertia="0.0133203 0.0131139 0.00618857" />
+      <joint name="elfin_joint1" pos="0 0 0" axis="0 0 1" range="-3.14 3.14"
+        actuatorfrcrange="-420 420" />
+      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link1" />
+      <body name="elfin_link2" quat="0.707105 0.707108 0 0">
+        <inertial pos="-4.61142e-06 0.159174 0.127676" quat="0.508546 0.491422 -0.491352 0.508388"
+          mass="2.80251" diaginertia="0.0479284 0.0472004 0.00274175" />
+        <joint name="elfin_joint2" pos="0 0 0" axis="0 0 1" range="-2.35 2.35"
+          actuatorfrcrange="-420 420" />
+        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link2" />
+        <body name="elfin_link3" pos="0 0.38 0" quat="-2.59734e-06 0.707105 0.707108 -2.59735e-06">
+          <inertial pos="0.0290083 8.22345e-06 -0.00396673"
+            quat="0.592349 0.384845 0.382924 0.595303" mass="1.98577"
+            diaginertia="0.00594605 0.00579558 0.00273667" />
+          <joint name="elfin_joint3" pos="0 0 0" axis="0 0 1" range="-2.61 2.61"
+            actuatorfrcrange="-200 200" />
+          <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link3" />
+          <body name="elfin_link4" quat="0.499998 0.5 0.500002 0.5">
+            <inertial pos="-3.37325e-05 -0.0592466 0.248712"
+              quat="0.985985 0.166831 -0.000327712 0.000424663" mass="1.39666"
+              diaginertia="0.0146418 0.0141823 0.00177033" />
+            <joint name="elfin_joint4" pos="0 0 0" axis="0 0 1" range="-3.14 3.14"
+              actuatorfrcrange="-200 200" />
+            <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link4" />
+            <body name="elfin_link5" pos="0 0 0.42" quat="0.707105 -0.707108 0 0">
+              <inertial pos="-1.05028e-06 -0.0219936 -0.0031394"
+                quat="0.855822 0.51727 -0.000637775 0.00103867" mass="1.18718"
+                diaginertia="0.00223608 0.0021534 0.00113057" />
+              <joint name="elfin_joint5" pos="0 0 0" axis="0 0 1" range="-2.56 2.56"
+                actuatorfrcrange="-69 69" />
+              <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link5" />
+              <body name="elfin_link6" quat="0.707105 0.707108 0 0">
+                <!-- Wrist camera: above the end-effector looking downward (-Z in
+                     link6 frame).  Camera offset on +Y side so the end-effector
+                     appears below center (toward bottom of image). -->
+                <camera name="wrist_cam" pos="-0.1 0.00 0.12"
+                  fovy="80" euler="3.1415 -0.15 1.57" />
+                <site name="ee_site" pos="0 0 0.22" rgba="1 0 0 1" size="0.012" />
+                <inertial pos="-2.52763e-06 -5.45432e-05 0.205598"
+                  quat="0.948873 -0.315659 5.13801e-05 5.80204e-05" mass="1.78176"
+                  diaginertia="0.00710916 0.00615927 0.00320495" />
+                <joint name="elfin_joint6" pos="0 0 0" axis="0 0 1" range="-3.14 3.14"
+                  actuatorfrcrange="-69 69" />
+                <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="elfin_link6" />
+                <geom pos="0 0 0.22" quat="0 0 0.887011 -0.461749" type="mesh"
+                  rgba="0.35 0.35 0.35 1" mesh="frontorch1-4" />
+                <!-- End-effector collision proxy (touch the block, not the table) -->
+                <geom name="ee_coll" type="capsule" fromto="0 0 0.22 0.04 0 0.36"
+                  size="0.018" contype="4" conaffinity="2" rgba="0 1 0 0" />
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- LIBERO-style target block (free body) — defined AFTER the arm so the
+         arm joints occupy dof 0-5 / qpos 0-5, keeping the Robot class's
+         qpos[:6] indexing correct. -->
+    <body name="target_block" pos="0.55 0.00 0.66">
+      <freejoint />
+      <geom name="target_block_geom" type="box" size="0.03 0.03 0.03" mass="0.05"
+            rgba="0.90 0.20 0.20 1" contype="2" conaffinity="5"
+            friction="0.5 0.05 0.05" solref="0.01 1" solimp="0.9 0.95 0.001" />
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="elfin_link1" body2="elfin_link2" />
+    <exclude body1="elfin_link2" body2="elfin_link3" />
+    <exclude body1="elfin_link3" body2="elfin_link4" />
+    <exclude body1="elfin_link4" body2="elfin_link5" />
+    <exclude body1="elfin_link5" body2="elfin_link6" />
+  </contact>
+
+  <!--
+    Position + damping actuators ("low-stiffness + torque hybrid"):
+    kp tuned per joint payload, kv provides joint-velocity damping so the
+    arm yields compliantly instead of ringing. ctrlrange = joint range.
+  -->
+  <actuator>
+    <position name="motor1" joint="elfin_joint1" kp="3000" kv="120" ctrlrange="-3.14 3.14" />
+    <position name="motor2" joint="elfin_joint2" kp="3000" kv="120" ctrlrange="-2.35 2.35" />
+    <position name="motor3" joint="elfin_joint3" kp="2000" kv="80"  ctrlrange="-2.61 2.61" />
+    <position name="motor4" joint="elfin_joint4" kp="2000" kv="80"  ctrlrange="-3.14 3.14" />
+    <position name="motor5" joint="elfin_joint5" kp="800"  kv="40"  ctrlrange="-2.56 2.56" />
+    <position name="motor6" joint="elfin_joint6" kp="800"  kv="40"  ctrlrange="-3.14 3.14" />
+  </actuator>
+</mujoco>

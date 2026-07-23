@@ -1,0 +1,112 @@
+timing:
+  physics_hz: 500
+  control_hz: 100
+  policy_hz: 20
+
+camera:
+  width: 640
+  height: 480
+  global_name: global
+  wrist_name: wrist
+  global_fovy_deg: 55.0
+  wrist_fovy_deg: 85.0
+  # 无头采集使用 EGL；sim view 仍使用 GLFW 创建交互窗口。
+  offscreen_backend: egl
+  # link6 局部坐标：相机中心与负 Y 侧突出的安装螺钉同轴。
+  wrist_position_link6_m: [0.0, -0.080, 0.134]
+  wrist_target_link6_m: [0.057557, -0.025778, 0.389520]
+  wrist_up_link6: [0.0, 0.0, -1.0]
+
+scene:
+  table_center_m: [0.35, 0.0, 0.27]
+  table_half_size_m: [0.55, 0.45, 0.02]
+  robot_base_position_m: [0.0, 0.0, 0.29]
+  robot_base_yaw_deg: -90.0
+  workpiece_position_m: [0.45, 0.0, 0.2925]
+  global_camera_position_m: [1.25, 0.0, 1.05]
+
+robot:
+  model_id: elfin5pro_photo_layout_v6
+  model_asset: elfin5/elfin5_welding.xml
+  initial_joint_deg: [90.9411, -72.1133, 22.0613, 45.5546, 128.4704, -51.3849]
+  joint_velocity_limit: 1.57
+  ik_damping: 0.01
+  ik_max_step: 0.08
+  ik_tolerance: 0.0005
+  ik_iterations: 80
+
+real_robot:
+  enabled: false
+  host: null
+  port: 10003
+  connect_timeout_s: 3.0
+  command_timeout_s: 0.1
+  control_mode: servo_j
+
+safety:
+  enabled: true
+  joint_position_margin_rad: 0.02
+  joint_velocity_limit_rad_s: 1.57
+  tcp_speed_limit_m_s: 0.10
+  command_timeout_s: 0.10
+
+task:
+  instruction: 沿 L 形工件的直线角焊缝完成焊接轨迹。
+  speed_mps: 0.02
+  work_angle_deg: 45.0
+  travel_angle_deg: 10.0
+  tool_roll_deg: -20.0
+  approach_distance_m: 0.04
+  staging_clearance_m: 0.18
+  retreat_distance_m: 0.04
+  seam_length_m: 0.20
+  tcp_clearance_m: 0.0015
+
+randomization:
+  xy_m: 0.1
+  z_m: 0.0
+  yaw_deg: 30.0
+  # staging 构型附近六个关节的最大独立偏移（度）。
+  joint_degs: [60, 20, 20, 30, 60, 60]
+  # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
+  max_sampling_attempts: 10
+  initial_tcp_m: 0.1
+  recovery_probability: 0.25
+  recovery_position_m: 0.005
+  recovery_rotation_deg: 3.0
+
+collection:
+  dataset_root: datasets/weldpath_raw_v1
+  episodes: 50
+  max_attempt_multiplier: 3
+  seed: 20260721
+  video_codec: avc1
+  headless: true
+
+quality:
+  minimum_progress: 0.98
+  cross_track_mean_m: 0.001
+  cross_track_p95_m: 0.002
+  cross_track_max_m: 0.005
+  orientation_p95_deg: 2.0
+  orientation_max_deg: 5.0
+
+policy:
+  family: smolvla
+  checkpoint: null
+  device: cuda
+  action_horizon: 10
+  action_stride: 1
+  action_source: safe_command
+  include_current: false
+
+training:
+  dataset_repo_id: null
+  dataset_root: datasets/weldpath_lerobot_v1
+  output_dir: outputs/train
+  batch_size: 16
+  steps: 100000
+
+deployment:
+  dry_run: true
+  log_dir: outputs/deploy

@@ -1,0 +1,119 @@
+<mujoco model="elfin5_welding">
+  <compiler angle="radian" meshdir="meshes/visual"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <default>
+    <joint damping="5" frictionloss="1" armature="0.15"/>
+    <position kv="60"/>
+    <default class="visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="2" rgba="0.752941 0.752941 0.752941 1"/>
+    </default>
+    <default class="robot_collision">
+      <geom contype="1" conaffinity="2" group="3" rgba="0 0 0 0"/>
+    </default>
+    <default class="environment_collision">
+      <geom contype="2" conaffinity="1" friction="0.6 0.1 0.1"/>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="elfin_base" file="elfin_base.STL"/>
+    <mesh name="elfin_link1" file="elfin_link1.STL"/>
+    <mesh name="elfin_link2" file="elfin_link2.STL"/>
+    <mesh name="elfin_link3" file="elfin_link3.STL"/>
+    <mesh name="elfin_link4" file="elfin_link4.STL"/>
+    <mesh name="elfin_link5" file="elfin_link5.STL"/>
+    <mesh name="elfin_link6" file="elfin_link6.STL"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.5 -0.4 1.8" dir="0.1 0.1 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="-0.3 0.5 1.2" dir="0.2 -0.1 -1" diffuse="0.4 0.4 0.4"/>
+    <geom name="floor" class="environment_collision" type="plane" size="2 2 0.1" rgba="0.18 0.2 0.23 1"/>
+    <geom name="table" class="environment_collision" type="box" pos="0.35 0 0.27" size="0.55 0.45 0.02" rgba="0.38 0.40 0.42 1"/>
+    <camera name="global" mode="targetbody" target="workpiece" pos="1.25 -0.55 1.05" fovy="55"/>
+
+    <body name="robot_mount" pos="0 0 0.29">
+      <inertial pos="-0.000763828 0.000005785 0.030441660" mass="0.970240" diaginertia="0.001577 0.001446 0.002366"/>
+      <geom name="elfin_base_visual" class="visual" mesh="elfin_base"/>
+      <body name="elfin_link1" pos="0 0 0.22" gravcomp="1">
+      <inertial pos="2.74291e-06 -0.00431107 -0.0357493" quat="0.695517 0.13026 -0.130108 0.694522" mass="3.25128" diaginertia="0.0133203 0.0131139 0.00618857"/>
+      <joint name="elfin_joint1" axis="0 0 1" range="-3.14 3.14" actuatorfrcrange="-420 420"/>
+      <geom name="elfin_link1_visual" class="visual" mesh="elfin_link1"/>
+      <geom name="elfin_link1_collision" class="robot_collision" type="cylinder" pos="0 0 -0.035" size="0.075 0.11"/>
+      <body name="elfin_link2" quat="0.707105 0.707108 0 0" gravcomp="1">
+        <inertial pos="-4.61142e-06 0.159174 0.127676" quat="0.508546 0.491422 -0.491352 0.508388" mass="2.80251" diaginertia="0.0479284 0.0472004 0.00274175"/>
+        <joint name="elfin_joint2" axis="0 0 1" range="-2.35 2.35" actuatorfrcrange="-420 420"/>
+        <geom name="elfin_link2_visual" class="visual" mesh="elfin_link2"/>
+        <geom name="elfin_link2_collision" class="robot_collision" type="capsule" fromto="0 0 0 0 0.38 0" size="0.055"/>
+        <body name="elfin_link3" pos="0 0.38 0" quat="-0.0000026 0.707105 0.707108 -0.0000026" gravcomp="1">
+          <inertial pos="0.0290083 8.22345e-06 -0.00396673" quat="0.592349 0.384845 0.382924 0.595303" mass="1.98577" diaginertia="0.00594605 0.00579558 0.00273667"/>
+          <joint name="elfin_joint3" axis="0 0 1" range="-2.61 2.61" actuatorfrcrange="-200 200"/>
+          <geom name="elfin_link3_visual" class="visual" mesh="elfin_link3"/>
+          <geom name="elfin_link3_collision" class="robot_collision" type="sphere" size="0.065"/>
+          <body name="elfin_link4" quat="0.499998 0.5 0.500002 0.5" gravcomp="1">
+            <inertial pos="-3.37325e-05 -0.0592466 0.248712" quat="0.985985 0.166831 -0.000327712 0.000424663" mass="1.39666" diaginertia="0.0146418 0.0141823 0.00177033"/>
+            <joint name="elfin_joint4" axis="0 0 1" range="-3.14 3.14" actuatorfrcrange="-200 200"/>
+            <geom name="elfin_link4_visual" class="visual" mesh="elfin_link4"/>
+            <geom name="elfin_link4_collision" class="robot_collision" type="capsule" fromto="0 0 0 0 0 0.42" size="0.045"/>
+            <body name="elfin_link5" pos="0 0 0.42" quat="0.707105 -0.707108 0 0" gravcomp="1">
+              <inertial pos="-1.05028e-06 -0.0219936 -0.0031394" quat="0.855822 0.51727 -0.000637775 0.00103867" mass="1.18718" diaginertia="0.00223608 0.0021534 0.00113057"/>
+              <joint name="elfin_joint5" axis="0 0 1" range="-2.56 2.56" actuatorfrcrange="-69 69"/>
+              <geom name="elfin_link5_visual" class="visual" mesh="elfin_link5"/>
+              <!-- The source meshes omit the visible joint6 cover between link5 and link6. -->
+              <geom name="elfin_joint6_ring" type="cylinder" pos="0 -0.097 0" quat="0.707107 0.707107 0 0" size="0.043 0.008" contype="0" conaffinity="0" group="2" rgba="0.02 0.02 0.025 1"/>
+              <geom name="elfin_link5_collision" class="robot_collision" type="sphere" size="0.055"/>
+              <body name="elfin_link6" quat="0.707105 0.707108 0 0" gravcomp="1">
+                <inertial pos="-1.59842e-05 -0.000344918 0.128922" mass="0.281755" diaginertia="0.000141507 0.000144516 0.000252051"/>
+                <joint name="elfin_joint6" axis="0 0 1" range="-3.14 3.14" actuatorfrcrange="-69 69"/>
+                <geom name="elfin_link6_visual" class="visual" mesh="elfin_link6"/>
+                <!-- The 20 mm adapter and first tube segment share link6's flange axis. -->
+                <geom name="torch_flange" type="cylinder" pos="0 0 0.1665" size="0.018 0.010" contype="1" conaffinity="2" rgba="0.35 0.37 0.39 1"/>
+                <geom name="torch_tube_1" type="capsule" fromto="0 0 0.1765 0 0 0.205" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_tube_2" type="capsule" fromto="0 0 0.205 -0.012 0.003 0.240" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_tube_3" type="capsule" fromto="-0.012 0.003 0.240 -0.015 0.003 0.275" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_tube_4" type="capsule" fromto="-0.015 0.003 0.275 -0.005 -0.002 0.310" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_tube_5" type="capsule" fromto="-0.005 -0.002 0.310 0.012 -0.008 0.330" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_tube_6" type="capsule" fromto="0.012 -0.008 0.330 0.022 -0.012 0.340" size="0.009" contype="1" conaffinity="2" rgba="0.035 0.040 0.045 1"/>
+                <geom name="torch_collar" type="capsule" fromto="0.022 -0.012 0.340 0.025 -0.014 0.353" size="0.011" contype="1" conaffinity="2" rgba="0.08 0.09 0.10 1"/>
+                <geom name="torch_nozzle" type="capsule" fromto="0.025 -0.014 0.353 0.047 -0.022 0.383" size="0.004" contype="1" conaffinity="2" rgba="0.64 0.55 0.34 1"/>
+                <geom name="torch_tip" type="capsule" fromto="0.047 -0.022 0.383 0.057557 -0.025778 0.389520" size="0.00025" contype="1" conaffinity="2" rgba="0.42 0.31 0.18 1"/>
+                <site name="tcp" pos="0.057557 -0.025778 0.389520" quat="-0.387292070 0.078064102 0.914695023 0.085110886" size="0.008" group="5" rgba="0 0 0 0"/>
+                <!-- Camera mount is centered on the protruding screw at local -Y. -->
+                <geom name="wrist_camera_standoff" type="cylinder" pos="0 -0.069 0.134" quat="0.707107 0.707107 0 0" size="0.008 0.010" contype="1" conaffinity="2" rgba="0.55 0.57 0.59 1"/>
+                <geom name="wrist_camera_bracket" type="box" pos="0 -0.083 0.134" size="0.045 0.003 0.045" contype="1" conaffinity="2" rgba="0.58 0.60 0.62 1"/>
+                <geom name="wrist_camera_body" type="box" pos="0 -0.104 0.134" size="0.025 0.015 0.020" contype="1" conaffinity="2" rgba="0.025 0.028 0.032 1"/>
+                <camera name="wrist" pos="0 -0.080 0.134" quat="0.337521 -0.286428 -0.768263 0.461534" fovy="85"/>
+                <body name="tool_payload" pos="0.086831 -0.072975 0.442456" gravcomp="1">
+                  <inertial pos="0 0 0" mass="0.216" diaginertia="0.0001 0.0001 0.0001"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      </body>
+    </body>
+
+    <body name="workpiece" pos="0.45 0 0.2925">
+      <geom name="plate_horizontal" class="environment_collision" type="box" pos="0.05 0 0" size="0.05 0.15 0.0025" rgba="0.55 0.59 0.63 1"/>
+      <geom name="plate_vertical" class="environment_collision" type="box" pos="0 0 0.05" size="0.0025 0.15 0.05" rgba="0.60 0.64 0.68 1"/>
+      <!-- The fillet seam is outside both 5 mm plates, not inside the vertical plate. -->
+      <site name="seam_start" pos="0.004 -0.1 0.004" size="0.005" group="5" rgba="0 0 0 0"/>
+      <site name="seam_end" pos="0.004 0.1 0.004" size="0.005" group="5" rgba="0 0 0 0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="motor1" joint="elfin_joint1" kp="3000" kv="120" ctrlrange="-3.14 3.14"/>
+    <position name="motor2" joint="elfin_joint2" kp="3000" kv="120" ctrlrange="-2.35 2.35"/>
+    <position name="motor3" joint="elfin_joint3" kp="2000" kv="80" ctrlrange="-2.61 2.61"/>
+    <position name="motor4" joint="elfin_joint4" kp="2000" kv="80" ctrlrange="-3.14 3.14"/>
+    <position name="motor5" joint="elfin_joint5" kp="800" kv="40" ctrlrange="-2.56 2.56"/>
+    <position name="motor6" joint="elfin_joint6" kp="800" kv="40" ctrlrange="-3.14 3.14"/>
+  </actuator>
+</mujoco>

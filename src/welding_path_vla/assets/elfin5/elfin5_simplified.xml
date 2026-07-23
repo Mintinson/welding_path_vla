@@ -1,0 +1,63 @@
+<mujoco model="elfin5_welding">
+  <compiler angle="radian" inertiafromgeom="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+  <visual><global offwidth="640" offheight="480"/></visual>
+  <default>
+    <joint damping="5" frictionloss="0.5" armature="0.15"/>
+    <geom contype="1" conaffinity="2" rgba="0.72 0.74 0.78 1"/>
+    <position kv="60"/>
+  </default>
+  <worldbody>
+    <light pos="0.5 -0.4 1.8" dir="0.1 0.1 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="2 2 0.1" rgba="0.18 0.2 0.23 1" contype="2" conaffinity="1"/>
+    <geom name="table" type="box" pos="0.48 0 0.27" size="0.35 0.35 0.02" rgba="0.35 0.28 0.2 1" contype="2" conaffinity="1"/>
+    <camera name="global" mode="targetbody" target="workpiece" pos="0.95 -0.75 1.05" fovy="52"/>
+
+    <geom name="base" type="cylinder" pos="0 0 0.11" size="0.11 0.11" contype="0" conaffinity="0"/>
+    <body name="link1" pos="0 0 0.22" gravcomp="1">
+      <joint name="joint1" axis="0 0 1" range="-3.14 3.14"/>
+      <geom type="cylinder" size="0.075 0.11"/>
+      <body name="link2" quat="0.707105 0.707108 0 0" gravcomp="1">
+        <joint name="joint2" axis="0 0 1" range="-2.35 2.35"/>
+        <geom type="capsule" fromto="0 0 0 0 0.38 0" size="0.055"/>
+        <body name="link3" pos="0 0.38 0" quat="-0.0000026 0.707105 0.707108 -0.0000026" gravcomp="1">
+          <joint name="joint3" axis="0 0 1" range="-2.61 2.61"/>
+          <geom type="sphere" size="0.065"/>
+          <body name="link4" quat="0.499998 0.5 0.500002 0.5" gravcomp="1">
+            <joint name="joint4" axis="0 0 1" range="-3.14 3.14"/>
+            <geom type="capsule" fromto="0 0 0 0 0 0.42" size="0.045"/>
+            <body name="link5" pos="0 0 0.42" quat="0.707105 -0.707108 0 0" gravcomp="1">
+              <joint name="joint5" axis="0 0 1" range="-2.56 2.56"/>
+              <geom type="sphere" size="0.055"/>
+              <body name="link6" quat="0.707105 0.707108 0 0" gravcomp="1">
+                <joint name="joint6" axis="0 0 1" range="-3.14 3.14"/>
+                <geom type="cylinder" pos="0 0 0.08" size="0.04 0.08" contype="0" conaffinity="0"/>
+                <geom name="torch" type="capsule" fromto="0 0 0.15 0.057557 -0.025778 0.233020" size="0.015" rgba="0.25 0.25 0.28 1" contype="0" conaffinity="0"/>
+                <site name="tcp" pos="0.057557 -0.025778 0.233020" quat="-0.387292070 0.078064102 0.914695023 0.085110886" size="0.008" rgba="1 0.2 0.1 1"/>
+                <camera name="wrist" pos="0.02 0.08 0.14" euler="3.14159 0 0" fovy="70"/>
+                <body name="tool_payload" pos="0.086831 -0.072975 0.285956" gravcomp="1">
+                  <inertial pos="0 0 0" mass="0.216" diaginertia="0.0001 0.0001 0.0001"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <body name="workpiece" pos="0.45 0 0.31">
+      <geom name="plate_horizontal" type="box" pos="0.05 0 0" size="0.05 0.15 0.0025" rgba="0.36 0.4 0.44 1" contype="2" conaffinity="1"/>
+      <geom name="plate_vertical" type="box" pos="0 0 0.05" size="0.0025 0.15 0.05" rgba="0.4 0.44 0.48 1" contype="2" conaffinity="1"/>
+      <site name="seam_start" pos="0 -0.1 0.003" size="0.005" rgba="0 1 0 1"/>
+      <site name="seam_end" pos="0 0.1 0.003" size="0.005" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="motor1" joint="joint1" kp="3000" ctrlrange="-3.14 3.14"/>
+    <position name="motor2" joint="joint2" kp="3000" ctrlrange="-2.35 2.35"/>
+    <position name="motor3" joint="joint3" kp="2000" ctrlrange="-2.61 2.61"/>
+    <position name="motor4" joint="joint4" kp="2000" ctrlrange="-3.14 3.14"/>
+    <position name="motor5" joint="joint5" kp="800" ctrlrange="-2.56 2.56"/>
+    <position name="motor6" joint="joint6" kp="800" ctrlrange="-3.14 3.14"/>
+  </actuator>
+</mujoco>
