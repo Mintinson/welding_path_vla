@@ -33,6 +33,17 @@ def load_config(arguments: argparse.Namespace) -> AppConfig:
     return config
 
 
+def output_json(value: object, output: str | None = None) -> None:
+    """向终端或指定文件输出 JSON。"""
+    document = json.dumps(value, ensure_ascii=False, indent=2)
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document, encoding="utf-8")
+    else:
+        print(document)
+
+
 def sim_view(arguments: argparse.Namespace) -> None:
     """启动 MuJoCo 可视化窗口, 查看当前仿真场景。
 
@@ -124,6 +135,44 @@ def data_export(arguments: argparse.Namespace) -> None:
 
     output = export_lerobot(arguments.dataset, arguments.output, arguments.repo_id)
     print(output)
+
+
+def evaluation_episode(arguments: argparse.Namespace) -> None:
+    """评估一条 raw 或真机 episode 并输出 JSON。"""
+    from welding_path_vla.evaluation.adapters import (
+        trace_from_raw_episode,
+        trace_from_real_robot_log,
+    )
+    from welding_path_vla.evaluation.evaluator import evaluate_trace
+
+    config = load_config(arguments)
+    trace = (
+        trace_from_real_robot_log(arguments.episode)
+        if arguments.source == "real"
+        else trace_from_raw_episode(
+            arguments.episode,
+            config,
+            assume_reference_task=arguments.assume_reference_task,
+        )
+    )
+    output_json(evaluate_trace(trace, config.evaluation).as_dict(), arguments.output)
+
+
+def evaluation_dataset(arguments: argparse.Namespace) -> None:
+    """聚合 raw 数据集的 ESR、ICR 和连续轨迹指标。"""
+    from welding_path_vla.evaluation.adapters import trace_from_raw_episode
+    from welding_path_vla.evaluation.evaluator import aggregate_reports, evaluate_trace
+
+    config = load_config(arguments)
+    paths = sorted((Path(arguments.dataset) / "episodes").glob("episode_*"))
+    reports = [
+        evaluate_trace(
+            trace_from_raw_episode(path, config, arguments.assume_reference_task),
+            config.evaluation,
+        )
+        for path in paths
+    ]
+    output_json(aggregate_reports(reports).as_dict(), arguments.output)
 
 
 def robot_show_config(arguments: argparse.Namespace) -> None:
@@ -225,6 +274,22 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--output", required=True)
     export.add_argument("--repo-id", default="huayan/weldpath_sim_v1")
     export.set_defaults(handler=data_export)
+
+    evaluation = commands.add_parser("evaluation")
+    evaluation_commands = evaluation.add_subparsers(dest="command", required=True)
+    episode_evaluation = evaluation_commands.add_parser("episode")
+    episode_evaluation.add_argument("--episode", required=True)
+    episode_evaluation.add_argument("--source", choices=("raw", "real"), default="raw")
+    episode_evaluation.add_argument("--config", default=DEFAULT_CONFIG)
+    episode_evaluation.add_argument("--assume-reference-task", action="store_true")
+    episode_evaluation.add_argument("--output")
+    episode_evaluation.set_defaults(handler=evaluation_episode)
+    dataset_evaluation = evaluation_commands.add_parser("dataset")
+    dataset_evaluation.add_argument("--dataset", required=True)
+    dataset_evaluation.add_argument("--config", default=DEFAULT_CONFIG)
+    dataset_evaluation.add_argument("--assume-reference-task", action="store_true")
+    dataset_evaluation.add_argument("--output")
+    dataset_evaluation.set_defaults(handler=evaluation_dataset)
 
     robot = commands.add_parser("robot")
     robot_commands = robot.add_subparsers(dest="command", required=True)

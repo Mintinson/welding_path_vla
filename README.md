@@ -41,9 +41,11 @@ welding-vla sim collect --config configs/default.yaml --episodes 50
 welding-vla sim replay --episode PATH
 welding-vla data validate --dataset datasets/weldpath_raw_v1
 welding-vla data export-lerobot --dataset datasets/weldpath_raw_v1 --output datasets/weldpath_lerobot_v1
+welding-vla evaluation episode --episode PATH --source raw --config configs/default.yaml
+welding-vla evaluation dataset --dataset datasets/weldpath_raw_v1 --config configs/default.yaml
 welding-vla robot show-config --config configs/default.yaml
 welding-vla policy show-config --config configs/default.yaml
 welding-vla policy train --config configs/default.yaml --dry-run
 ```
 
-所有运行参数来自同一个类型化 YAML；更换 `--config` 即可切换场景、真机、安全、策略、训练和部署配置。CLI 只覆盖常用选项。`--episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)。
+所有运行参数来自同一个类型化 YAML；更换 `--config` 即可切换场景、真机、安全、策略、训练和部署配置。CLI 只覆盖常用选项。`--episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。
