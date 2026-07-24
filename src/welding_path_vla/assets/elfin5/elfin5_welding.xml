@@ -34,8 +34,10 @@
     <light pos="0.5 -0.4 1.8" dir="0.1 0.1 -1" diffuse="0.8 0.8 0.8"/>
     <light pos="-0.3 0.5 1.2" dir="0.2 -0.1 -1" diffuse="0.4 0.4 0.4"/>
     <geom name="floor" class="environment_collision" type="plane" size="2 2 0.1" rgba="0.18 0.2 0.23 1"/>
-    <geom name="table" class="environment_collision" type="box" pos="0.35 0 0.27" size="0.55 0.45 0.02" rgba="0.38 0.40 0.42 1"/>
-    <camera name="global" mode="targetbody" target="workpiece" pos="1.25 -0.55 1.05" fovy="55"/>
+    <body name="table_frame" pos="0.35 0 0.27">
+      <geom name="table" class="environment_collision" type="box" size="0.55 0.45 0.02" rgba="0.38 0.40 0.42 1"/>
+      <camera name="global" pos="0.90 0 0.78" quat="0.649530 0.279484 0.279484 0.649530" fovy="55"/>
+    </body>
 
     <body name="robot_mount" pos="0 0 0.29">
       <inertial pos="-0.000763828 0.000005785 0.030441660" mass="0.970240" diaginertia="0.001577 0.001446 0.002366"/>

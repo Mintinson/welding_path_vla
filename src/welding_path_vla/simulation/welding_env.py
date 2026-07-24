@@ -66,6 +66,7 @@ class WeldingSimulation:
         """
         scene = self.config.scene
         table_id = self.name_id(mujoco.mjtObj.mjOBJ_GEOM, "table")
+        table_frame_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "table_frame")
         mount_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "robot_mount")
         workpiece_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "workpiece")
         camera_id = self.name_id(mujoco.mjtObj.mjOBJ_CAMERA, self.config.camera.global_name)
@@ -74,12 +75,21 @@ class WeldingSimulation:
         seam_end_id = self.name_id(mujoco.mjtObj.mjOBJ_SITE, "seam_end")
         base = np.asarray(scene.robot_base_position_m)
         base_quaternion = matrix_to_quaternion(yaw_degrees_to_matrix(scene.robot_base_yaw_deg))
-        self.model.geom_pos[table_id] = scene.table_center_m
+        self.model.body_pos[table_frame_id] = scene.table_center_m
+        self.model.geom_pos[table_id] = 0
         self.model.geom_size[table_id] = scene.table_half_size_m
         self.model.body_pos[mount_id] = base
         self.model.body_quat[mount_id] = base_quaternion
         self.model.body_pos[workpiece_id] = scene.workpiece_position_m
-        self.model.cam_pos[camera_id] = scene.global_camera_position_m
+        camera_position = np.asarray(scene.global_camera_position_table_m)
+        self.model.cam_mode[camera_id] = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
+        self.model.cam_targetbodyid[camera_id] = -1
+        self.model.cam_pos[camera_id] = camera_position
+        self.model.cam_quat[camera_id] = look_at_quaternion(
+            camera_position,
+            np.asarray(scene.global_camera_target_table_m),
+            np.asarray(scene.global_camera_up_table),
+        )
         self.model.cam_fovy[camera_id] = self.config.camera.global_fovy_deg
         wrist_position = np.asarray(self.config.camera.wrist_position_link6_m)
         self.model.cam_pos[wrist_camera_id] = wrist_position

@@ -64,6 +64,9 @@ def test_mujoco_model_and_cameras_load() -> None:
             np.eye(3),
             atol=1e-7,
         )
+        table_frame = simulation.model.body("table_frame")
+        assert simulation.model.camera("global").bodyid[0] == table_frame.id
+        assert simulation.model.geom("table").bodyid[0] == table_frame.id
         np.testing.assert_allclose(simulation.model.body("elfin_link1").pos, [0, 0, 0.22])
         np.testing.assert_allclose(simulation.data.xmat[mount_id].reshape(3, 3)[:, 2], [0, 0, 1])
         wrist_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
@@ -81,6 +84,38 @@ def test_mujoco_model_and_cameras_load() -> None:
         assert images["wrist"].dtype == np.uint8
         assert images["global"].std() > 5
         assert images["wrist"].std() > 5
+    finally:
+        simulation.close()
+
+
+def test_global_camera_is_fixed_across_episodes() -> None:
+    """工件随机化不能改变全局相机外参。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingSimulation(config)
+    try:
+        camera_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, config.camera.global_name)
+        position = simulation.data.cam_xpos[camera_id].copy()
+        rotation = simulation.data.cam_xmat[camera_id].copy()
+        for seed in range(6):
+            simulation.randomize_workpiece(np.random.default_rng(seed))
+            np.testing.assert_allclose(simulation.data.cam_xpos[camera_id], position)
+            np.testing.assert_allclose(simulation.data.cam_xmat[camera_id], rotation)
+    finally:
+        simulation.close()
+
+
+def test_global_camera_moves_with_table_frame() -> None:
+    """桌面安装位姿变化时，全局相机应保持相同桌面外参。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingSimulation(config)
+    try:
+        camera_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, config.camera.global_name)
+        table_id = simulation.name_id(mujoco.mjtObj.mjOBJ_BODY, "table_frame")
+        position = simulation.data.cam_xpos[camera_id].copy()
+        offset = np.array([0.12, -0.08, 0.05])
+        simulation.model.body_pos[table_id] += offset
+        mujoco.mj_forward(simulation.model, simulation.data)
+        np.testing.assert_allclose(simulation.data.cam_xpos[camera_id], position + offset)
     finally:
         simulation.close()
 

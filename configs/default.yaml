@@ -23,7 +23,10 @@ scene:
   robot_base_position_m: [0.0, 0.0, 0.29]
   robot_base_yaw_deg: -90.0
   workpiece_position_m: [0.45, 0.0, 0.2925]
-  global_camera_position_m: [1.25, 0.0, 1.05]
+  # 全局相机安装在 table_frame 上，以下外参均使用桌面局部坐标。
+  global_camera_position_table_m: [0.90, 0.0, 0.78]
+  global_camera_target_table_m: [0.10, 0.0, 0.0225]
+  global_camera_up_table: [0.0, 0.0, 1.0]
 
 robot:
   model_id: elfin5pro_photo_layout_v6
@@ -90,6 +93,20 @@ quality:
   cross_track_max_m: 0.005
   orientation_p95_deg: 2.0
   orientation_max_deg: 5.0
+
+evaluation:
+  pcr_min: 0.95
+  direction_ratio_min: 0.90
+  cte_rmse_m: 0.0015
+  cte_p95_m: 0.002
+  cte_max_m: 0.005
+  orientation_p95_deg: 2.0
+  speed_mape_max: 0.20
+  jerk_ratio_max: 2.0
+  jerk_min_sample_rate_hz: 80.0
+  jerk_reference_floor_m_s3: 0.001
+  joint_acceleration_limit_rad_s2: 10.0
+  require_smoothness_for_success: false
 
 policy:
   family: smolvla

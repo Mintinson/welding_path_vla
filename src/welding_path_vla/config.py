@@ -49,7 +49,13 @@ class SceneConfig:
     robot_base_position_m: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.29])
     robot_base_yaw_deg: float = -90.0
     workpiece_position_m: list[float] = field(default_factory=lambda: [0.45, 0.0, 0.2925])
-    global_camera_position_m: list[float] = field(default_factory=lambda: [1.25, 0.0, 1.05])
+    global_camera_position_table_m: list[float] = field(
+        default_factory=lambda: [0.90, 0.0, 0.78]
+    )
+    global_camera_target_table_m: list[float] = field(
+        default_factory=lambda: [0.10, 0.0, 0.0225]
+    )
+    global_camera_up_table: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0])
 
 
 @dataclass(slots=True)
@@ -85,9 +91,7 @@ class RandomizationConfig:
     xy_m: float = 0.1
     z_m: float = 0.0
     yaw_deg: float = 30.0
-    joint_degs: list[float] = field(
-        default_factory=lambda: [60.0, 20.0, 20.0, 30.0, 60.0, 60.0]
-    )
+    joint_degs: list[float] = field(default_factory=lambda: [60.0, 20.0, 20.0, 30.0, 60.0, 60.0])
     max_sampling_attempts: int = 10
     initial_tcp_m: float = 0.1
     recovery_probability: float = 0.25
@@ -113,6 +117,22 @@ class QualityConfig:
     cross_track_max_m: float = 0.005
     orientation_p95_deg: float = 2.0
     orientation_max_deg: float = 5.0
+
+
+@dataclass(slots=True)
+class EvaluationConfig:
+    pcr_min: float = 0.95
+    direction_ratio_min: float = 0.90
+    cte_rmse_m: float = 0.0015
+    cte_p95_m: float = 0.002
+    cte_max_m: float = 0.005
+    orientation_p95_deg: float = 2.0
+    speed_mape_max: float = 0.20
+    jerk_ratio_max: float = 2.0
+    jerk_min_sample_rate_hz: float = 80.0
+    jerk_reference_floor_m_s3: float = 0.001
+    joint_acceleration_limit_rad_s2: float = 10.0
+    require_smoothness_for_success: bool = False
 
 
 @dataclass(slots=True)
@@ -170,6 +190,7 @@ class AppConfig:
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
     collection: CollectionConfig = field(default_factory=CollectionConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     real_robot: RealRobotConfig = field(default_factory=RealRobotConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -191,6 +212,7 @@ class AppConfig:
             randomization=RandomizationConfig(**raw.get("randomization", {})),
             collection=CollectionConfig(**raw.get("collection", {})),
             quality=QualityConfig(**raw.get("quality", {})),
+            evaluation=EvaluationConfig(**raw.get("evaluation", {})),
             real_robot=RealRobotConfig(**raw.get("real_robot", {})),
             safety=SafetyConfig(**raw.get("safety", {})),
             policy=PolicyConfig(**raw.get("policy", {})),
@@ -220,6 +242,15 @@ class AppConfig:
             raise ValueError("randomization.max_sampling_attempts must be positive")
         if self.collection.episodes < 1 or self.collection.max_attempt_multiplier < 1:
             raise ValueError("collection counts must be positive")
+        if not 0 <= self.evaluation.pcr_min <= 1:
+            raise ValueError("evaluation.pcr_min must be in [0, 1]")
+        if not 0 <= self.evaluation.direction_ratio_min <= 1:
+            raise ValueError("evaluation.direction_ratio_min must be in [0, 1]")
+        if (
+            self.evaluation.jerk_min_sample_rate_hz <= 0
+            or self.evaluation.jerk_reference_floor_m_s3 < 0
+        ):
+            raise ValueError("evaluation jerk sampling rate/floor is invalid")
         if self.real_robot.enabled and not self.real_robot.host:
             raise ValueError("real_robot.host is required when real_robot.enabled is true")
         if self.policy.action_horizon < 1 or self.policy.action_stride < 1:

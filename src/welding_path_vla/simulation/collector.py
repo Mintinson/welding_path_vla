@@ -356,6 +356,7 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
     finally:
         simulation.close()
 
+
 def collect_datasetx(config: AppConfig, episodes: int | None = None) -> list[Path]:
     """采集指定数量的有效轨迹, 构建完整数据集。
 
@@ -420,7 +421,6 @@ def collect_datasetx(config: AppConfig, episodes: int | None = None) -> list[Pat
             "failed episodes were retained"
         )
     return paths
-
 
 
 def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path]:
