@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 
-from welding_path_vla.config import EvaluationConfig
+from welding_path_vla.core.config import EvaluationConfig
 from welding_path_vla.evaluation.motion_metrics import completion_metrics, tracking_metrics
 from welding_path_vla.evaluation.schema import (
     EpisodeEvaluation,

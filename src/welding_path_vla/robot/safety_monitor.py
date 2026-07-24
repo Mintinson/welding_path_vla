@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from welding_path_vla.config import SafetyConfig
-from welding_path_vla.domain import RobotState
+from welding_path_vla.core.config import SafetyConfig
+from welding_path_vla.core.domain import RobotState
 
 
 class SafetyViolation(RuntimeError):

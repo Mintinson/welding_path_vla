@@ -1,3 +1,5 @@
+"""坐标变换、姿态与轨迹几何工具。"""
+
 from __future__ import annotations
 
 import numpy as np

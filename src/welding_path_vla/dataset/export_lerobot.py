@@ -7,9 +7,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from welding_path_vla.core.domain import EpisodeStatus
 from welding_path_vla.dataset.actions import build_relative_action_chunk
 from welding_path_vla.dataset.raw_schema import EpisodeReader
-from welding_path_vla.domain import EpisodeStatus
 
 
 def video_frames(path: Path) -> list[np.ndarray]:

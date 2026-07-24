@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from welding_path_vla.config import AppConfig
-from welding_path_vla.domain import Pose, RobotState
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.domain import Pose, RobotState
 from welding_path_vla.evaluation.collision_metrics import collision_report
 from welding_path_vla.policies.training import TrainingRequest
 from welding_path_vla.robot.safety_monitor import SafetyMonitor, SafetyViolation

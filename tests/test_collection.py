@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from welding_path_vla.config import AppConfig
+from welding_path_vla.core.config import AppConfig
 from welding_path_vla.simulation import collector as collection
 
 

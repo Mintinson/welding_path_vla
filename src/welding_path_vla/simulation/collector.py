@@ -18,12 +18,12 @@ import mujoco
 import numpy as np
 from tqdm import tqdm
 
-from welding_path_vla.config import AppConfig
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.domain import CommandAction, Pose
+from welding_path_vla.core.geometry import frame_delta, pose_delta, rotation_error
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
 from welding_path_vla.dataset.recorder import EpisodeRecorder
-from welding_path_vla.domain import CommandAction, Pose
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
-from welding_path_vla.geometry import frame_delta, pose_delta, rotation_error
 from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
 
 

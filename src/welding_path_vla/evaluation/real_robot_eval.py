@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from welding_path_vla.config import EvaluationConfig
+from welding_path_vla.core.config import EvaluationConfig
 from welding_path_vla.evaluation.adapters import trace_from_real_robot_log
 from welding_path_vla.evaluation.evaluator import evaluate_trace
 from welding_path_vla.evaluation.schema import EpisodeEvaluation

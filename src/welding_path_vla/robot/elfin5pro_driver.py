@@ -4,7 +4,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from welding_path_vla.domain import RobotState
+from welding_path_vla.core.domain import RobotState
 
 
 @runtime_checkable

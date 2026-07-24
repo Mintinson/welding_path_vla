@@ -1,5 +1,8 @@
 # 焊接短时轨迹评估规范
 
+评估命令由 `scripts/evaluate.py` 提供；Pixi 分别暴露
+`evaluate-episode` 和 `evaluate-dataset` 两个任务。
+
 ## 1. 模块边界
 
 论文级评估位于 `src/welding_path_vla/evaluation/`，分为：

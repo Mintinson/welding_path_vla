@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from welding_path_vla.geometry import (
+from welding_path_vla.core.geometry import (
     frame_delta,
     pose_delta,
     quaternion_to_matrix,

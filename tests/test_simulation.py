@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from welding_path_vla.config import AppConfig
-from welding_path_vla.geometry import quaternion_to_matrix
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.geometry import quaternion_to_matrix
 from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
 from welding_path_vla.simulation.collector import sample_collision_free_task, stage_for_task
 

@@ -1,3 +1,5 @@
+"""项目各运行环境共享的类型化配置。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -49,12 +51,8 @@ class SceneConfig:
     robot_base_position_m: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.29])
     robot_base_yaw_deg: float = -90.0
     workpiece_position_m: list[float] = field(default_factory=lambda: [0.45, 0.0, 0.2925])
-    global_camera_position_table_m: list[float] = field(
-        default_factory=lambda: [0.90, 0.0, 0.78]
-    )
-    global_camera_target_table_m: list[float] = field(
-        default_factory=lambda: [0.10, 0.0, 0.0225]
-    )
+    global_camera_position_table_m: list[float] = field(default_factory=lambda: [0.90, 0.0, 0.78])
+    global_camera_target_table_m: list[float] = field(default_factory=lambda: [0.10, 0.0, 0.0225])
     global_camera_up_table: list[float] = field(default_factory=lambda: [0.0, 0.0, 1.0])
 
 

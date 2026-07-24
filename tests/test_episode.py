@@ -2,10 +2,10 @@ from pathlib import Path
 
 import numpy as np
 
-from welding_path_vla.config import AppConfig
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.geometry import frame_delta, yaw_degrees_to_matrix
 from welding_path_vla.dataset.actions import build_action_chunk, build_relative_action_chunk
 from welding_path_vla.dataset.raw_schema import EpisodeReader
-from welding_path_vla.geometry import frame_delta, yaw_degrees_to_matrix
 from welding_path_vla.simulation.collector import collect_episode
 
 

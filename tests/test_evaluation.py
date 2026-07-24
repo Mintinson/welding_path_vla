@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from welding_path_vla.config import EvaluationConfig
+from welding_path_vla.core.config import EvaluationConfig
 from welding_path_vla.evaluation.adapters import SAFETY_SIGNALS, trace_from_real_robot_log
 from welding_path_vla.evaluation.evaluator import aggregate_reports, evaluate_trace
 from welding_path_vla.evaluation.schema import (

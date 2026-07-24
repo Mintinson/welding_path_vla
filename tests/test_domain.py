@@ -1,6 +1,6 @@
 import numpy as np
 
-from welding_path_vla.domain import Seam
+from welding_path_vla.core.domain import Seam
 
 
 def test_seam_is_defined_in_workpiece_coordinates() -> None:

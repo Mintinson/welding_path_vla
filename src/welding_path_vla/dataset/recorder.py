@@ -12,10 +12,10 @@ from typing import Any
 import cv2
 import numpy as np
 
-from welding_path_vla.config import AppConfig
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.domain import CommandAction, Pose, RobotState
+from welding_path_vla.core.geometry import frame_delta, rotation_error, yaw_degrees_to_matrix
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
-from welding_path_vla.domain import CommandAction, Pose, RobotState
-from welding_path_vla.geometry import frame_delta, rotation_error, yaw_degrees_to_matrix
 
 
 class EpisodeRecorder:

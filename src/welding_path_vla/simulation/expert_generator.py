@@ -7,9 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
-from welding_path_vla.config import AppConfig
-from welding_path_vla.domain import Phase, Pose
-from welding_path_vla.geometry import matrix_to_quaternion
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.domain import Phase, Pose
+from welding_path_vla.core.geometry import matrix_to_quaternion
 
 
 @dataclass(slots=True)

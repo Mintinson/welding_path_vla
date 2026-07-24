@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from welding_path_vla.core.geometry import rotation_error
 from welding_path_vla.evaluation.schema import CompletionReport, TrackingReport
 from welding_path_vla.evaluation.seam_geometry import (
     SeamProjection,
     interpolate_quaternions,
     interpolate_speed,
 )
-from welding_path_vla.geometry import rotation_error
 
 
 def completion_metrics(projection: SeamProjection) -> CompletionReport:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from welding_path_vla.config import AppConfig, TimingConfig
+from welding_path_vla.core.config import AppConfig, TimingConfig
 
 
 def test_default_config_is_valid() -> None:

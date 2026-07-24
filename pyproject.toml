@@ -7,9 +7,6 @@ readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = ["numpy>=2.2,<2.3", "pyyaml>=6.0,<7", "scipy>=1.15,<2"]
 
-[project.scripts]
-welding-vla = "welding_path_vla.cli:main"
-
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
@@ -76,19 +73,19 @@ dev = { features = ["sim", "data", "cpu", "dev"], solve-group = "local" }
 [tool.pixi.tasks]
 format = "ruff format ."
 lint = "ruff check ."
-typecheck = "basedpyright src"
+typecheck = "basedpyright src scripts"
 test = "pytest -q"
 check = { depends-on = ["lint", "typecheck", "test"] }
-sim-view = "welding-vla sim view"
-sim-collect = "welding-vla sim collect"
-sim-replay = "welding-vla sim replay"
-data-validate = "welding-vla data validate"
-evaluate-episode = "welding-vla evaluation episode"
-evaluate-dataset = "welding-vla evaluation dataset"
-export-lerobot = "welding-vla data export-lerobot"
-robot-config = "welding-vla robot show-config"
-policy-config = "welding-vla policy show-config"
-train-policy = "welding-vla policy train"
+sim-view = "python scripts/view_simulation.py"
+sim-collect = "python scripts/collect_simulation_data.py"
+sim-replay = "python scripts/replay_episode.py"
+data-validate = "python scripts/validate_dataset.py"
+evaluate-episode = "python scripts/evaluate.py episode"
+evaluate-dataset = "python scripts/evaluate.py dataset"
+export-lerobot = "python scripts/export_lerobot.py"
+robot-config = "python scripts/show_robot_config.py"
+policy-config = "python scripts/show_policy_config.py"
+train-policy = "python scripts/train_policy.py"
 
 [tool.ruff]
 target-version = "py312"

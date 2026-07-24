@@ -22,11 +22,23 @@ Pixi 环境按用途拆分：`sim`、`data`、`real`、`train`、`deploy` 和 `d
 
 ```text
 src/welding_path_vla/
+├── core/        # 配置、领域对象和坐标几何工具
 ├── robot/       # Elfin5-Pro 驱动协议、实时控制与安全门
 ├── dataset/     # 原始数据协议、录制、动作构造与 LeRobot 导出
 ├── simulation/  # MuJoCo 环境、专家轨迹、采集与模型入口
 ├── policies/    # ACT / Diffusion / SmolVLA / Trajectory-VLA 及训练部署契约
 └── evaluation/  # 轨迹、碰撞与真机评估
+
+scripts/
+├── collect_simulation_data.py  # 仿真数据采集
+├── view_simulation.py          # 场景检查
+├── replay_episode.py           # 双相机回放
+├── validate_dataset.py         # 原始数据质量校验
+├── export_lerobot.py           # LeRobot 导出
+├── evaluate.py                 # episode/数据集论文指标
+├── show_robot_config.py        # 机器人配置检查
+├── show_policy_config.py       # 策略配置检查
+└── train_policy.py             # 模型训练
 ```
 
 原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_action_chunk` 可在训练期构造相对当前末端坐标系的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
@@ -36,16 +48,18 @@ src/welding_path_vla/
 ## 常用命令
 
 ```bash
-welding-vla sim view --config configs/default.yaml
-welding-vla sim collect --config configs/default.yaml --episodes 50
-welding-vla sim replay --episode PATH
-welding-vla data validate --dataset datasets/weldpath_raw_v1
-welding-vla data export-lerobot --dataset datasets/weldpath_raw_v1 --output datasets/weldpath_lerobot_v1
-welding-vla evaluation episode --episode PATH --source raw --config configs/default.yaml
-welding-vla evaluation dataset --dataset datasets/weldpath_raw_v1 --config configs/default.yaml
-welding-vla robot show-config --config configs/default.yaml
-welding-vla policy show-config --config configs/default.yaml
-welding-vla policy train --config configs/default.yaml --dry-run
+pixi run -e sim sim-view --config configs/default.yaml
+pixi run -e sim sim-collect --config configs/default.yaml --episodes 50
+pixi run -e sim sim-replay --episode PATH
+pixi run -e sim data-validate --dataset datasets/weldpath_raw_v1
+pixi run -e data export-lerobot --dataset datasets/weldpath_raw_v1 --output datasets/weldpath_lerobot_v1
+pixi run -e dev evaluate-episode --episode PATH --source raw --config configs/default.yaml
+pixi run -e dev evaluate-dataset --dataset datasets/weldpath_raw_v1 --config configs/default.yaml
+pixi run -e dev robot-config --config configs/default.yaml
+pixi run -e dev policy-config --config configs/default.yaml
+pixi run -e train train-policy --config configs/default.yaml --dry-run
 ```
 
-所有运行参数来自同一个类型化 YAML；更换 `--config` 即可切换场景、真机、安全、策略、训练和部署配置。CLI 只覆盖常用选项。`--episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。
+Pixi 任务直接调用 `scripts/` 下的单一职责脚本；也可以在对应 Pixi shell 中直接运行，例如 `python scripts/evaluate.py --help`。`src/welding_path_vla` 只提供可复用包代码，不再承载命令行入口。任务与脚本的完整映射见 [脚本入口与模块边界](docs/script-entrypoints.md)。
+
+所有运行参数来自同一个类型化 YAML；更换 `--config` 即可切换场景、真机、安全、策略、训练和部署配置。`--episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。

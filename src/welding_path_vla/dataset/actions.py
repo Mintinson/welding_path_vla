@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from welding_path_vla.dataset.raw_schema import EpisodeReader
-from welding_path_vla.geometry import (
+from welding_path_vla.core.geometry import (
     frame_delta,
     pose_delta,
     quaternion_to_matrix,
     yaw_degrees_to_matrix,
 )
+from welding_path_vla.dataset.raw_schema import EpisodeReader
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from welding_path_vla.domain import RobotState
+from welding_path_vla.core.domain import RobotState
 from welding_path_vla.robot.elfin5pro_driver import Elfin5ProDriver
 from welding_path_vla.robot.safety_monitor import SafetyMonitor
 

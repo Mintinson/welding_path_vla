@@ -1,3 +1,5 @@
+"""焊接任务、机器人状态和动作的领域对象。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

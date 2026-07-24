@@ -5,9 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from welding_path_vla.config import AppConfig, QualityConfig
+from welding_path_vla.core.config import AppConfig, QualityConfig
+from welding_path_vla.core.domain import EpisodeStatus
 from welding_path_vla.dataset.raw_schema import EpisodeReader
-from welding_path_vla.domain import EpisodeStatus
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from welding_path_vla.config import DeploymentConfig, PolicyConfig
+from welding_path_vla.core.config import DeploymentConfig, PolicyConfig
 
 
 @dataclass(frozen=True, slots=True)

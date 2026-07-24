@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from welding_path_vla.config import AppConfig
+from welding_path_vla.core.config import AppConfig
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 from welding_path_vla.evaluation.schema import (
     EvaluationTrace,
