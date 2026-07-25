@@ -126,3 +126,35 @@ def build_relative_action_chunk(
     rotation_6d = relative[:, :2, :3].reshape(horizon, 6)
     values = np.concatenate((relative[:, :3, 3], rotation_6d), axis=1).astype(np.float32)
     return RelativeActionChunk(values, valid)
+
+
+def build_relative_actions(episode: EpisodeReader, source: str = "safe_command") -> np.ndarray:
+    """批量构造整条 episode 的 9D 单步末端局部动作。"""
+    trajectory = episode.trajectory
+    source_names = {
+        "safe_command": ("safe_command_position", "safe_command_quaternion_wxyz", 0),
+        "reference": ("reference_position", "reference_quaternion_wxyz", 0),
+        "executed": ("tcp_position", "tcp_quaternion_wxyz", 1),
+    }
+    if source not in source_names:
+        raise ValueError(f"unknown relative action source: {source}")
+    position_name, quaternion_name, offset = source_names[source]
+    count = episode.action_count
+    current_positions = trajectory["tcp_position"][:count]
+    current_rotations = np.asarray(
+        [quaternion_to_matrix(value) for value in trajectory["tcp_quaternion_wxyz"][:count]]
+    )
+    target_positions = trajectory[position_name][offset : offset + count]
+    target_rotations = np.asarray(
+        [
+            quaternion_to_matrix(value)
+            for value in trajectory[quaternion_name][offset : offset + count]
+        ]
+    )
+    relative_rotations = np.einsum(
+        "nji,njk->nik", current_rotations, target_rotations, optimize=True
+    )
+    position_delta = target_positions - current_positions
+    relative_positions = np.einsum("nji,nj->ni", current_rotations, position_delta, optimize=True)
+    rotation_6d = relative_rotations[:, :2, :].reshape(count, 6)
+    return np.concatenate((relative_positions, rotation_6d), axis=1).astype(np.float32)

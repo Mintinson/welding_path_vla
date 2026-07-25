@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
 """将原始焊接 episode 导出为 LeRobot 数据集。"""
 
-from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
 
-import argparse
+from common import cli, output_json
 
+from welding_path_vla.core.config import AppConfig
 from welding_path_vla.dataset.export_lerobot import export_lerobot
 
 
-def main() -> None:
-    """解析数据路径和仓库标识后执行导出。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--repo-id", default="huayan/weldpath_sim_v1")
-    arguments = parser.parse_args()
-    print(export_lerobot(arguments.dataset, arguments.output, arguments.repo_id))
+@dataclass
+class ExportArguments(AppConfig):
+    """LeRobot 导出的路径和仓库标识。"""
+
+    dataset: Path = Path("datasets/weldpath_raw_v1")
+    output: Path = Path("datasets/weldpath_lerobot_v1")
+    repo_id: str = "huayan/weldpath_sim_v1"
+
+
+@cli
+def main(config: ExportArguments) -> None:
+    """按配置选择 episode 并执行增量导出。"""
+    report = export_lerobot(
+        config.dataset,
+        config.output,
+        config.repo_id,
+        config.lerobot_export,
+    )
+    output_json(report.as_dict())
 
 
 if __name__ == "__main__":
