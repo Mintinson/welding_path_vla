@@ -12,25 +12,46 @@
 | `sim-replay` | `scripts/replay_episode.py` | 回放双相机视频 |
 | `data-validate` | `scripts/validate_dataset.py` | 校验原始数据质量 |
 | `export-lerobot` | `scripts/export_lerobot.py` | 导出 LeRobot 数据集 |
-| `evaluate-episode` | `scripts/evaluate.py episode` | 评估单条仿真/真机 episode |
-| `evaluate-dataset` | `scripts/evaluate.py dataset` | 聚合仿真数据集指标 |
+| `policy-data-check` | `scripts/check_policy_data.py` | 检查策略训练数据契约 |
+| `policy-evaluate` | `scripts/evaluate_policy.py` | 离线评估策略 checkpoint |
+| `policy-sim-deploy` | `scripts/deploy_simulation_policy.py` | 策略 MuJoCo 闭环部署 |
+| `evaluate-episode` | `scripts/evaluate.py --mode=episode` | 评估单条仿真/真机 episode |
+| `evaluate-dataset` | `scripts/evaluate.py --mode=dataset` | 聚合仿真数据集指标 |
 | `robot-config` | `scripts/show_robot_config.py` | 检查机器人和安全配置 |
 | `policy-config` | `scripts/show_policy_config.py` | 检查策略、训练和部署配置 |
 | `train-policy` | `scripts/train_policy.py` | 启动或预览训练 |
 
+## 统一参数规则
+
+脚本统一由 draccus 解析类型化 dataclass。未指定文件时使用 `AppConfig` 默认值（与
+`configs/default.yaml` 一致），`--config_path=PATH` 可载入其他配置；命令行通过点号路径
+覆盖任意字段：
+
+```bash
+pixi run -e sim sim-collect \
+  --config_path=configs/default.yaml \
+  --collection.episodes=50 \
+  --randomization.yaw_deg=45
+```
+
+draccus 负责读取、合并和类型转换，脚本中不再维护 YAML loader 或字段覆盖表。参数名称与
+dataclass/YAML 完全一致，布尔值使用 `--field=true/false`。
+
 推荐通过 Pixi 运行，以确保使用正确的依赖环境：
 
 ```bash
-pixi run -e sim sim-collect --config configs/default.yaml --episodes 50
-pixi run -e dev evaluate-dataset --dataset datasets/weldpath_raw_v1
-pixi run -e train train-policy --config configs/default.yaml --dry-run
+pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=50
+pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v1
+pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
 ```
 
 进入对应 Pixi shell 后，也可以直接执行脚本：
 
 ```bash
 pixi shell -e sim
-python scripts/collect_simulation_data.py --config configs/default.yaml --episodes 50
+python scripts/collect_simulation_data.py \
+  --config_path=configs/default.yaml \
+  --collection.episodes=50
 ```
 
 ## 包内边界

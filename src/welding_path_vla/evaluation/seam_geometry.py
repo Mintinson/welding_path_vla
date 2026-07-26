@@ -45,11 +45,11 @@ def project_to_seam(positions: np.ndarray, seam_points: np.ndarray, eps=1e-12) -
     # (N, M-1) 每个位置到每条线段的距离平方
     dist_sq = np.sum((positions[:, None, :] - candidates) ** 2, axis=2)
     # 最近线段索引
-    indices = np.argmin(dist_sq, axis=1) # (N,)
+    indices = np.argmin(dist_sq, axis=1)  # (N,)
 
     arange = np.arange(len(positions))
-    alpha_best = alpha[arange, indices] # (N,)
-    lengths_best = lengths[indices] # (N,)
+    alpha_best = alpha[arange, indices]  # (N,)
+    lengths_best = lengths[indices]  # (N,)
 
     projected = candidates[arange, indices]  # (N, 3)
     arc = cumulative[indices] + alpha_best * lengths_best  # (N)

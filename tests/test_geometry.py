@@ -1,10 +1,14 @@
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation
 
+from welding_path_vla.core.domain import Pose
 from welding_path_vla.core.geometry import (
+    apply_tcp_action_to_world,
     frame_delta,
     pose_delta,
     quaternion_to_matrix,
+    rotation_from_6d_rows,
     rpy_degrees_to_quaternion,
 )
 
@@ -32,3 +36,26 @@ def test_world_delta_is_expressed_in_rotated_robot_base() -> None:
     np.testing.assert_allclose(
         frame_delta(world_delta, world_from_base), [0, 1, 0, 0, 0, 1], atol=1e-12
     )
+
+
+def test_act_rotation_and_local_translation_are_decoded() -> None:
+    rotation = rotation_from_6d_rows(np.array([1, 0, 0, 0, 1, 0]))
+    np.testing.assert_allclose(rotation, np.eye(3), atol=1e-8)
+    current = Pose(np.array([0.1, 0.2, 0.3]), np.array([1.0, 0.0, 0.0, 0.0]))
+    target = apply_tcp_action_to_world(
+        current,
+        np.array([0.001, -0.002, 0.003, 1, 0, 0, 0, 1, 0]),
+        max_translation_m=0.01,
+    )
+    np.testing.assert_allclose(target.position, [0.101, 0.198, 0.303], atol=1e-8)
+    np.testing.assert_allclose(target.quaternion_wxyz, current.quaternion_wxyz, atol=1e-8)
+
+
+def test_act_action_safety_rejects_large_increment() -> None:
+    current = Pose(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))
+    with pytest.raises(ValueError, match="increment"):
+        apply_tcp_action_to_world(
+            current,
+            np.array([0.1, 0, 0, 1, 0, 0, 0, 1, 0]),
+            max_translation_m=0.005,
+        )

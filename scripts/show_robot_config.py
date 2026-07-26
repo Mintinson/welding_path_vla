@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """显示机器人、安装和安全配置。"""
 
-from __future__ import annotations
+from common import cli, output_json
 
-import argparse
-
-from common import load_config, output_json
-
-from welding_path_vla.core.config import DEFAULT_CONFIG
+from welding_path_vla.core.config import AppConfig
 
 
-def main() -> None:
-    """加载并输出机器人相关配置。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
-    arguments = parser.parse_args()
-    config = load_config(arguments.config)
+@cli
+def main(config: AppConfig) -> None:
+    """输出机器人、安装外参和安全配置。"""
     resolved = config.as_dict()
     output_json(
         {

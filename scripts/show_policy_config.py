@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
 """显示策略、训练和部署配置。"""
 
-from __future__ import annotations
+from common import cli, output_json
 
-import argparse
-
-from common import load_config, output_json
-
-from welding_path_vla.core.config import DEFAULT_CONFIG
+from welding_path_vla.core.config import AppConfig
 
 
-def main() -> None:
-    """加载配置并显示训练和部署就绪状态。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
-    arguments = parser.parse_args()
-    config = load_config(arguments.config)
+@cli
+def main(config: AppConfig) -> None:
+    """输出策略相关配置和就绪状态。"""
     resolved = config.as_dict()
     output_json(
         {
             "policy": resolved["policy"],
             "training": resolved["training"],
+            "policy_evaluation": resolved["policy_evaluation"],
             "deployment": resolved["deployment"],
             "training_ready": bool(config.training.dataset_repo_id),
             "deployment_ready": bool(config.policy.checkpoint),

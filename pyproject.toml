@@ -28,6 +28,7 @@ tqdm = ">=4.69.0,<5"
 
 [tool.pixi.pypi-dependencies]
 welding-path-vla = { path = ".", editable = true }
+draccus = "==0.10.0"
 
 [tool.pixi.feature.sim.dependencies]
 mujoco = "3.10.*"
@@ -45,11 +46,15 @@ opencv = ">=4.11,<5"
 pytorch-cpu = "2.9.1.*"
 torchvision = "0.24.1.*"
 
+[tool.pixi.feature.cpu.pypi-dependencies]
+torchcodec = "==0.9.1"
+
 [tool.pixi.feature.real.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["core-scripts"] }
 
 [tool.pixi.feature.train.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["training", "smolvla"] }
+torchcodec = "==0.11.1"
 
 [tool.pixi.feature.deploy.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["smolvla"] }
@@ -68,6 +73,7 @@ data = { features = ["data", "cpu"], solve-group = "local" }
 real = { features = ["real", "cpu"], solve-group = "local" }
 train = { features = ["train"], solve-group = "cuda" }
 deploy = { features = ["real", "deploy"], solve-group = "cuda" }
+policy-sim = { features = ["sim", "train"], solve-group = "policy-sim" }
 dev = { features = ["sim", "data", "cpu", "dev"], solve-group = "local" }
 
 [tool.pixi.tasks]
@@ -80,12 +86,15 @@ sim-view = "python scripts/view_simulation.py"
 sim-collect = "python scripts/collect_simulation_data.py"
 sim-replay = "python scripts/replay_episode.py"
 data-validate = "python scripts/validate_dataset.py"
-evaluate-episode = "python scripts/evaluate.py episode"
-evaluate-dataset = "python scripts/evaluate.py dataset"
+evaluate-episode = "python scripts/evaluate.py --mode=episode"
+evaluate-dataset = "python scripts/evaluate.py --mode=dataset"
 export-lerobot = "python scripts/export_lerobot.py"
 robot-config = "python scripts/show_robot_config.py"
 policy-config = "python scripts/show_policy_config.py"
 train-policy = "python scripts/train_policy.py"
+policy-data-check = "python scripts/check_policy_data.py"
+policy-evaluate = "python scripts/evaluate_policy.py"
+policy-sim-deploy = "python scripts/deploy_simulation_policy.py"
 
 [tool.ruff]
 target-version = "py312"

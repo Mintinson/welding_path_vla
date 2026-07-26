@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """同步回放一条 episode 的全局与腕部相机视频。"""
 
-from __future__ import annotations
-
-import argparse
+from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
+from common import cli
 
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 
 
-def main() -> None:
+@dataclass
+class ReplayArguments:
+    """原始 episode 回放参数。"""
+
+    episode: Path
+
+
+@cli
+def main(config: ReplayArguments) -> None:
     """按 episode 的策略频率播放双视角视频。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--episode", required=True)
-    arguments = parser.parse_args()
-    episode = EpisodeReader(arguments.episode)
+    episode = EpisodeReader(config.episode)
     global_video = cv2.VideoCapture(str(episode.path / "global.mp4"))
     wrist_video = cv2.VideoCapture(str(episode.path / "wrist.mp4"))
     delay = max(1, round(1000 / episode.metadata["resolved_config"]["timing"]["policy_hz"]))
-    while True:
+    while global_video.isOpened() and wrist_video.isOpened():
         global_ok, global_frame = global_video.read()
         wrist_ok, wrist_frame = wrist_video.read()
         if not global_ok or not wrist_ok:

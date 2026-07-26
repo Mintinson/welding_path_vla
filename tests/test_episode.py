@@ -4,7 +4,11 @@ import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.geometry import frame_delta, yaw_degrees_to_matrix
-from welding_path_vla.dataset.actions import build_action_chunk, build_relative_action_chunk
+from welding_path_vla.dataset.actions import (
+    build_action_chunk,
+    build_relative_action_chunk,
+    build_relative_actions,
+)
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 from welding_path_vla.simulation.collector import collect_episode
 
@@ -46,3 +50,8 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     np.testing.assert_allclose(compatible.values[0], [0, 0, 0, 1, 0, 0, 0, 1, 0], atol=1e-7)
     tail = build_relative_action_chunk(episode, episode.action_count - 2, horizon=4)
     assert tail.valid_mask.tolist() == [True, True, False, False]
+    batched = build_relative_actions(episode)
+    assert batched.shape == (episode.action_count, 9)
+    for index in (0, episode.action_count // 2, episode.action_count - 1):
+        expected = build_relative_action_chunk(episode, index, horizon=1).values[0]
+        np.testing.assert_allclose(batched[index], expected, atol=1e-6)

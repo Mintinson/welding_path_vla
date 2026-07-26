@@ -7,6 +7,7 @@ from welding_path_vla.core.config import AppConfig, TimingConfig
 
 def test_default_config_is_valid() -> None:
     config = AppConfig.load(Path("configs/default.yaml"))
+    assert config.as_dict() == AppConfig().as_dict()
     assert config.timing.physics_steps_per_control == 5
     assert config.timing.controls_per_policy == 5
     assert config.camera.width == 640

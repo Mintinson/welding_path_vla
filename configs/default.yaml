@@ -113,9 +113,11 @@ policy:
   checkpoint: null
   device: cuda
   action_horizon: 10
+  action_steps: 10
   action_stride: 1
   action_source: safe_command
   include_current: false
+  parameters: {}
 
 training:
   dataset_repo_id: null
@@ -123,7 +125,47 @@ training:
   output_dir: outputs/train
   batch_size: 16
   steps: 100000
+  num_workers: 4
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 2000
+  max_eval_samples: 1000
+  log_freq: 100
+  save_freq: 10000
+  seed: 20260724
+  wandb: false
+  amp_dtype: bfloat16
+
+policy_evaluation:
+  batch_size: 4
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+lerobot_export:
+  incremental: false
+  start_episode: null
+  end_episode: null
+  # 默认只保留 MP4；true 时改为逐帧图片格式。
+  save_images: false
+  # 流式编码跳过临时 PNG，两个相机由独立编码线程并行处理。
+  streaming_encoding: true
+  parallel_video_encoding: true
+  image_writer_processes: 0
+  image_writer_threads: 8
+  # 每个相机最多缓存 64 帧，限制长 episode 的峰值内存。
+  encoder_queue_maxsize: 64
+  encoder_threads: null
+  # auto 会优先选择 NVENC/VAAPI/QSV；h264 是兼容性更好的快速默认值。
+  video_codec: h264
+  video_quality: 23
+  video_preset: veryfast
 
 deployment:
   dry_run: true
   log_dir: outputs/deploy
+  episodes: 5
+  max_steps: 1000
+  seed: 20260724
+  record_video: true

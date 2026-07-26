@@ -6,9 +6,9 @@
 
 ```bash
 pixi install -e sim
-pixi run -e sim sim-view --config configs/default.yaml
-pixi run -e sim sim-collect --config configs/default.yaml --episodes 1
-pixi run -e sim sim-replay --episode datasets/weldpath_raw_v1/episodes/episode_000000
+pixi run -e sim sim-view --config_path=configs/default.yaml
+pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=1
+pixi run -e sim sim-replay --episode=datasets/weldpath_raw_v1/episodes/episode_000000
 pixi run -e dev check
 ```
 
@@ -48,18 +48,30 @@ scripts/
 ## 常用命令
 
 ```bash
-pixi run -e sim sim-view --config configs/default.yaml
-pixi run -e sim sim-collect --config configs/default.yaml --episodes 50
-pixi run -e sim sim-replay --episode PATH
-pixi run -e sim data-validate --dataset datasets/weldpath_raw_v1
-pixi run -e data export-lerobot --dataset datasets/weldpath_raw_v1 --output datasets/weldpath_lerobot_v1
-pixi run -e dev evaluate-episode --episode PATH --source raw --config configs/default.yaml
-pixi run -e dev evaluate-dataset --dataset datasets/weldpath_raw_v1 --config configs/default.yaml
-pixi run -e dev robot-config --config configs/default.yaml
-pixi run -e dev policy-config --config configs/default.yaml
-pixi run -e train train-policy --config configs/default.yaml --dry-run
+pixi run -e sim sim-view --config_path=configs/default.yaml
+pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=50
+pixi run -e sim sim-replay --episode=PATH
+pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v1
+pixi run -e data export-lerobot --dataset=datasets/weldpath_raw_v1 --output=datasets/weldpath_lerobot_v1
+pixi run -e dev evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
+pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v1 --config_path=configs/default.yaml
+pixi run -e dev robot-config --config_path=configs/default.yaml
+pixi run -e dev policy-config --config_path=configs/default.yaml
+pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
 ```
+
+ACT 基线使用 `configs/act.yaml`，提供 LeRobot 原生训练、留出集测试和 MuJoCo 闭环部署：
+
+```bash
+pixi run -e train train-policy --config_path=configs/act.yaml --training.steps=4 --training.output_dir=outputs/train/act_smoke_01
+pixi run -e train policy-evaluate --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01 --deployment.episodes=1
+```
+
+完整的数据约定、checkpoint、日志和评估说明见 [ACT pipeline](docs/act-pipeline.md)。
+
+`export-lerobot` 默认采用 H.264 流式编码，只保存视频 feature。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；支持硬件编码的机器可尝试 `--lerobot_export.video_codec=auto`。逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
 
 Pixi 任务直接调用 `scripts/` 下的单一职责脚本；也可以在对应 Pixi shell 中直接运行，例如 `python scripts/evaluate.py --help`。`src/welding_path_vla` 只提供可复用包代码，不再承载命令行入口。任务与脚本的完整映射见 [脚本入口与模块边界](docs/script-entrypoints.md)。
 
-所有运行参数来自同一个类型化 YAML；更换 `--config` 即可切换场景、真机、安全、策略、训练和部署配置。`--episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。
+所有运行参数来自同一个类型化 YAML；更换 `--config_path` 即可切换场景、真机、安全、策略、训练和部署配置，任意字段都可用 `--section.field=value` 覆盖。`collection.episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。视频优先使用 H.264，系统 OpenCV 不支持时自动回退为 MPEG-4。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。

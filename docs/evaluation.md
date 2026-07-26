@@ -84,22 +84,22 @@ evaluation:
 
 ```bash
 pixi run -e dev evaluate-episode \
-  --episode datasets/weldpath_raw_v1/episodes/episode_000000 \
-  --config configs/default.yaml \
-  --assume-reference-task
+  --episode=datasets/weldpath_raw_v1/episodes/episode_000000 \
+  --config_path=configs/default.yaml \
+  --assume_reference_task=true
 ```
 
 评估完整数据集：
 
 ```bash
 pixi run -e dev evaluate-dataset \
-  --dataset datasets/weldpath_raw_v1 \
-  --config configs/default.yaml \
-  --assume-reference-task \
-  --output outputs/evaluation/simulation-summary.json
+  --collection.dataset_root=datasets/weldpath_raw_v1 \
+  --config_path=configs/default.yaml \
+  --assume_reference_task=true \
+  --output=outputs/evaluation/simulation-summary.json
 ```
 
-评估真实策略输出时不要使用 `--assume-reference-task`。应在 episode 元数据中写入：
+评估真实策略输出时不要使用 `--assume_reference_task=true`。应在 episode 元数据中写入：
 
 ```json
 {
@@ -179,10 +179,10 @@ expert_position           (Ne, 3)
 
 ```bash
 pixi run -e dev evaluate-episode \
-  --source real \
-  --episode outputs/real_eval/real_eval_000001 \
-  --config configs/default.yaml \
-  --output outputs/real_eval/real_eval_000001/report.json
+  --source=real \
+  --episode=outputs/real_eval/real_eval_000001 \
+  --config_path=configs/default.yaml \
+  --output=outputs/real_eval/real_eval_000001/report.json
 ```
 
 缺少任意 `required_safety_signals` 时安全条件按失败处理，而不是默认无违规。

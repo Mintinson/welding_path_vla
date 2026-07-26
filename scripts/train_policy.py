@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """根据统一 YAML 启动 LeRobot 策略训练。"""
 
-from __future__ import annotations
+from dataclasses import dataclass
 
-import argparse
-import shlex
-import subprocess
+from common import cli, output_json
 
-from common import load_config
-
-from welding_path_vla.core.config import DEFAULT_CONFIG
+from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.training import TrainingRequest
 
 
-def main() -> None:
-    """生成训练命令，并按需只执行预览。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
-    parser.add_argument("--dry-run", action="store_true")
-    arguments = parser.parse_args()
-    config = load_config(arguments.config)
-    command = TrainingRequest(config.policy, config.training).command()
-    if arguments.dry_run:
-        print(shlex.join(command))
+@dataclass
+class TrainArguments(AppConfig):
+    """策略配置和非破坏性预览开关。"""
+
+    dry_run: bool = False
+
+
+@cli
+def main(config: TrainArguments) -> None:
+    """预览训练计划或启动训练。"""
+    request = TrainingRequest(config.policy, config.training)
+    if config.dry_run:
+        output_json(request.plan())
         return
-    subprocess.run(command, check=True)
+    print(f"training output: {request.run()}")
 
 
 if __name__ == "__main__":

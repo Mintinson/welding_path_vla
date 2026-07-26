@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+from draccus.argparsing import parse
 
 
 @dataclass(slots=True)
@@ -158,9 +158,11 @@ class PolicyConfig:
     checkpoint: str | None = None
     device: str = "cuda"
     action_horizon: int = 10
+    action_steps: int = 10
     action_stride: int = 1
     action_source: str = "safe_command"
     include_current: bool = False
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -170,12 +172,56 @@ class TrainingConfig:
     output_dir: str = "outputs/train"
     batch_size: int = 16
     steps: int = 100_000
+    num_workers: int = 4
+    video_backend: str = "torchcodec"
+    eval_split: float = 0.1
+    eval_steps: int = 2_000
+    max_eval_samples: int = 1_000
+    log_freq: int = 100
+    save_freq: int = 10_000
+    seed: int = 20260724
+    wandb: bool = False
+    amp_dtype: str = "bfloat16"
+
+
+@dataclass(slots=True)
+class PolicyEvaluationConfig:
+    """策略离线测试参数。"""
+
+    batch_size: int = 4
+    num_workers: int = 2
+    max_batches: int = 50
+    held_out_episodes: int = 9
+    output_dir: str = "outputs/evaluation/policies"
+
+
+@dataclass(slots=True)
+class LeRobotExportConfig:
+    """LeRobot 转换的选择、增量与编码参数。"""
+
+    incremental: bool = False
+    start_episode: int | None = None
+    end_episode: int | None = None
+    save_images: bool = False
+    streaming_encoding: bool = True
+    parallel_video_encoding: bool = True
+    image_writer_processes: int = 0
+    image_writer_threads: int = 8
+    encoder_queue_maxsize: int = 64
+    encoder_threads: int | None = None
+    video_codec: str = "h264"
+    video_quality: int = 23
+    video_preset: str | int | None = "veryfast"
 
 
 @dataclass(slots=True)
 class DeploymentConfig:
     dry_run: bool = True
     log_dir: str = "outputs/deploy"
+    episodes: int = 5
+    max_steps: int = 1_000
+    seed: int = 20260724
+    record_video: bool = True
 
 
 @dataclass(slots=True)
@@ -193,32 +239,18 @@ class AppConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    policy_evaluation: PolicyEvaluationConfig = field(default_factory=PolicyEvaluationConfig)
+    lerobot_export: LeRobotExportConfig = field(default_factory=LeRobotExportConfig)
     deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
+
+    def __post_init__(self) -> None:
+        """构造后立即检查跨模块配置约束。"""
+        self.validate()
 
     @classmethod
     def load(cls, path: str | Path) -> AppConfig:
-        with Path(path).open(encoding="utf-8") as stream:
-            raw = yaml.safe_load(stream) or {}
-        if not isinstance(raw, dict):
-            raise ValueError("configuration root must be a YAML mapping")
-        config = cls(
-            timing=TimingConfig(**raw.get("timing", {})),
-            camera=CameraConfig(**raw.get("camera", {})),
-            scene=SceneConfig(**raw.get("scene", {})),
-            robot=RobotConfig(**raw.get("robot", {})),
-            task=TaskConfig(**raw.get("task", {})),
-            randomization=RandomizationConfig(**raw.get("randomization", {})),
-            collection=CollectionConfig(**raw.get("collection", {})),
-            quality=QualityConfig(**raw.get("quality", {})),
-            evaluation=EvaluationConfig(**raw.get("evaluation", {})),
-            real_robot=RealRobotConfig(**raw.get("real_robot", {})),
-            safety=SafetyConfig(**raw.get("safety", {})),
-            policy=PolicyConfig(**raw.get("policy", {})),
-            training=TrainingConfig(**raw.get("training", {})),
-            deployment=DeploymentConfig(**raw.get("deployment", {})),
-        )
-        config.validate()
-        return config
+        """通过 draccus 读取 YAML，供包内非 CLI 调用复用。"""
+        return parse(cls, config_path=path, args=[])
 
     def validate(self) -> None:
         self.timing.validate()
@@ -251,12 +283,51 @@ class AppConfig:
             raise ValueError("evaluation jerk sampling rate/floor is invalid")
         if self.real_robot.enabled and not self.real_robot.host:
             raise ValueError("real_robot.host is required when real_robot.enabled is true")
-        if self.policy.action_horizon < 1 or self.policy.action_stride < 1:
+        if (
+            self.policy.action_horizon < 1
+            or self.policy.action_steps < 1
+            or self.policy.action_stride < 1
+            or self.policy.action_steps > self.policy.action_horizon
+        ):
             raise ValueError("policy action horizon and stride must be positive")
         if self.policy.action_source not in {"safe_command", "reference", "executed"}:
             raise ValueError("policy.action_source is not supported")
-        if self.training.steps < 1:
+        if (
+            self.training.steps < 1
+            or self.training.batch_size < 1
+            or self.training.num_workers < 0
+            or not 0 <= self.training.eval_split < 1
+        ):
             raise ValueError("policy horizon and training steps must be positive")
+        if self.training.amp_dtype not in {"float16", "bfloat16"}:
+            raise ValueError("training.amp_dtype must be float16 or bfloat16")
+        if (
+            self.policy_evaluation.batch_size < 1
+            or self.policy_evaluation.num_workers < 0
+            or self.policy_evaluation.max_batches < 1
+            or self.policy_evaluation.held_out_episodes < 1
+        ):
+            raise ValueError("policy evaluation counts must be positive")
+        if self.deployment.episodes < 1 or self.deployment.max_steps < 1:
+            raise ValueError("deployment counts must be positive")
+        export = self.lerobot_export
+        if (
+            export.start_episode is not None
+            and export.end_episode is not None
+            and export.start_episode > export.end_episode
+        ):
+            raise ValueError("lerobot_export episode range is invalid")
+        if (
+            min(
+                export.image_writer_processes,
+                export.image_writer_threads,
+                export.encoder_queue_maxsize,
+            )
+            < 0
+        ):
+            raise ValueError("lerobot_export worker counts must be non-negative")
+        if export.encoder_threads is not None and export.encoder_threads < 1:
+            raise ValueError("lerobot_export.encoder_threads must be positive")
         minimum_clearance = 0.00025 + self.robot.ik_tolerance
         if self.task.tcp_clearance_m < minimum_clearance:
             raise ValueError("task.tcp_clearance_m must cover the wire radius and IK tolerance")
@@ -265,6 +336,3 @@ class AppConfig:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-DEFAULT_CONFIG = Path("configs/default.yaml")

@@ -54,7 +54,7 @@ randomization:
   recovery_rotation_deg: 3.0
 ```
 
-`joint_degs` 是六轴最大独立偏移，不是固定偏移。每条数据的实际偏移、采样次数和 TCP 偏移均写入 `metadata.json`，因此可以检查数据覆盖范围并复现实验。提高范围后无效 episode 会增加，这是合理现象；`sim collect --episodes N` 中的 `N` 表示目标有效 episode 数，失败数据保留用于诊断但不会被 LeRobot 导出器用于行为克隆。
+`joint_degs` 是六轴最大独立偏移，不是固定偏移。每条数据的实际偏移、采样次数和 TCP 偏移均写入 `metadata.json`，因此可以检查数据覆盖范围并复现实验。提高范围后无效 episode 会增加，这是合理现象；`--collection.episodes=N` 表示目标有效 episode 数，失败数据保留用于诊断但不会被 LeRobot 导出器用于行为克隆。
 
 ## 3. 如何采集仿真数据
 
@@ -62,7 +62,7 @@ randomization:
 
 ```bash
 pixi install -e sim
-pixi run -e sim sim-view --config configs/default.yaml
+pixi run -e sim sim-view --config_path=configs/default.yaml
 ```
 
 无头采集默认通过 `camera.offscreen_backend: egl` 使用 EGL 离屏上下文，避免 Wayland/XWayland 下 GLFW 创建离屏 Renderer 时产生 `mjr_makeContext` 的 OpenGL 0x502 warning。交互式 `sim view` 不使用该设置，仍由 GLFW 创建窗口。若机器没有 EGL，可临时执行 `MUJOCO_GL=glfw pixi run -e sim sim-collect ...`；OSMesa 只有在系统安装对应软件渲染库后才能使用。
@@ -71,26 +71,26 @@ pixi run -e sim sim-view --config configs/default.yaml
 
 ```bash
 pixi run -e sim sim-collect \
-  --config configs/default.yaml \
-  --episodes 5
+  --config_path=configs/default.yaml \
+  --collection.episodes=5
 
 pixi run -e sim data-validate \
-  --dataset datasets/weldpath_raw_v1
+  --collection.dataset_root=datasets/weldpath_raw_v1
 ```
 
 回放全局和腕部视频：
 
 ```bash
 pixi run -e sim sim-replay \
-  --episode datasets/weldpath_raw_v1/episodes/episode_000000
+  --episode=datasets/weldpath_raw_v1/episodes/episode_000000
 ```
 
 确认相机、焊枪朝向、焊缝进度和碰撞结果后再扩大规模：
 
 ```bash
 pixi run -e sim sim-collect \
-  --config configs/default.yaml \
-  --episodes 500
+  --config_path=configs/default.yaml \
+  --collection.episodes=500
 ```
 
 建议为每组消融实验复制一份 YAML，并使用不同的 `collection.dataset_root`，不要在同一个目录混入相机参数、动作语义或机器人模型版本不同的数据。
@@ -128,12 +128,53 @@ valid_mask = chunk.valid_mask
 ```bash
 pixi install -e data
 pixi run -e data export-lerobot \
-  --dataset datasets/weldpath_raw_v1 \
-  --output datasets/weldpath_lerobot_v1 \
-  --repo-id YOUR_NAME/weldpath_sim_v1
+  --config_path=configs/default.yaml \
+  --dataset=datasets/weldpath_raw_v1 \
+  --output=datasets/weldpath_lerobot_v1 \
+  --repo_id=YOUR_NAME/weldpath_sim_v1
 ```
 
-`--output` 必须指向尚不存在的新目录。原始数据增加后应导出到新的版本目录，例如 `weldpath_lerobot_v1_full`，确认无误后再更新训练 YAML；不要原地覆盖已经参与过训练的数据集。
+默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程；这样省去了整段视频驻留内存和临时 PNG I/O。默认 `h264 + veryfast` 兼顾速度与兼容性。机器支持 NVENC、VAAPI 或 QSV 时可尝试硬件编码：
+
+```bash
+pixi run -e data export-lerobot \
+  --config_path=configs/default.yaml \
+  --dataset=datasets/weldpath_raw_v1 \
+  --output=datasets/weldpath_lerobot_v1 \
+  --repo_id=YOUR_NAME/weldpath_sim_v1 \
+  --lerobot_export.video_codec=auto
+```
+
+硬件编码只加速视频压缩，不会把 OpenCV 解码、Parquet 写入或 action 构造搬到 GPU；实际可用编码器取决于显卡、驱动和 FFmpeg。LeRobot 的 `auto` 只探测 FFmpeg 是否列出编码器，不能保证驱动能成功初始化，因此应先用单个 episode 验证；初始化卡住或失败时改回已验证的 `--lerobot_export.video_codec=h264`。需要图片 feature 时显式添加 `--lerobot_export.save_images=true`，同一目标数据集不能混用视频和图片 schema。
+
+源 episode 编号筛选采用闭区间，且仍会自动排除无效 episode：
+
+```bash
+# 仅转换 episode_000100 到 episode_000199
+pixi run -e data export-lerobot \
+  --dataset=datasets/weldpath_raw_v1 \
+  --output=datasets/weldpath_lerobot_v1 \
+  --lerobot_export.start_episode=100 \
+  --lerobot_export.end_episode=199
+```
+
+只给 `--lerobot_export.start_episode` 表示从该编号到末尾，只给
+`--lerobot_export.end_episode` 表示从开头到该编号。原始数据增加后，可恢复已有目标并接着写：
+
+```bash
+pixi run -e data export-lerobot \
+  --dataset=datasets/weldpath_raw_v1 \
+  --output=datasets/weldpath_lerobot_v1 \
+  --lerobot_export.incremental=true \
+  --lerobot_export.start_episode=200
+```
+
+转换器在目标的 `meta/welding_path_vla_export.json` 中记录已完成的源 episode；重叠区间会自动跳过，不会重复写入。旧版完整导出的目标没有清单时，会按已有 episode 数从有效源数据开头推断一次映射。恢复视频目标时沿用其原编码格式，避免在同一视频 chunk 中混入不同 codec。
+
+如果不使用流式编码，可用
+`--lerobot_export.streaming_encoding=false --lerobot_export.image_writer_processes=2`
+`--lerobot_export.image_writer_threads=4` 启用 LeRobot 的临时图片与多进程相机编码路径。
+通常默认流式模式 I/O 更少，更适合本项目的双相机长 episode。
 
 当前 LeRobot 基线导出的单帧 action 是 9D 的“当前真实 TCP → 下一安全命令 TCP”末端局部变换。LeRobot 再按时间抽取这些单步局部 action 形成 SmolVLA chunk。严格的 Hy-VLA“所有 future target 共用当前帧参考”实验应使用上一节的动作构造器和 mask 接入自定义 Dataset；不要把两种 chunk 语义放在同一个实验名称下比较。
 
@@ -161,14 +202,14 @@ training:
 ```bash
 pixi install -e train
 pixi run -e train train-policy \
-  --config configs/default.yaml \
-  --dry-run
+  --config_path=configs/default.yaml \
+  --dry_run=true
 ```
 
 确认数据路径、GPU 和输出目录后开始训练：
 
 ```bash
-pixi run -e train train-policy --config configs/default.yaml
+pixi run -e train train-policy --config_path=configs/default.yaml
 ```
 
 训练器会从 YAML 生成 LeRobot 0.6 的 `lerobot-train` 参数，包括 policy 类型、设备、chunk 长度、batch size、steps 和输出目录。首次实验建议先设 `steps: 1000` 验证 loss、显存、checkpoint 和视频键，再恢复正式训练步数。服务器端同步源码、`pixi.lock` 和数据集，执行同一命令即可复现环境；不要同步 `.pixi/`。

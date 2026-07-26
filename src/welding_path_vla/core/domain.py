@@ -27,6 +27,8 @@ class EpisodeStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Pose:
+    """TCP 姿态，世界坐标系下的位姿。（x, y, z, qw, qx, qy, qz）"""
+
     position: FloatArray
     quaternion_wxyz: FloatArray
 

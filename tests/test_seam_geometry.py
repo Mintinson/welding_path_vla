@@ -88,7 +88,7 @@ def test_nlerp_non_normalized_input():
 
 def test_nlerp_identity_case():
     """相同四元数插值应保持不变"""
-    q = np.array([[0.707, 0.707, 0, 0]]) 
+    q = np.array([[0.707, 0.707, 0, 0]])
     q /= np.linalg.norm(q)  # 确保单位长度
     quats = np.vstack([q, q])
     result = interpolate_quaternions(quats, np.array([0]), np.array([0.5]))
