@@ -53,3 +53,7 @@ deployment:
   max_steps: 1000
   seed: 20260724
   record_video: true
+  # ACT 用于验证 pipeline；达到 85% 且距焊缝不超过 15 mm 时自然退出。
+  # 论文 evaluation 阈值保持统一，不受这两个部署条件影响。
+  completion_progress_min: 0.85
+  completion_distance_m: 0.015

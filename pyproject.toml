@@ -33,14 +33,16 @@ draccus = "==0.10.0"
 [tool.pixi.feature.sim.dependencies]
 mujoco = "3.10.*"
 ffmpeg = "8.1.*"
-opencv = ">=4.11,<5"
+
+[tool.pixi.feature.sim.pypi-dependencies]
+opencv-python-headless = "==4.13.0.92"
 
 [tool.pixi.feature.data.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["dataset"] }
+opencv-python-headless = "==4.13.0.92"
 
 [tool.pixi.feature.data.dependencies]
 ffmpeg = "8.1.*"
-opencv = ">=4.11,<5"
 
 [tool.pixi.feature.cpu.dependencies]
 pytorch-cpu = "2.9.1.*"

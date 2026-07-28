@@ -1,13 +1,15 @@
+import json
 from pathlib import Path
 
+import av
 import numpy as np
 import pytest
 import torch
 
 from welding_path_vla.core.config import AppConfig
-from welding_path_vla.core.domain import Pose
 from welding_path_vla.policies.act.data_adapter import scale_uint8_images
-from welding_path_vla.policies.act.rollout import RolloutVideoRecorder
+from welding_path_vla.policies.act.rollout import RolloutVideoRecorder, rollout_episode
+from welding_path_vla.policies.act.rollout_diagnostics import rollout_completed
 from welding_path_vla.policies.act.runtime import resolve_checkpoint
 from welding_path_vla.policies.act.training import lerobot_train_config
 from welding_path_vla.policies.training import TrainingRequest
@@ -34,7 +36,6 @@ def test_act_uses_official_lerobot_training_config() -> None:
 
 
 def test_rollout_video_is_browser_compatible_and_torchcodec_decodable(tmp_path: Path) -> None:
-    import av
     from torchcodec.decoders import VideoDecoder
 
     config = AppConfig.load("configs/act.yaml")
@@ -54,6 +55,63 @@ def test_rollout_video_is_browser_compatible_and_torchcodec_decodable(tmp_path: 
         assert stream.pix_fmt == "yuv420p"
     assert tuple(VideoDecoder(videos[0])[0].shape) == (3, 32, 32)
 
+
+class StaticRuntime:
+    """输出恒等位姿增量的最小策略运行时。"""
+
+    def reset(self) -> None:
+        pass
+
+    def select_action(self, observation: object) -> np.ndarray:
+        return np.array([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float32)
+
+
+def test_act_rollout_writes_diagnostics_and_terminal_video_frame(tmp_path: Path) -> None:
+    config = AppConfig.load("configs/act.yaml")
+    config.camera.width = 32
+    config.camera.height = 32
+    config.deployment.max_steps = 1
+    config.deployment.record_video = True
+
+    report = rollout_episode(config, StaticRuntime(), 0, tmp_path / "episode_000000")
+    trajectory = np.load(report.trace_path)
+    required = {
+        "collision_pairs",
+        "command_tcp_position",
+        "ik_residual_m",
+        "joint_command",
+        "seam_distance_m",
+        "seam_progress",
+    }
+    derived = {
+        "action_translation_norm_m",
+        "completion_mask",
+        "joint_margin_min_rad",
+        "seam_progress_raw",
+        "tcp_displacement_m",
+        "tcp_speed_m_s",
+    }
+    assert required <= set(trajectory.files)
+    assert derived.isdisjoint(trajectory.files)
+    assert all(len(trajectory[name]) == report.steps for name in trajectory.files)
+    assert report.diagnostics["video"]["includes_terminal_state"]
+    assert report.diagnostics["tracking"]["frames"] == 1
+    assert (
+        json.loads((tmp_path / "episode_000000/config.json").read_text())["policy"]["family"]
+        == "act"
+    )
+
+    with av.open(report.videos[0]) as container:
+        assert sum(1 for _ in container.decode(video=0)) == 2
+
+
+def test_act_rollout_completion_is_relaxed_without_changing_evaluation() -> None:
+    config = AppConfig.load("configs/act.yaml")
+    assert config.deployment.completion_progress_min == pytest.approx(0.85)
+    assert config.deployment.completion_distance_m == pytest.approx(0.015)
+    assert config.evaluation.pcr_min == pytest.approx(0.95)
+    assert rollout_completed(0.85, 0.015, config.deployment)
+    assert not rollout_completed(0.84, 0.015, config.deployment)
 
 
 def test_act_rgb_preprocessing_scales_uint8() -> None:

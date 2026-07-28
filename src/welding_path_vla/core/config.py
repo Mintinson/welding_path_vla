@@ -121,6 +121,7 @@ class QualityConfig:
 class EvaluationConfig:
     pcr_min: float = 0.95
     direction_ratio_min: float = 0.90
+    tracking_band_m: float = 0.01
     cte_rmse_m: float = 0.0015
     cte_p95_m: float = 0.002
     cte_max_m: float = 0.005
@@ -222,6 +223,8 @@ class DeploymentConfig:
     max_steps: int = 1_000
     seed: int = 20260724
     record_video: bool = True
+    completion_progress_min: float = 0.95
+    completion_distance_m: float = 0.01
 
 
 @dataclass(slots=True)
@@ -276,6 +279,8 @@ class AppConfig:
             raise ValueError("evaluation.pcr_min must be in [0, 1]")
         if not 0 <= self.evaluation.direction_ratio_min <= 1:
             raise ValueError("evaluation.direction_ratio_min must be in [0, 1]")
+        if self.evaluation.tracking_band_m <= 0:
+            raise ValueError("evaluation.tracking_band_m must be positive")
         if (
             self.evaluation.jerk_min_sample_rate_hz <= 0
             or self.evaluation.jerk_reference_floor_m_s3 < 0
@@ -310,6 +315,10 @@ class AppConfig:
             raise ValueError("policy evaluation counts must be positive")
         if self.deployment.episodes < 1 or self.deployment.max_steps < 1:
             raise ValueError("deployment counts must be positive")
+        if not 0 <= self.deployment.completion_progress_min <= 1:
+            raise ValueError("deployment.completion_progress_min must be in [0, 1]")
+        if self.deployment.completion_distance_m <= 0:
+            raise ValueError("deployment.completion_distance_m must be positive")
         export = self.lerobot_export
         if (
             export.start_episode is not None

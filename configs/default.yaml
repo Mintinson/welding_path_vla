@@ -50,7 +50,7 @@ safety:
   enabled: true
   joint_position_margin_rad: 0.02
   joint_velocity_limit_rad_s: 1.57
-  tcp_speed_limit_m_s: 0.10
+  tcp_speed_limit_m_s: 0.20
   command_timeout_s: 0.10
 
 task:
@@ -97,6 +97,7 @@ quality:
 evaluation:
   pcr_min: 0.95
   direction_ratio_min: 0.90
+  tracking_band_m: 0.01
   cte_rmse_m: 0.0015
   cte_p95_m: 0.002
   cte_max_m: 0.005
@@ -169,3 +170,5 @@ deployment:
   max_steps: 1000
   seed: 20260724
   record_video: true
+  completion_progress_min: 0.95
+  completion_distance_m: 0.01

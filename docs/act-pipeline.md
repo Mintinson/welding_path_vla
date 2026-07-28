@@ -107,11 +107,29 @@ pixi run -e policy-sim policy-sim-deploy \
 3. 用 checkpoint 中保存的 LeRobot processor 完成归一化和反归一化；
 4. 将 9D 局部 action 恢复为世界坐标 TCP 目标；
 5. 经过 TCP 增量、IK、关节范围与碰撞安全门后执行；
-6. 保存 `rollout.npz`、`summary.json` 和双相机视频；
+6. 保存完整有效配置、逐步诊断轨迹、结构化摘要和双相机视频；
 7. 复用项目评价模块计算 PCR、CTE、姿态误差、SpeedMAPE、安全条件和 ESR。
+
+每个 episode 的排查产物如下：
+
+- `config.json`：包含命令行覆盖在内的完整有效配置，可直接复现实验；
+- `rollout.npz`：同时保存 observation、action、目标 TCP、IK 命令与残差、执行状态、焊缝
+  进度/距离、安全信号、碰撞对及逐步错误；
+- `summary.json`：`diagnostics` 分为 termination、completion rule、reference、tracking、
+  control、safety 和 video，未进入焊缝跟踪区时也能给出原因；
+- `global.mp4`、`wrist.mp4`：第 0 帧是初态，第 n 帧是第 n 个 action 执行后的状态，因此
+  包含碰撞或安全终止后的最终画面。
+
+`rollout.npz` 只持久化复现状态转移和安全判定所需的数据。动作范数、TCP 速度、完成区掩码等
+派生量不重复保存，由 `summary.json` 生成时从原始轨迹和有效配置计算。
 
 视频由 LeRobot 的流式 PyAV 编码器生成，固定为 H.264 与 `yuv420p`，可在 VS Code 和主流
 浏览器中直接播放。
+
+ACT 在本项目中主要承担 pipeline 验证和对比基线，因此 `configs/act.yaml` 使用独立的部署完成
+条件：焊缝进度达到 85%，且 TCP 距焊缝不超过 15 mm 时自然退出。该条件只控制 rollout 生命周期；
+论文评价仍使用统一的 PCR 95%、CTE、姿态和安全阈值，`summary.json` 中的 `completed` 与
+`evaluation.success` 应分别解读。
 
 smoke checkpoint 尚未学会任务时通常会被 action 安全门提前终止，这是正确行为。使用
 `--deployment.record_video=false --deployment.max_steps=2 --deployment.episodes=1`

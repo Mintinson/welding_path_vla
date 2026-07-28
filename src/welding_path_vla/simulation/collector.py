@@ -14,141 +14,20 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-import mujoco
 import numpy as np
 from tqdm import tqdm
 
 from welding_path_vla.core.config import AppConfig
-from welding_path_vla.core.domain import CommandAction, Pose
+from welding_path_vla.core.domain import CommandAction
 from welding_path_vla.core.geometry import frame_delta, pose_delta, rotation_error
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
 from welding_path_vla.dataset.recorder import EpisodeRecorder
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
 from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
-
-
-class StagingPoseError(RuntimeError):
-    """IK 求解失败或预置位姿发生碰撞时抛出的异常。"""
-
-
-def stage_for_task(
-    simulation: WeldingSimulation, config: AppConfig
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    """求解无碰撞预置位姿, 返回焊缝几何信息与 IK 残差。
-
-    流程: 读取焊缝起止点 → 根据工件转角和工作角计算焊接法向 →
-    构建草稿轨迹获得 approaching 点 → IK 求解该点 → 碰撞检查。
-
-    Args:
-        simulation: 焊接仿真环境实例。
-        config: 全局应用配置。
-
-    Returns:
-        (seam_start, seam_end, normal, residual) 四元组,
-        分别为焊缝起点、终点、焊接法向和 IK 残差。
-
-    Raises:
-        StagingPoseError: IK 解算残差 > 0.005 或预置位姿发生碰撞。
-    """
-    # 读取焊缝起止点在当前工件位姿下的世界坐标
-    seam_start = simulation.site_position("seam_start")
-    seam_end = simulation.site_position("seam_end")
-
-    # 将工件坐标系下的焊接法向变换到世界坐标系
-    workpiece_rotation = simulation.body_rotation("workpiece")
-    work_angle = np.radians(config.task.work_angle_deg)
-    normal = workpiece_rotation @ np.array([np.sin(work_angle), 0, np.cos(work_angle)])
-
-    # 生成草稿轨迹, 提取 approaching 点作为 IK 目标
-    draft = ExpertTrajectory(config, simulation.tcp_pose(), seam_start, seam_end, normal)
-    solution, residual = simulation.solve_ik(Pose(draft.above_pre, draft.welding_quaternion))
-
-    # IK 残差过大说明目标位姿不可达
-    if residual > 0.005:
-        raise StagingPoseError(f"cannot solve collision-free staging pose: residual={residual:.6f}")
-
-    # 将 IK 解写入仿真并前向计算, 检查碰撞
-    simulation.data.qpos[simulation.qpos_ids] = solution
-    simulation.data.qvel[:] = 0
-    simulation.data.ctrl[simulation.motor_ids] = solution
-    mujoco.mj_forward(simulation.model, simulation.data)
-    if simulation.collision:
-        raise StagingPoseError(f"staging pose collides: {simulation.collision_pairs}")
-
-    return seam_start, seam_end, normal, residual
-
-
-def sample_collision_free_task(
-    simulation: WeldingSimulation,
-    config: AppConfig,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
-    """采样工件位姿, 直到得到可行的无碰撞预置位姿。
-
-    外层循环随机化工件位置/偏航角, 内层 stage_for_task 求解预置 IK。
-    失败时重置仿真并重新采样, 直至达到 max_sampling_attempts 上限。
-
-    Args:
-        simulation: 焊接仿真环境实例。
-        config: 全局应用配置。
-        rng: 随机数生成器。
-
-    Returns:
-        (seam_start, seam_end, normal, residual, attempt) 五元组,
-        包含焊缝起点、终点、法向、IK 残差和成功时的尝试次数。
-
-    Raises:
-        RuntimeError: 超过最大采样次数仍无可行位姿。
-    """
-    last_error: StagingPoseError | None = None
-    for attempt in range(1, config.randomization.max_sampling_attempts + 1):
-        # 首次重试时不需要 reset（刚初始化）, 之后每次都要重置
-        if attempt > 1:
-            simulation.reset()
-        simulation.randomize_workpiece(rng)
-        try:
-            seam_start, seam_end, normal, residual = stage_for_task(simulation, config)
-        except StagingPoseError as error:
-            last_error = error  # 保存最后一次错误信息用于最终异常
-            continue
-        return seam_start, seam_end, normal, residual, attempt
-    raise RuntimeError(
-        "cannot sample a reachable, collision-free task after "
-        f"{config.randomization.max_sampling_attempts} attempts: {last_error}"
-    ) from last_error
-
-
-def sample_initial_tcp_offset(
-    simulation: WeldingSimulation, config: AppConfig, rng: np.random.Generator
-) -> tuple[np.ndarray, int, bool]:
-    """采样一个可行的初始 TCP 偏移量。
-
-    在给定范围内随机采样三维平移, 尝试 perturb_tcp 施加到仿真,
-    如果 IK 无解或发生碰撞则重试。所有尝试均失败时返回零偏移,
-    但保持已随机化的关节构型不变 (不影响后续采集)。
-
-    Args:
-        simulation: 焊接仿真环境实例。
-        config: 全局应用配置。
-        rng: 随机数生成器。
-
-    Returns:
-        (offset, attempts, applied) 三元组:
-        - offset: 最终应用的偏移量, 失败时为 [0,0,0]。
-        - attempts: 采样尝试次数。
-        - applied: 是否成功应用了非零偏移。
-    """
-    for attempt in range(1, config.randomization.max_sampling_attempts + 1):
-        # 在 [-initial_tcp_m, initial_tcp_m] 范围内均匀采样三维偏移
-        offset = rng.uniform(
-            -config.randomization.initial_tcp_m,
-            config.randomization.initial_tcp_m,
-            size=3,
-        )
-        if simulation.perturb_tcp(offset):
-            return offset, attempt, True
-    # 所有采样均失败, 返回零偏移并标记未应用
-    return np.zeros(3), config.randomization.max_sampling_attempts, False
+from welding_path_vla.simulation.task_sampling import (
+    sample_collision_free_task,
+    sample_initial_tcp_offset,
+)
 
 
 def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
