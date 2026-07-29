@@ -1,9 +1,8 @@
-"""ACT 在焊接 MuJoCo 场景中的闭环部署与轨迹评估。"""
+"""ACT 在 robosuite 焊接场景中的闭环部署与轨迹评估。"""
 
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ import numpy as np
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import Phase
 from welding_path_vla.core.geometry import apply_tcp_action_to_world
+from welding_path_vla.dataset.video import VideoRecorder
 from welding_path_vla.evaluation import evaluate_trace
 from welding_path_vla.evaluation.adapters import SAFETY_SIGNALS
 from welding_path_vla.evaluation.schema import (
@@ -28,7 +28,7 @@ from welding_path_vla.policies.act.rollout_diagnostics import (
 )
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.robot import SafetyMonitor, SafetyViolation
-from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
+from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
 from welding_path_vla.simulation.task_sampling import (
     sample_collision_free_task,
     sample_initial_tcp_offset,
@@ -54,54 +54,6 @@ class SimulationRolloutReport:
         return asdict(self)
 
 
-@dataclass(slots=True)
-class RolloutVideoRecorder:
-    """使用 LeRobot 流式编码器记录浏览器兼容的 H.264 视频。"""
-
-    root: Path
-    names: tuple[str, ...]
-    encoder: Any
-
-    @classmethod
-    def start(cls, root: Path, config: AppConfig) -> RolloutVideoRecorder:
-        """创建双相机 H.264 编码任务。"""
-        from lerobot.configs import RGBEncoderConfig
-        from lerobot.datasets.video_utils import StreamingVideoEncoder
-
-        names = (config.camera.global_name, config.camera.wrist_name)
-        video_config = RGBEncoderConfig(
-            vcodec="h264",
-            pix_fmt="yuv420p",
-            g=config.timing.policy_hz * 2,
-            crf=23,
-            preset="veryfast",
-        )
-        encoder = StreamingVideoEncoder(config.timing.policy_hz, rgb_encoder=video_config)
-        encoder.start_episode(list(names), root)
-        return cls(root, names, encoder)
-
-    def append(self, images: dict[str, np.ndarray]) -> None:
-        """写入同一策略时刻的所有相机帧。"""
-        for name in self.names:
-            self.encoder.feed_frame(name, images[name])
-
-    def finish(self) -> tuple[str, ...]:
-        """完成编码并把临时视频移动到 episode 根目录。"""
-        encoded = self.encoder.finish_episode()
-        videos: list[str] = []
-        for name in self.names:
-            source, _ = encoded[name]
-            destination = self.root / f"{name}.mp4"
-            shutil.move(source, destination)
-            shutil.rmtree(source.parent, ignore_errors=True)
-            videos.append(str(destination))
-        return tuple(videos)
-
-    def close(self) -> None:
-        """关闭编码器；异常中止时清理临时视频。"""
-        self.encoder.close()
-
-
 def rollout_episode(
     config: AppConfig,
     runtime: Any,
@@ -111,19 +63,22 @@ def rollout_episode(
     """运行一个带安全门、日志和论文指标的 ACT episode。"""
     seed = config.deployment.seed + episode
     rng = np.random.default_rng(seed)
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config, seed)
     output.mkdir(parents=True, exist_ok=False)
     (output / "config.json").write_text(
         json.dumps(config.as_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    camera_names = (config.camera.global_name, config.camera.wrist_name)
     recorder = (
-        RolloutVideoRecorder.start(output, config) if config.deployment.record_video else None
+        VideoRecorder.start(output, camera_names, config.timing.policy_hz)
+        if config.deployment.record_video
+        else None
     )
     arrays = new_rollout_arrays()
     termination_reason = "timeout"
     try:
-        seam_start, seam_end, normal, _, _ = sample_collision_free_task(
+        seam, _, _ = sample_collision_free_task(
             simulation,
             config,
             rng,
@@ -134,16 +89,16 @@ def rollout_episode(
             config.randomization.max_sampling_attempts,
         )
         sample_initial_tcp_offset(simulation, config, rng)
-        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam_start, seam_end, normal)
+        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
         safety = SafetyMonitor(config.safety, simulation.joint_ranges)
         runtime.reset()
-        line = seam_end - seam_start
-        line_norm_sq = float(np.dot(line, line))
         max_translation = config.safety.tcp_speed_limit_m_s / config.timing.policy_hz
         previous_velocity: np.ndarray | None = None
+        previous_progress = 0.0
+        suite_observation = simulation.observe()
         for step in range(config.deployment.max_steps):
             state = simulation.state()
-            images = simulation.render()
+            images = simulation.images_from_observation(suite_observation)
             if recorder:
                 recorder.append(images)
             observation = Observation(
@@ -173,7 +128,8 @@ def rollout_episode(
                     raise SafetyViolation(f"IK residual too large: {residual:.6f}")
                 safety.validate_state(state)
                 safety.validate_joint_command(joint_command)
-                simulation.execute_pose(command_pose)
+                pose_action = np.concatenate([command_pose.position, command_pose.quaternion_wxyz])
+                suite_observation = simulation.step(pose_action)[0]
                 collision_pairs = simulation.last_collision_pairs
                 collision = bool(collision_pairs)
                 if collision:
@@ -191,10 +147,10 @@ def rollout_episode(
                 step_error = str(error)
 
             next_state = simulation.state()
-            raw_alpha = float(np.dot(next_state.tcp.position - seam_start, line) / line_norm_sq)
-            alpha = float(np.clip(raw_alpha, 0, 1))
-            closest = seam_start + alpha * line
-            seam_distance = float(np.linalg.norm(next_state.tcp.position - closest))
+            projection = seam.project(next_state.tcp.position, previous_progress)
+            alpha = projection.progress
+            seam_distance = projection.distance_m
+            previous_progress = alpha
             track = seam_distance <= config.evaluation.tracking_band_m
             velocity_limit = bool(
                 np.any(np.abs(next_state.joint_velocity) > config.safety.joint_velocity_limit_rad_s)
@@ -240,7 +196,7 @@ def rollout_episode(
                 break
 
         if recorder:
-            recorder.append(simulation.render())
+            recorder.append(simulation.images_from_observation(suite_observation))
         trajectory = {name: np.asarray(values) for name, values in arrays.items()}
         trace_path = output / "rollout.npz"
         np.savez_compressed(
@@ -267,7 +223,7 @@ def rollout_episode(
                     np.stack([frame.pose.position for frame in track_frames]),
                     np.stack([frame.pose.quaternion_wxyz for frame in track_frames]),
                     config.task.speed_mps,
-                    "straight_fillet_200mm",
+                    seam.seam_id,
                 ),
                 InstructionAssessment(True, True, True),
                 safety_signals,
@@ -279,9 +235,10 @@ def rollout_episode(
         diagnostics = build_rollout_diagnostics(
             trajectory,
             config,
-            seam_start,
-            seam_end,
-            normal,
+            seam.start.position,
+            seam.end.position,
+            seam.start.normal,
+            seam.end.normal,
             termination_reason,
             recorder is not None,
         )
@@ -328,7 +285,6 @@ def deploy_simulation(config: AppConfig, checkpoint: str) -> list[SimulationRoll
 
 
 __all__ = [
-    "RolloutVideoRecorder",
     "SimulationRolloutReport",
     "deploy_simulation",
     "rollout_episode",

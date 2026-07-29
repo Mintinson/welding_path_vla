@@ -2,9 +2,9 @@ policy:
   family: act
   checkpoint: null
   device: cuda
-  # 20 Hz 下预测未来 1 秒，每次闭环执行 0.25 秒后重新规划。
-  action_horizon: 20
-  action_steps: 5
+  # 30 Hz 下预测未来 1 秒，每次闭环执行约 0.27 秒后重新规划。
+  action_horizon: 30
+  action_steps: 8
   action_source: safe_command
   parameters:
     use_amp: true
@@ -21,9 +21,9 @@ policy:
     kl_weight: 10.0
 
 training:
-  dataset_repo_id: huayan/weldpath_sim_v1
-  dataset_root: datasets/weldpath_lerobot_v1
-  output_dir: outputs/train/act_weldpath_v1
+  dataset_repo_id: huayan/weldpath_sim_v2
+  dataset_root: datasets/weldpath_lerobot_v2
+  output_dir: outputs/train/act_weldpath_v2
   batch_size: 2
   steps: 100000
   num_workers: 4
@@ -48,7 +48,7 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/act_weldpath_v1
+  log_dir: outputs/deploy/act_weldpath_v2
   episodes: 5
   max_steps: 1000
   seed: 20260724

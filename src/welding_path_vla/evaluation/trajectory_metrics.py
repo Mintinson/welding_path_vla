@@ -57,28 +57,28 @@ def report_from_arrays(
         and not collision
         and ik_success
     )
-    status = (
-        EpisodeStatus.VALID_RECOVERY
-        if valid and recovery
-        else EpisodeStatus.VALID_SUCCESS
-        if valid
-        else EpisodeStatus.COLLISION_FAILURE
-        if collision
-        else EpisodeStatus.INVALID_PLANNING
-        if not ik_success
-        else EpisodeStatus.INVALID_SIMULATION
-    )
+    if valid and recovery:
+        status = EpisodeStatus.VALID_RECOVERY
+    elif valid:
+        status = EpisodeStatus.VALID_SUCCESS
+    elif collision:
+        status = EpisodeStatus.COLLISION_FAILURE
+    elif not ik_success:
+        status = EpisodeStatus.INVALID_PLANNING
+    else:
+        status = EpisodeStatus.INVALID_SIMULATION
+
     return EpisodeReport(
-        status,
-        valid,
-        progress,
-        mean,
-        p95,
-        maximum,
-        orientation_p95,
-        orientation_max,
-        collision,
-        ik_success,
+        status=status,
+        valid=valid,
+        seam_progress=progress,
+        cross_track_mean_m=mean,
+        cross_track_p95_m=p95,
+        cross_track_max_m=maximum,
+        orientation_p95_deg=orientation_p95,
+        orientation_max_deg=orientation_max,
+        collision=collision,
+        ik_success=ik_success,
     )
 
 

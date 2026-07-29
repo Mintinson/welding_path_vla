@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import mujoco
 import numpy as np
 import pytest
@@ -5,35 +7,83 @@ from scipy.spatial.transform import Rotation
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.geometry import quaternion_to_matrix
-from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
+from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
+from welding_path_vla.simulation.models import (
+    Elfin5ProRobotModel,
+    WeldingArena,
+    WorkpieceObject,
+)
+from welding_path_vla.simulation.robosuite_compat import MujocoEnv, make
 from welding_path_vla.simulation.task_sampling import sample_collision_free_task, stage_for_task
+from welding_path_vla.simulation.tasks import CircularSeamPath
+
+
+def test_robosuite_reset_step_and_observations() -> None:
+    """环境应遵循 robosuite 的 reset/step/observation 契约。"""
+    config = AppConfig.load("configs/default.yaml")
+    config.camera.width = 64
+    config.camera.height = 48
+    simulation = make("WeldingEnv", config=config, seed=7)
+    try:
+        assert isinstance(simulation, MujocoEnv)
+        observation = simulation.reset(seed=7)
+        expected = {
+            "joint_position",
+            "joint_velocity",
+            "tcp_position",
+            "tcp_quaternion_wxyz",
+            "global_image",
+            "wrist_image",
+        }
+        assert expected <= observation.keys()
+
+        pose = simulation.tcp_pose()
+        action = np.concatenate([pose.position, pose.quaternion_wxyz])
+        next_observation, reward, done, info = simulation.step(action)
+
+        assert expected <= next_observation.keys()
+        assert simulation.mj_data.time == pytest.approx(1 / config.timing.policy_hz)
+        assert reward == 0
+        assert not done
+        assert info["collision"] is False
+        assert info["joint_command"].shape == (6,)
+    finally:
+        simulation.close()
 
 
 def test_mujoco_model_and_cameras_load() -> None:
     config = AppConfig.load("configs/default.yaml")
     config.camera.width = 64
     config.camera.height = 48
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
-        assert simulation.model.njnt == 6
-        assert simulation.model.nu == 6
-        assert simulation.model.nmesh == 7
-        assert simulation.model.body("tool_payload").mass[0] == 0.216
+        assert simulation.mj_model.njnt == 6
+        assert simulation.mj_model.nu == 6
+        assert simulation.mj_model.nmesh == 7
+        assert isinstance(simulation.robot_model, Elfin5ProRobotModel)
+        assert isinstance(simulation.arena, WeldingArena)
+        assert isinstance(simulation.workpiece, WorkpieceObject)
+        assert simulation.mj_model.body("tool_payload").mass[0] == 0.216
         assert (
-            mujoco.mj_name2id(simulation.model, mujoco.mjtObj.mjOBJ_GEOM, "elfin_link6_visual") >= 0
+            mujoco.mj_name2id(
+                simulation.mj_model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                "elfin_link6_visual",
+            )
+            >= 0
         )
-        assert mujoco.mj_name2id(simulation.model, mujoco.mjtObj.mjOBJ_GEOM, "torch_nozzle") >= 0
-        ring = simulation.model.geom("elfin_joint6_ring")
+        assert mujoco.mj_name2id(simulation.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "torch_nozzle") >= 0
+        ring = simulation.mj_model.geom("elfin_joint6_ring")
         np.testing.assert_allclose(ring.rgba, [0.02, 0.02, 0.025, 1.0])
         np.testing.assert_allclose(ring.pos, [0, -0.097, 0])
         np.testing.assert_allclose(ring.size[:2], [0.043, 0.008])
-        assert simulation.model.geom_contype[ring.id] == 0
-        flange = simulation.model.geom("torch_flange")
-        tip = simulation.model.geom("torch_tip")
+        assert simulation.mj_model.geom_contype[ring.id] == 0
+        flange = simulation.mj_model.geom("torch_flange")
+        tip = simulation.mj_model.geom("torch_tip")
         assert 2 * flange.size[1] == pytest.approx(0.020)
         assert 2 * tip.size[0] == pytest.approx(0.0005)
         np.testing.assert_allclose(flange.pos, [0, 0, 0.1665])
-        np.testing.assert_allclose(simulation.model.geom("torch_tube_1").pos[:2], [0, 0])
+        np.testing.assert_allclose(simulation.mj_model.geom("torch_tube_1").pos[:2], [0, 0])
         tool_segments = [
             *(f"torch_tube_{index}" for index in range(1, 7)),
             "torch_collar",
@@ -41,45 +91,45 @@ def test_mujoco_model_and_cameras_load() -> None:
             "torch_tip",
         ]
         tool_length = 2 * flange.size[1] + sum(
-            2 * simulation.model.geom(name).size[1] for name in tool_segments
+            2 * simulation.mj_model.geom(name).size[1] for name in tool_segments
         )
         assert tool_length == pytest.approx(0.270, abs=0.015)
         tcp_id = simulation.name_id(mujoco.mjtObj.mjOBJ_SITE, "tcp")
         np.testing.assert_allclose(
-            simulation.model.site_pos[tcp_id] - [0, 0, 0.1565],
+            simulation.mj_model.site_pos[tcp_id] - [0, 0, 0.1565],
             [0.057557, -0.025778, 0.233020],
         )
-        mount_id = simulation.model.body("robot_mount").id
-        assert simulation.model.geom("elfin_base_visual").bodyid[0] == mount_id
-        np.testing.assert_allclose(simulation.model.body("robot_mount").pos, [0, 0, 0.29])
+        mount_id = simulation.mj_model.body("robot_mount").id
+        assert simulation.mj_model.geom("elfin_base_visual").bodyid[0] == mount_id
+        np.testing.assert_allclose(simulation.mj_model.body("robot_mount").pos, [0, 0, 0.29])
         expected_base_rotation = Rotation.from_euler("z", -90, degrees=True).as_matrix()
         np.testing.assert_allclose(simulation.base_rotation(), expected_base_rotation, atol=1e-7)
         np.testing.assert_allclose(
-            quaternion_to_matrix(simulation.model.body("robot_mount").quat),
+            quaternion_to_matrix(simulation.mj_model.body("robot_mount").quat),
             expected_base_rotation,
             atol=1e-7,
         )
         np.testing.assert_allclose(
-            quaternion_to_matrix(simulation.model.body("elfin_link1").quat),
+            quaternion_to_matrix(simulation.mj_model.body("elfin_link1").quat),
             np.eye(3),
             atol=1e-7,
         )
-        table_frame = simulation.model.body("table_frame")
-        assert simulation.model.camera("global").bodyid[0] == table_frame.id
-        assert simulation.model.geom("table").bodyid[0] == table_frame.id
-        np.testing.assert_allclose(simulation.model.body("elfin_link1").pos, [0, 0, 0.22])
-        np.testing.assert_allclose(simulation.data.xmat[mount_id].reshape(3, 3)[:, 2], [0, 0, 1])
+        table_frame = simulation.mj_model.body("table_frame")
+        assert simulation.mj_model.camera("global").bodyid[0] == table_frame.id
+        assert simulation.mj_model.geom("table").bodyid[0] == table_frame.id
+        np.testing.assert_allclose(simulation.mj_model.body("elfin_link1").pos, [0, 0, 0.22])
+        np.testing.assert_allclose(simulation.mj_data.xmat[mount_id].reshape(3, 3)[:, 2], [0, 0, 1])
         wrist_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
         np.testing.assert_allclose(
-            simulation.model.cam_pos[wrist_id], config.camera.wrist_position_link6_m
+            simulation.mj_model.cam_pos[wrist_id], config.camera.wrist_position_link6_m
         )
         assert not simulation.collision
         assert (
             simulation.site_position("seam_start")[0]
-            > simulation.model.body_pos[simulation.workpiece_id][0]
+            > simulation.mj_model.body_pos[simulation.workpiece_id][0]
         )
         assert simulation.site_position("seam_end")[1] > simulation.site_position("seam_start")[1]
-        images = simulation.render()
+        images = simulation.images_from_observation(simulation.observe())
         assert images["global"].shape == (48, 64, 3)
         assert images["wrist"].dtype == np.uint8
         assert images["global"].std() > 5
@@ -91,15 +141,91 @@ def test_mujoco_model_and_cameras_load() -> None:
 def test_global_camera_is_fixed_across_episodes() -> None:
     """工件随机化不能改变全局相机外参。"""
     config = AppConfig.load("configs/default.yaml")
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
         camera_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, config.camera.global_name)
-        position = simulation.data.cam_xpos[camera_id].copy()
-        rotation = simulation.data.cam_xmat[camera_id].copy()
+        position = simulation.mj_data.cam_xpos[camera_id].copy()
+        rotation = simulation.mj_data.cam_xmat[camera_id].copy()
         for seed in range(6):
             simulation.randomize_workpiece(np.random.default_rng(seed))
-            np.testing.assert_allclose(simulation.data.cam_xpos[camera_id], position)
-            np.testing.assert_allclose(simulation.data.cam_xmat[camera_id], rotation)
+            np.testing.assert_allclose(simulation.mj_data.cam_xpos[camera_id], position)
+            np.testing.assert_allclose(simulation.mj_data.cam_xmat[camera_id], rotation)
+    finally:
+        simulation.close()
+
+
+def test_global_camera_image_is_not_underexposed() -> None:
+    """固定圆管场景的全局图像平均亮度不应低于可读范围。"""
+    config = AppConfig.load("configs/pipe_top.yaml")
+    config.camera.width = 64
+    config.camera.height = 48
+    simulation = WeldingEnv(config, seed=0)
+    try:
+        image = simulation.reset(seed=0)["global_image"]
+        luminance = image @ np.array([0.2126, 0.7152, 0.0722])
+        assert float(luminance.mean()) >= 80
+    finally:
+        simulation.close()
+
+
+def test_wrist_camera_mount_does_not_occlude_image() -> None:
+    """腕部相机自身的安装杆和外壳不应进入图像中心。"""
+    config = AppConfig.load("configs/pipe_top.yaml")
+    config.camera.width = 160
+    config.camera.height = 120
+    simulation = WeldingEnv(config, seed=0)
+    try:
+        segmentation = simulation.robosuite_sim.render(
+            camera_name=config.camera.wrist_name,
+            width=config.camera.width,
+            height=config.camera.height,
+            segmentation=True,
+        )[::-1]
+        mount_ids = {
+            simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+            for name in (
+                "wrist_camera_standoff",
+                "wrist_camera_bracket",
+                "wrist_camera_body",
+            )
+        }
+        center = segmentation[20:100, 20:140]
+        mount_mask = (center[..., 0] == mujoco.mjtObj.mjOBJ_GEOM) & np.isin(
+            center[..., 1], list(mount_ids)
+        )
+        assert float(mount_mask.mean()) < 0.01
+    finally:
+        simulation.close()
+
+
+def test_wrist_camera_table_brightness_remains_readable() -> None:
+    """腕部视角中的桌面不应欠曝或接近饱和。"""
+    config = AppConfig.load("configs/pipe_top.yaml")
+    config.camera.width = 160
+    config.camera.height = 120
+    simulation = WeldingEnv(config, seed=0)
+    try:
+        reference_joint_position = np.array(
+            [1.914891, 0.429071, 2.304289, -0.651702, 0.621532, 1.219920]
+        )
+        simulation.set_joint_position(reference_joint_position)
+        image = simulation.robosuite_sim.render(
+            camera_name=config.camera.wrist_name,
+            width=config.camera.width,
+            height=config.camera.height,
+        )[::-1]
+        segmentation = simulation.robosuite_sim.render(
+            camera_name=config.camera.wrist_name,
+            width=config.camera.width,
+            height=config.camera.height,
+            segmentation=True,
+        )[::-1]
+        table_id = simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, "table")
+        table_mask = (segmentation[..., 0] == mujoco.mjtObj.mjOBJ_GEOM) & (
+            segmentation[..., 1] == table_id
+        )
+        luminance = image @ np.array([0.2126, 0.7152, 0.0722])
+        assert 90 <= float(luminance[table_mask].mean()) <= 150
     finally:
         simulation.close()
 
@@ -107,80 +233,133 @@ def test_global_camera_is_fixed_across_episodes() -> None:
 def test_global_camera_moves_with_table_frame() -> None:
     """桌面安装位姿变化时，全局相机应保持相同桌面外参。"""
     config = AppConfig.load("configs/default.yaml")
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
         camera_id = simulation.name_id(mujoco.mjtObj.mjOBJ_CAMERA, config.camera.global_name)
         table_id = simulation.name_id(mujoco.mjtObj.mjOBJ_BODY, "table_frame")
-        position = simulation.data.cam_xpos[camera_id].copy()
+        position = simulation.mj_data.cam_xpos[camera_id].copy()
         offset = np.array([0.12, -0.08, 0.05])
-        simulation.model.body_pos[table_id] += offset
-        mujoco.mj_forward(simulation.model, simulation.data)
-        np.testing.assert_allclose(simulation.data.cam_xpos[camera_id], position + offset)
+        simulation.mj_model.body_pos[table_id] += offset
+        mujoco.mj_forward(simulation.mj_model, simulation.mj_data)
+        np.testing.assert_allclose(simulation.mj_data.cam_xpos[camera_id], position + offset)
     finally:
         simulation.close()
 
 
 def test_torch_body_and_fine_tip_collisions_are_detected() -> None:
-    simulation = WeldingSimulation(AppConfig.load("configs/default.yaml"))
+    simulation = WeldingEnv(AppConfig.load("configs/default.yaml"))
     try:
         tube_id = simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, "torch_tube_3")
         tip_id = simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, "torch_tip")
-        assert simulation.model.geom_contype[tube_id] != 0
-        assert simulation.model.geom_contype[tip_id] != 0
-        for geom_id in range(simulation.model.ngeom):
-            if geom_id != tube_id and simulation.model.geom_conaffinity[geom_id] == 2:
-                simulation.model.geom_contype[geom_id] = 0
-                simulation.model.geom_conaffinity[geom_id] = 0
-        simulation.model.body_pos[simulation.workpiece_id] = simulation.data.geom_xpos[
+        assert simulation.mj_model.geom_contype[tube_id] != 0
+        assert simulation.mj_model.geom_contype[tip_id] != 0
+        for geom_id in range(simulation.mj_model.ngeom):
+            if geom_id != tube_id and simulation.mj_model.geom_conaffinity[geom_id] == 2:
+                simulation.mj_model.geom_contype[geom_id] = 0
+                simulation.mj_model.geom_conaffinity[geom_id] = 0
+        simulation.mj_model.body_pos[simulation.workpiece_id] = simulation.mj_data.geom_xpos[
             tube_id
         ] - np.array([0.05, 0, 0])
-        mujoco.mj_forward(simulation.model, simulation.data)
+        mujoco.mj_forward(simulation.mj_model, simulation.mj_data)
         contact_geoms = {
-            mujoco.mj_id2name(simulation.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-            for contact in simulation.data.contact
+            mujoco.mj_id2name(simulation.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+            for contact in simulation.mj_data.contact
             for geom_id in (contact.geom1, contact.geom2)
         }
         assert simulation.collision
         assert "torch_tube_3" in contact_geoms
-        simulation.execute_pose(simulation.tcp_pose())
+        pose = simulation.tcp_pose()
+        simulation.step(np.concatenate([pose.position, pose.quaternion_wxyz]))
         assert any("torch_tube_3" in pair for pair in simulation.last_collision_pairs)
-        for geom_id in range(simulation.model.ngeom):
-            if simulation.model.geom_conaffinity[geom_id] == 2:
-                simulation.model.geom_contype[geom_id] = 0
-                simulation.model.geom_conaffinity[geom_id] = 0
-        simulation.model.geom_contype[tip_id] = 1
-        simulation.model.geom_conaffinity[tip_id] = 2
-        tip_position = simulation.data.geom_xpos[tip_id].copy()
-        simulation.model.body_pos[simulation.workpiece_id] = tip_position - np.array(
+        for geom_id in range(simulation.mj_model.ngeom):
+            if simulation.mj_model.geom_conaffinity[geom_id] == 2:
+                simulation.mj_model.geom_contype[geom_id] = 0
+                simulation.mj_model.geom_conaffinity[geom_id] = 0
+        simulation.mj_model.geom_contype[tip_id] = 1
+        simulation.mj_model.geom_conaffinity[tip_id] = 2
+        tip_position = simulation.mj_data.geom_xpos[tip_id].copy()
+        simulation.mj_model.body_pos[simulation.workpiece_id] = tip_position - np.array(
             [0.05, 0, 0.0025]
         )
-        mujoco.mj_forward(simulation.model, simulation.data)
+        mujoco.mj_forward(simulation.mj_model, simulation.mj_data)
         tip_contact_geoms = {
-            mujoco.mj_id2name(simulation.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-            for contact in simulation.data.contact
+            mujoco.mj_id2name(simulation.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+            for contact in simulation.mj_data.contact
             for geom_id in (contact.geom1, contact.geom2)
         }
         assert "torch_tip" in tip_contact_geoms
+        assert simulation.collision
+        assert any("torch_tip" in pair for pair in simulation.collision_pairs)
+    finally:
+        simulation.close()
+
+
+def test_numerical_tip_grazing_does_not_fail_welding_episode() -> None:
+    """低于配置力阈值的焊丝尖端接触不应判为碰撞失败。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingEnv(config, seed=0, camera_observations=False)
+    try:
+        simulation.mj_model.body_pos[simulation.workpiece_id] = [
+            0.361922935,
+            0.072469151,
+            0.2925,
+        ]
+        simulation.mj_model.body_quat[simulation.workpiece_id] = [
+            0.992917289,
+            0,
+            0,
+            -0.118807650,
+        ]
+        simulation.set_joint_position(
+            np.array(
+                [
+                    0.961549498,
+                    -0.638291614,
+                    1.704152222,
+                    0.726005863,
+                    1.649208937,
+                    -1.279462066,
+                ]
+            )
+        )
+        contacts = [
+            contact
+            for contact in simulation.mj_data.contact
+            if {
+                mujoco.mj_id2name(
+                    simulation.mj_model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    contact.geom1,
+                ),
+                mujoco.mj_id2name(
+                    simulation.mj_model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    contact.geom2,
+                ),
+            }
+            == {"torch_tip", "plate_vertical"}
+        ]
+        assert len(contacts) == 1
+        assert -0.0002 < contacts[0].dist < 0
+        force = np.zeros(6)
+        contact_index = list(simulation.mj_data.contact).index(contacts[0])
+        mujoco.mj_contactForce(simulation.mj_model, simulation.mj_data, contact_index, force)
+        assert np.linalg.norm(force[:3]) < config.safety.tip_contact_force_limit_n
+        assert ("torch_tip", "plate_vertical") not in simulation.collision_pairs
     finally:
         simulation.close()
 
 
 def test_reference_welding_pose_clears_workpiece() -> None:
     config = AppConfig.load("configs/default.yaml")
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
-        seam_start = simulation.site_position("seam_start")
-        seam_end = simulation.site_position("seam_end")
-        work_angle = np.radians(config.task.work_angle_deg)
-        normal = simulation.body_rotation("workpiece") @ np.array(
-            [np.sin(work_angle), 0, np.cos(work_angle)]
-        )
-        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam_start, seam_end, normal)
+        expert = ExpertTrajectory(config, simulation.tcp_pose(), simulation.active_seam())
         track = [frame for frame in expert.frames if frame.phase.value == "track"]
         for frame in track:
             joint_position, residual = simulation.solve_ik(frame.pose)
-            simulation.data.qpos[simulation.qpos_ids] = joint_position
-            mujoco.mj_forward(simulation.model, simulation.data)
+            simulation.mj_data.qpos[simulation.qpos_ids] = joint_position
+            mujoco.mj_forward(simulation.mj_model, simulation.mj_data)
             assert residual < 0.005
             assert not simulation.collision
     finally:
@@ -190,13 +369,14 @@ def test_reference_welding_pose_clears_workpiece() -> None:
 def test_complete_expert_trajectory_is_collision_free() -> None:
     config = AppConfig.load("configs/default.yaml")
     config.task.speed_mps = 0.04
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
-        seam_start, seam_end, normal, residual = stage_for_task(simulation, config)
+        seam, residual = stage_for_task(simulation, config)
         assert residual < 0.005
-        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam_start, seam_end, normal)
+        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
         for frame in expert.frames:
-            simulation.execute_pose(frame.pose)
+            action = np.concatenate([frame.pose.position, frame.pose.quaternion_wxyz])
+            simulation.step(action)
             assert not simulation.last_collision_pairs
     finally:
         simulation.close()
@@ -204,10 +384,10 @@ def test_complete_expert_trajectory_is_collision_free() -> None:
 
 def test_randomized_task_rejects_unreachable_staging_pose() -> None:
     config = AppConfig.load("configs/default.yaml")
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
         rng = np.random.default_rng(config.collection.seed + 14)
-        *_, residual, attempts = sample_collision_free_task(simulation, config, rng)
+        _, residual, attempts = sample_collision_free_task(simulation, config, rng)
         assert attempts > 1
         assert residual < 0.005
         assert not simulation.collision
@@ -215,9 +395,76 @@ def test_randomized_task_rejects_unreachable_staging_pose() -> None:
         simulation.close()
 
 
+@pytest.mark.parametrize("config_path", ["configs/pipe_bottom.yaml", "configs/pipe_top.yaml"])
+def test_pipe_workpiece_exposes_reachable_circular_seam(config_path: str) -> None:
+    """上下圆弧应共用接口，并按配置生成连续焊枪姿态。"""
+    config = AppConfig.load(config_path)
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        seam, residual = stage_for_task(simulation, config)
+        assert isinstance(seam, CircularSeamPath)
+        assert residual < 0.005
+        assert seam.length_m == pytest.approx(
+            np.radians(config.task.arc_sweep_deg) * seam.effective_radius_m
+        )
+        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
+        track = [frame for frame in expert.frames if frame.phase.value == "track"]
+        start_rotation = quaternion_to_matrix(expert.welding_quaternion)
+        end_rotation = quaternion_to_matrix(track[-1].pose.quaternion_wxyz)
+        if config.task.orientation_follow_ratio == 0:
+            np.testing.assert_allclose(start_rotation, end_rotation, atol=1e-7)
+        elif abs(config.task.arc_sweep_deg) < 360:
+            assert not np.allclose(start_rotation, end_rotation)
+        if config.task.seam_id == "pipe_top":
+            assert config.task.arc_sweep_deg == 360
+            np.testing.assert_allclose(seam.start.position, seam.end.position, atol=1e-7)
+        for frame in expert.frames:
+            action = np.concatenate([frame.pose.position, frame.pose.quaternion_wxyz])
+            *_, info = simulation.step(action)
+            assert info["ik_residual_m"] < 0.005
+            assert not info["collision_pairs"]
+        wall_positions = [
+            simulation.mj_model.geom(f"pipe_wall_{index:02d}").pos[:2]
+            for index in range(config.workpiece.pipe_segments)
+        ]
+        radii = np.linalg.norm(wall_positions, axis=1)
+        assert np.min(radii) > config.workpiece.pipe_wall_thickness_m
+    finally:
+        simulation.close()
+
+
+def test_expert_uses_independent_phase_speeds() -> None:
+    """接近阶段的参考位移应明显大于低速焊接阶段。"""
+    config = AppConfig.load("configs/pipe_bottom.yaml")
+    simulation = WeldingEnv(config, camera_observations=False)
+    try:
+        seam, _ = stage_for_task(simulation, config)
+        frames = ExpertTrajectory(config, simulation.tcp_pose(), seam).frames
+        displacements: dict[str, list[float]] = {"approach": [], "track": [], "retreat": []}
+        for previous, current in pairwise(frames):
+            if previous.phase != current.phase:
+                continue
+            displacement = float(np.linalg.norm(current.pose.position - previous.pose.position))
+            if displacement > 1e-9:
+                displacements[current.phase.value].append(displacement)
+        approach_step = float(np.median(displacements["approach"]))
+        track_step = float(np.median(displacements["track"]))
+        assert approach_step > 10 * track_step
+        assert approach_step == pytest.approx(
+            config.task.approach_speed_mps / config.timing.policy_hz,
+            rel=0.05,
+        )
+        assert track_step == pytest.approx(
+            config.task.speed_mps / config.timing.policy_hz,
+            rel=0.05,
+        )
+    finally:
+        simulation.close()
+
+
 def test_initial_joint_randomization_is_bounded_and_collision_free() -> None:
     config = AppConfig.load("configs/default.yaml")
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config)
     try:
         rng = np.random.default_rng(11)
         sample_collision_free_task(simulation, config, rng)

@@ -10,6 +10,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from tqdm import tqdm
 
 from welding_path_vla.core.config import LeRobotExportConfig
@@ -180,10 +181,6 @@ def open_lerobot_dataset(
     existing_info: dict[str, Any] | None,
 ) -> Any:
     """创建或恢复 LeRobot writer，并应用官方并行编码参数。"""
-    try:
-        from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    except ImportError as error:
-        raise RuntimeError("run this command in the Pixi data or dev environment") from error
 
     encoder = None if options.save_images else rgb_encoder(options, existing_info)
     writer_options = {

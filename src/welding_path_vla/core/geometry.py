@@ -306,9 +306,12 @@ def apply_tcp_action_to_world(current: Pose, action: np.ndarray, max_translation
     values = np.asarray(action, dtype=np.float64)
     if values.shape != (9,) or not np.all(np.isfinite(values)):
         raise ValueError("Input action must be a finite 9D vector")
-    if (norm:= np.linalg.norm(values[:3]) )> max_translation_m:
-        msg = f"Input action {norm:.2} exceeds the configured TCP increment limit {max_translation_m}"
-        raise ValueError(msg)
+    translation_norm = float(np.linalg.norm(values[:3]))
+    if translation_norm > max_translation_m:
+        raise ValueError(
+            f"Input action {translation_norm:.6f} exceeds the configured "
+            f"TCP increment limit {max_translation_m:.6f}"
+        )
 
     current_rotation = quaternion_to_matrix(current.quaternion_wxyz)
 

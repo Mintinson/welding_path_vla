@@ -7,7 +7,8 @@ import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import Pose
-from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
+from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
+from welding_path_vla.simulation.tasks import SeamPath
 
 
 class StagingPoseError(RuntimeError):
@@ -15,34 +16,30 @@ class StagingPoseError(RuntimeError):
 
 
 def stage_for_task(
-    simulation: WeldingSimulation,
+    simulation: WeldingEnv,
     config: AppConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+) -> tuple[SeamPath, float]:
     """求解无碰撞预置位姿并返回焊缝几何。"""
-    seam_start = simulation.site_position("seam_start")
-    seam_end = simulation.site_position("seam_end")
-    workpiece_rotation = simulation.body_rotation("workpiece")
-    work_angle = np.radians(config.task.work_angle_deg)
-    normal = workpiece_rotation @ np.array([np.sin(work_angle), 0, np.cos(work_angle)])
-    draft = ExpertTrajectory(config, simulation.tcp_pose(), seam_start, seam_end, normal)
+    seam = simulation.active_seam()
+    draft = ExpertTrajectory(config, simulation.tcp_pose(), seam)
     solution, residual = simulation.solve_ik(Pose(draft.above_pre, draft.welding_quaternion))
     if residual > 0.005:
         raise StagingPoseError(f"cannot solve collision-free staging pose: residual={residual:.6f}")
 
-    simulation.data.qpos[simulation.qpos_ids] = solution
-    simulation.data.qvel[:] = 0
-    simulation.data.ctrl[simulation.motor_ids] = solution
-    mujoco.mj_forward(simulation.model, simulation.data)
+    simulation.mj_data.qpos[simulation.qpos_ids] = solution
+    simulation.mj_data.qvel[:] = 0
+    simulation.mj_data.ctrl[simulation.motor_ids] = solution
+    mujoco.mj_forward(simulation.mj_model, simulation.mj_data)
     if simulation.collision:
         raise StagingPoseError(f"staging pose collides: {simulation.collision_pairs}")
-    return seam_start, seam_end, normal, residual
+    return seam, residual
 
 
 def sample_collision_free_task(
-    simulation: WeldingSimulation,
+    simulation: WeldingEnv,
     config: AppConfig,
     rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
+) -> tuple[SeamPath, float, int]:
     """确定性重采样，直到工件和预置位姿均可行。"""
     last_error: StagingPoseError | None = None
     for attempt in range(1, config.randomization.max_sampling_attempts + 1):
@@ -50,11 +47,11 @@ def sample_collision_free_task(
             simulation.reset()
         simulation.randomize_workpiece(rng)
         try:
-            seam_start, seam_end, normal, residual = stage_for_task(simulation, config)
+            seam, residual = stage_for_task(simulation, config)
         except StagingPoseError as error:
             last_error = error
             continue
-        return seam_start, seam_end, normal, residual, attempt
+        return seam, residual, attempt
     raise RuntimeError(
         "cannot sample a reachable, collision-free task after "
         f"{config.randomization.max_sampling_attempts} attempts: {last_error}"
@@ -62,7 +59,7 @@ def sample_collision_free_task(
 
 
 def sample_initial_tcp_offset(
-    simulation: WeldingSimulation,
+    simulation: WeldingEnv,
     config: AppConfig,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, int, bool]:

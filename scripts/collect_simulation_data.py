@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""采集 MuJoCo 专家轨迹原始数据。"""
+"""采集 robosuite 专家轨迹原始数据。"""
 
 import os
 from collections import Counter

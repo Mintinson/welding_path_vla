@@ -7,7 +7,7 @@
 
 项目采用“不可变原始 episode → 动作适配器 → LeRobot/自定义训练器”三层结构。仿真采集不把数据绑定到某一种 VLA 动作定义，而是同时保存：
 
-- 20 Hz 双相机图像、时间戳、关节位置和关节速度；
+- 30 Hz 双相机图像、时间戳、关节位置和关节速度；
 - world frame 下的实际 TCP 绝对位姿；
 - 几何专家生成的参考 TCP 绝对位姿；
 - 经过 IK 和关节速度限制后的安全命令 TCP 绝对位姿；
@@ -25,7 +25,11 @@ episode_000000/
 └── wrist.mp4
 ```
 
-当前 raw schema 是策略观测频率 20 Hz。MuJoCo 内部仍以 500 Hz 仿真、100 Hz 控制运行，但尚未单独落盘 `control.npz`；需要研究底层控制动态时，再增加独立的 100 Hz 控制流，不应把重复图像写到 100 Hz。
+当前数据配置使用 30 Hz 策略观测。robosuite 每次 `step()` 对应一个策略周期，并在内部
+维持 MuJoCo 600 Hz 仿真和 120 Hz IK/位置控制；双相机、关节与 TCP 由同一个 observation
+dictionary 更新。当前尚未单独落盘 `control.npz`；需要研究底层控制动态时，再增加独立的
+120 Hz 控制流，不应把重复图像写到 120 Hz。`weldpath_raw_v1` 是 schema 标识，不表示
+采样频率；新的 30 Hz 数据默认写入 `datasets/weldpath_raw_v2`，避免与旧 20 Hz 数据混用。
 
 ## 2. 初始位姿和场景如何随机化
 
@@ -65,7 +69,25 @@ pixi install -e sim
 pixi run -e sim sim-view --config_path=configs/default.yaml
 ```
 
-无头采集默认通过 `camera.offscreen_backend: egl` 使用 EGL 离屏上下文，避免 Wayland/XWayland 下 GLFW 创建离屏 Renderer 时产生 `mjr_makeContext` 的 OpenGL 0x502 warning。交互式 `sim view` 不使用该设置，仍由 GLFW 创建窗口。若机器没有 EGL，可临时执行 `MUJOCO_GL=glfw pixi run -e sim sim-collect ...`；OSMesa 只有在系统安装对应软件渲染库后才能使用。
+无头采集默认通过 `camera.offscreen_backend: egl` 使用 EGL 离屏上下文。交互式
+`sim-view` 在 Wayland 会话中显式使用已有的 XWayland / X11 后端，避免 GLFW 窗口位置、
+libdecor 和 `mjr_makeContext` OpenGL 0x502 提示。若机器没有 EGL，可临时执行
+`MUJOCO_GL=glfw pixi run -e sim sim-collect ...`；OSMesa 只有在系统安装对应软件渲染库后
+才能使用。
+
+切换到圆管下圆弧或上圆弧只需更换配置：
+
+```bash
+pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
+pixi run -e sim sim-collect \
+  --config_path=configs/pipe_top.yaml \
+  --collection.episodes=5
+```
+
+两个配置使用独立的数据集目录，不会与默认 L 形直线任务混写。
+专家轨迹通过 `task.approach_speed_mps`、`task.speed_mps` 和
+`task.retreat_speed_mps` 分别控制接近、焊接和退出速度。圆管配置默认使用
+`60 / 4 / 40 mm/s`，使空中接近更快、沿焊缝跟踪更慢。
 
 先采集 5 条小样本：
 
@@ -75,14 +97,14 @@ pixi run -e sim sim-collect \
   --collection.episodes=5
 
 pixi run -e sim data-validate \
-  --collection.dataset_root=datasets/weldpath_raw_v1
+  --collection.dataset_root=datasets/weldpath_raw_v2
 ```
 
 回放全局和腕部视频：
 
 ```bash
 pixi run -e sim sim-replay \
-  --episode=datasets/weldpath_raw_v1/episodes/episode_000000
+  --episode=datasets/weldpath_raw_v2/episodes/episode_000000
 ```
 
 确认相机、焊枪朝向、焊缝进度和碰撞结果后再扩大规模：
@@ -95,6 +117,10 @@ pixi run -e sim sim-collect \
 
 建议为每组消融实验复制一份 YAML，并使用不同的 `collection.dataset_root`，不要在同一个目录混入相机参数、动作语义或机器人模型版本不同的数据。
 
+原始 episode 与策略 rollout 共用 `VideoRecorder`。它直接复用 LeRobot 的
+`StreamingVideoEncoder` 和 PyAV，生成 `H.264 / yuv420p / avc1` MP4，不再维护
+OpenCV backend、FFmpeg 子进程或码率参数；输出可由 VS Code 和浏览器直接播放。
+
 ## 4. 动作标签如何构造
 
 仿真监督标签优先使用 `safe_command`，因为它代表经过 IK 和速度限制后真正发送给控制器的目标。`reference` 用于几何轨迹消融，`executed` 用于拖拽示教或没有显式命令的真机数据。
@@ -105,17 +131,17 @@ pixi run -e sim sim-collect \
 from welding_path_vla.dataset.actions import build_relative_action_chunk
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 
-episode = EpisodeReader("datasets/weldpath_raw_v1/episodes/episode_000000")
+episode = EpisodeReader("datasets/weldpath_raw_v2/episodes/episode_000000")
 chunk = build_relative_action_chunk(
     episode,
     frame_index=100,
-    horizon=10,
+    horizon=15,
     stride=1,
     source="safe_command",
     include_current=False,
 )
 
-actions = chunk.values       # (10, 9): xyz + rotation_6d_rows
+actions = chunk.values       # (15, 9): xyz + rotation_6d_rows
 valid_mask = chunk.valid_mask
 ```
 
@@ -129,31 +155,24 @@ valid_mask = chunk.valid_mask
 pixi install -e data
 pixi run -e data export-lerobot \
   --config_path=configs/default.yaml \
-  --dataset=datasets/weldpath_raw_v1 \
-  --output=datasets/weldpath_lerobot_v1 \
-  --repo_id=YOUR_NAME/weldpath_sim_v1
+  --dataset=datasets/weldpath_raw_v2 \
+  --output=datasets/weldpath_lerobot_v2 \
+  --repo_id=YOUR_NAME/weldpath_sim_v2
 ```
 
-默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程；这样省去了整段视频驻留内存和临时 PNG I/O。默认 `h264 + veryfast` 兼顾速度与兼容性。机器支持 NVENC、VAAPI 或 QSV 时可尝试硬件编码：
-
-```bash
-pixi run -e data export-lerobot \
-  --config_path=configs/default.yaml \
-  --dataset=datasets/weldpath_raw_v1 \
-  --output=datasets/weldpath_lerobot_v1 \
-  --repo_id=YOUR_NAME/weldpath_sim_v1 \
-  --lerobot_export.video_codec=auto
-```
-
-硬件编码只加速视频压缩，不会把 OpenCV 解码、Parquet 写入或 action 构造搬到 GPU；实际可用编码器取决于显卡、驱动和 FFmpeg。LeRobot 的 `auto` 只探测 FFmpeg 是否列出编码器，不能保证驱动能成功初始化，因此应先用单个 episode 验证；初始化卡住或失败时改回已验证的 `--lerobot_export.video_codec=h264`。需要图片 feature 时显式添加 `--lerobot_export.save_images=true`，同一目标数据集不能混用视频和图片 schema。
+默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程；这样省去了整段视频驻留内存和临时 PNG I/O。最终数据使用 LeRobot 官方的
+`libsvtav1 / CRF 30 / preset 12` 默认配置，在焊缝细节、文件体积和训练解码之间取得平衡。
+需要快速人工预览时查看原始 H.264 即可，不必为了播放器兼容性改变训练数据编码。需要图片
+feature 时显式添加 `--lerobot_export.save_images=true`，同一目标数据集不能混用视频和图片
+schema。
 
 源 episode 编号筛选采用闭区间，且仍会自动排除无效 episode：
 
 ```bash
 # 仅转换 episode_000100 到 episode_000199
 pixi run -e data export-lerobot \
-  --dataset=datasets/weldpath_raw_v1 \
-  --output=datasets/weldpath_lerobot_v1 \
+  --dataset=datasets/weldpath_raw_v2 \
+  --output=datasets/weldpath_lerobot_v2 \
   --lerobot_export.start_episode=100 \
   --lerobot_export.end_episode=199
 ```
@@ -163,8 +182,8 @@ pixi run -e data export-lerobot \
 
 ```bash
 pixi run -e data export-lerobot \
-  --dataset=datasets/weldpath_raw_v1 \
-  --output=datasets/weldpath_lerobot_v1 \
+  --dataset=datasets/weldpath_raw_v2 \
+  --output=datasets/weldpath_lerobot_v2 \
   --lerobot_export.incremental=true \
   --lerobot_export.start_episode=200
 ```
@@ -186,13 +205,13 @@ pixi run -e data export-lerobot \
 policy:
   family: smolvla
   device: cuda
-  action_horizon: 10
+  action_horizon: 15
   action_source: safe_command
 
 training:
-  dataset_repo_id: YOUR_NAME/weldpath_sim_v1
-  dataset_root: datasets/weldpath_lerobot_v1
-  output_dir: outputs/train/smolvla_v1
+  dataset_repo_id: YOUR_NAME/weldpath_sim_v2
+  dataset_root: datasets/weldpath_lerobot_v2
+  output_dir: outputs/train/smolvla_v2
   batch_size: 16
   steps: 100000
 ```

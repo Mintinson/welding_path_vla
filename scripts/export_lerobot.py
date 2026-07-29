@@ -14,9 +14,9 @@ from welding_path_vla.dataset.export_lerobot import export_lerobot
 class ExportArguments(AppConfig):
     """LeRobot 导出的路径和仓库标识。"""
 
-    dataset: Path = Path("datasets/weldpath_raw_v1")
-    output: Path = Path("datasets/weldpath_lerobot_v1")
-    repo_id: str = "huayan/weldpath_sim_v1"
+    dataset: Path = Path("datasets/weldpath_raw_v2")
+    output: Path = Path("datasets/weldpath_lerobot_v2")
+    repo_id: str = "huayan/weldpath_sim_v2"
 
 
 @cli

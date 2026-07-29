@@ -85,11 +85,26 @@ def build_rollout_diagnostics(
     config: AppConfig,
     seam_start: np.ndarray,
     seam_end: np.ndarray,
-    seam_normal: np.ndarray,
+    seam_start_normal: np.ndarray,
+    seam_end_normal: np.ndarray,
     termination_reason: str,
     video_recorded: bool,
 ) -> dict[str, Any]:
-    """把逐步数组汇总为便于人工排查的结构化信息。"""
+    """把逐步数组汇总为便于人工排查的结构化信息。
+
+    Args:
+        trajectory: rollout 保存的逐步原始数组。
+        config: 当前完整应用配置。
+        seam_start: 有向焊缝世界坐标起点。
+        seam_end: 有向焊缝世界坐标终点。
+        seam_start_normal: 起点焊接法向；圆弧中它与终点不同。
+        seam_end_normal: 终点焊接法向。
+        termination_reason: rollout 的自然退出或失败原因。
+        video_recorded: 是否同步写入了双相机视频。
+
+    Returns:
+        包含终止、跟踪、控制、安全和视频状态的摘要。
+    """
     pairs = sorted(
         {
             pair
@@ -120,7 +135,8 @@ def build_rollout_diagnostics(
         "reference": {
             "seam_start_m": seam_start.tolist(),
             "seam_end_m": seam_end.tolist(),
-            "seam_normal": seam_normal.tolist(),
+            "seam_start_normal": seam_start_normal.tolist(),
+            "seam_end_normal": seam_end_normal.tolist(),
         },
         "tracking": {
             "frames": steps,

@@ -35,6 +35,10 @@ mujoco = "3.10.*"
 ffmpeg = "8.1.*"
 
 [tool.pixi.feature.sim.pypi-dependencies]
+# 1.5.2 固定 NumPy 1.x，与 LeRobot 0.6 的 NumPy 2.x 约束冲突。
+robosuite = "==1.5.1"
+lerobot = { version = "==0.6.0", extras = ["dataset"] }
+opencv-python = "==4.13.0.92"
 opencv-python-headless = "==4.13.0.92"
 
 [tool.pixi.feature.data.pypi-dependencies]

@@ -22,7 +22,7 @@ class DeploymentRequest:
 
 
 def deploy_simulation(config: AppConfig):
-    """通过策略注册表启动对应的 MuJoCo rollout。"""
+    """通过策略注册表启动对应的 robosuite rollout。"""
     request = DeploymentRequest(config.policy, config.deployment)
     request.validate()
     return get_policy_pipeline(config.policy.family).deploy_simulation(

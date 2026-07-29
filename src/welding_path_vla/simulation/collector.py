@@ -23,7 +23,7 @@ from welding_path_vla.core.geometry import frame_delta, pose_delta, rotation_err
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
 from welding_path_vla.dataset.recorder import EpisodeRecorder
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
-from welding_path_vla.simulation import ExpertTrajectory, WeldingSimulation
+from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
 from welding_path_vla.simulation.task_sampling import (
     sample_collision_free_task,
     sample_initial_tcp_offset,
@@ -54,16 +54,14 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
         RuntimeError: 采样无碰撞任务失败。
     """
     rng = np.random.default_rng(seed)
-    simulation = WeldingSimulation(config)
+    simulation = WeldingEnv(config, seed, ignore_done=True)
 
     # --- 阶段 1: 采样无碰撞任务 (工件位姿随机化 + 预置 IK) ---
-    (
-        seam_start,
-        seam_end,
-        normal,
-        staging_residual,
-        scene_sampling_attempts,
-    ) = sample_collision_free_task(simulation, config, rng)
+    seam, staging_residual, scene_sampling_attempts = sample_collision_free_task(
+        simulation,
+        config,
+        rng,
+    )
 
     # --- 阶段 2: 在初始构型附近随机化关节位置, 增加轨迹多样性 ---
     initial_joint_offset_deg, joint_sampling_attempts = simulation.randomize_joint_position(
@@ -84,22 +82,28 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
 
     try:
         initial = simulation.tcp_pose()
-        expert = ExpertTrajectory(config, initial, seam_start, seam_end, normal)
+        expert = ExpertTrajectory(config, initial, seam)
         state = simulation.state()
+        observation = simulation.observe()
 
         # 记录初始状态 (t=0), 包含关节/TCP 信息和多视角图像
-        recorder.append_state(0.0, state, simulation.render())
-
-        # 构建焊缝坐标系: 三个正交方向 (切向/法向/副法向)
-        seam_tangent = (seam_end - seam_start) / np.linalg.norm(seam_end - seam_start)
-        seam_normal = expert.normal
-        seam_binormal = np.cross(seam_normal, seam_tangent)
-        seam_rotation = np.column_stack([seam_tangent, seam_binormal, seam_normal])
+        recorder.append_state(
+            0.0,
+            state,
+            simulation.images_from_observation(observation),
+        )
 
         # --- 阶段 5: 逐帧跟踪专家轨迹 ---
         recovery_step = len(expert.frames) // 2  # 恢复扰动施加在轨迹中点
 
         for index, frame in enumerate(expert.frames):
+            # 圆弧任务中切向与法向会随进度变化，所有局部量都使用当前焊缝标架。
+            seam_frame = seam.sample(frame.seam_progress)
+            seam_tangent = seam_frame.tangent
+            seam_normal = seam_frame.normal
+            seam_binormal = np.cross(seam_normal, seam_tangent)
+            seam_rotation = seam_frame.rotation
+
             # ---- 可选的恢复扰动: 在轨迹中点施加位置/姿态偏移 ----
             if recovery and index == recovery_step:
                 # 沿法向 + 切向 + 副法向三个方向叠加随机偏移
@@ -135,8 +139,13 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
                 [seam_rotation.T @ command_world[:3], seam_rotation.T @ command_world[3:]]
             )
 
-            # ---- IK 执行目标位姿, 得到关节命令和残差 ----
-            joint_command, ik_residual = simulation.execute_pose(frame.pose)
+            # ---- 通过 robosuite step 执行目标位姿，并读取控制诊断 ----
+            pose_action = np.concatenate([frame.pose.position, frame.pose.quaternion_wxyz])
+            step_result = simulation.step(pose_action)
+            observation = step_result[0]
+            step_info = step_result[3]
+            joint_command = step_info["joint_command"]
+            ik_residual = step_info["ik_residual_m"]
 
             # 计算安全关节命令对应的 TCP 位姿 (用于记录和校验)
             safe_command = simulation.pose_for_joint_position(joint_command)
@@ -144,13 +153,9 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             next_state = simulation.state()
 
             # ---- 计算跟踪误差 ----
-            # 横向误差: 实际 TCP 位置到焊缝线段的最短距离
-            line = seam_end - seam_start
-            along = np.clip(
-                np.dot(next_state.tcp.position - seam_start, line) / np.dot(line, line), 0, 1
-            )
-            closest = seam_start + along * line
-            cross_track = float(np.linalg.norm(next_state.tcp.position - closest))
+            # 横向误差: 实际 TCP 到有限直线或圆弧中心线的最短距离。
+            projection = seam.project(next_state.tcp.position, frame.seam_progress)
+            cross_track = projection.distance_m
 
             # 姿态误差: 实际姿态与参考帧姿态之间的轴角范数 (度)
             orientation_error = float(
@@ -181,7 +186,11 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
 
             # ---- 记录执行后的状态 (t > 0) ----
             timestamp = (index + 1) / config.timing.policy_hz
-            recorder.append_state(timestamp, next_state, simulation.render())
+            recorder.append_state(
+                timestamp,
+                next_state,
+                simulation.images_from_observation(observation),
+            )
             state = next_state
 
         # --- 阶段 6: 计算质量指标, 构建元数据, 完成录制 ---
@@ -191,10 +200,10 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
         metadata = {
             "seed": seed,
             "robot_model": config.robot.model_id,
-            "asset_id": "l_joint_300x100x5",
-            "seam_id": "straight_fillet_200mm",
+            "asset_id": simulation.workpiece.asset_id,
+            "seam_id": seam.seam_id,
             "instruction": config.task.instruction,
-            "direction": "forward",
+            "direction": config.task.direction,
             "episode_start": "collision_checked_staging_pose",
             # 采样过程元数据
             "staging_ik_residual": staging_residual,
@@ -206,7 +215,10 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             "initial_tcp_offset_applied": initial_tcp_offset_applied,
             # 任务参数 (供训练时恢复参考)
             "task_parameters": {
+                "approach_speed_mps": config.task.approach_speed_mps,
                 "speed_mps": config.task.speed_mps,
+                "retreat_speed_mps": config.task.retreat_speed_mps,
+                "orientation_follow_ratio": config.task.orientation_follow_ratio,
                 "work_angle_deg": config.task.work_angle_deg,
                 "travel_angle_deg": config.task.travel_angle_deg,
                 "tool_roll_deg": config.task.tool_roll_deg,
@@ -221,8 +233,8 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             },
             "recovery": recovery,
             # 工件最终位姿 (可用于域随机化分析)
-            "workpiece_position": simulation.model.body_pos[simulation.workpiece_id].tolist(),
-            "workpiece_quaternion_wxyz": simulation.model.body_quat[
+            "workpiece_position": simulation.mj_model.body_pos[simulation.workpiece_id].tolist(),
+            "workpiece_quaternion_wxyz": simulation.mj_model.body_quat[
                 simulation.workpiece_id
             ].tolist(),
             # 轨迹质量指标

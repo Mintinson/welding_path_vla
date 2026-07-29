@@ -2,12 +2,12 @@
 
 ## 1. 数据契约
 
-ACT 直接读取 `datasets/weldpath_lerobot_v1`，不复制数据。项目适配器会检查：
+ACT 直接读取 `datasets/weldpath_lerobot_v2`，不复制数据。项目适配器会检查：
 
 - `observation.images.global` 与 `observation.images.wrist`：双路 RGB；
 - `observation.state`：6 轴关节角 + 3D TCP 位置 + 4D `wxyz` 四元数，共 13 维；
 - `action`：TCP 局部坐标系中的 3D 平移 + 6D 旋转，共 9 维；
-- 采样率：20 Hz。
+- 采样率：30 Hz。
 
 LeRobot 根据 `policy.action_horizon` 自动查询 future action，并生成 `action_is_pad`。自然语言
 `task` 当前不进入 ACT。Pixi 将 CPU 环境的 PyTorch 2.9 固定搭配 TorchCodec 0.9，将训练环境
@@ -62,10 +62,10 @@ episode-aware sampler、optimizer preset、日志、评估和 checkpoint 恢复�
 LeRobot checkpoint 位于：
 
 ```text
-outputs/train/act_weldpath_v1/checkpoints/last/pretrained_model/
+outputs/train/act_weldpath_v2/checkpoints/last/pretrained_model/
 ```
 
-模型默认预测 20 步（1 秒）动作块，每执行 5 步（0.25 秒）后重新观察并规划。视觉骨干使用
+模型默认预测 30 步（1 秒）动作块，每执行 8 步（约 0.27 秒）后重新观察并规划。视觉骨干使用
 ImageNet ResNet-18 权重；首次运行可能下载该权重。
 
 本机以官方训练器完成的四步 smoke test（RTX 4060 Laptop、BF16、batch size 1）结果为：
@@ -84,26 +84,26 @@ ImageNet ResNet-18 权重；首次运行可能下载该权重。
 ```bash
 pixi run -e train policy-evaluate \
   --config_path=configs/act.yaml \
-  --policy.checkpoint=outputs/train/act_weldpath_v1
+  --policy.checkpoint=outputs/train/act_weldpath_v2
 ```
 
 报告包含总 loss、ACT L1/KL loss、归一化 action MAE、样本数和数据 schema。快速检查可加
 `--policy_evaluation.max_batches=2`。这是行为克隆拟合质量，不等价于焊缝跟踪成功率。
 
-## 4. MuJoCo 闭环部署与轨迹评价
+## 4. robosuite 闭环部署与轨迹评价
 
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/act.yaml \
-  --policy.checkpoint=outputs/train/act_weldpath_v1 \
+  --policy.checkpoint=outputs/train/act_weldpath_v2 \
   --deployment.episodes=5 \
-  --deployment.log_dir=outputs/deploy/act_weldpath_v1_eval
+  --deployment.log_dir=outputs/deploy/act_weldpath_v2_eval
 ```
 
 每个 rollout 会：
 
 1. 随机化工件、初始关节和 TCP；
-2. 渲染与训练一致的双相机 observation；
+2. 从 robosuite observation dictionary 读取与训练一致的双相机和机器人状态；
 3. 用 checkpoint 中保存的 LeRobot processor 完成归一化和反归一化；
 4. 将 9D 局部 action 恢复为世界坐标 TCP 目标；
 5. 经过 TCP 增量、IK、关节范围与碰撞安全门后执行；
@@ -146,7 +146,7 @@ smoke checkpoint 尚未学会任务时通常会被 action 安全门提前终止�
 - `train`：执行对应策略的训练入口；
 - `load`：加载策略和前后处理器；
 - `evaluate`：离线 checkpoint 评价；
-- `deploy_simulation`：MuJoCo 闭环 rollout。
+- `deploy_simulation`：robosuite 闭环 rollout。
 
 训练、评估和部署脚本只依赖该接口。后续加入 Diffusion、SmolVLA 或 Trajectory VLA 时，不需要
 修改数据采集协议或 ACT 内部代码。

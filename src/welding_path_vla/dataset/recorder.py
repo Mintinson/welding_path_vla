@@ -9,13 +9,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import CommandAction, Pose, RobotState
 from welding_path_vla.core.geometry import frame_delta, rotation_error, yaw_degrees_to_matrix
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
+from welding_path_vla.dataset.video import VideoRecorder
 
 
 class EpisodeRecorder:
@@ -39,8 +39,13 @@ class EpisodeRecorder:
         self.final_path = root / "episodes" / f"episode_{episode_index:06d}"
         self.temporary_path = root / ".incomplete" / f"episode_{episode_index:06d}"
         self.arrays: dict[str, list[Any]] = defaultdict(list)
-        self.writers: dict[str, cv2.VideoWriter] = {}
         self.temporary_path.mkdir(parents=True, exist_ok=False)
+        camera_names = (config.camera.global_name, config.camera.wrist_name)
+        self.video = VideoRecorder.start(
+            self.temporary_path,
+            camera_names,
+            config.timing.policy_hz,
+        )
 
     def append_state(
         self, timestamp: float, state: RobotState, images: dict[str, np.ndarray]
@@ -57,8 +62,7 @@ class EpisodeRecorder:
         self.arrays["joint_velocity"].append(state.joint_velocity)
         self.arrays["tcp_position"].append(state.tcp.position)
         self.arrays["tcp_quaternion_wxyz"].append(state.tcp.quaternion_wxyz)
-        for name, image in images.items():
-            self.video_writer(name).write(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        self.video.append(images)
 
     def append_action(
         self,
@@ -106,38 +110,6 @@ class EpisodeRecorder:
         self.arrays["collision_pairs"].append(collision_pairs)
         self.arrays["recovery_window"].append(recovery_window)
 
-    def video_writer(self, name: str) -> cv2.VideoWriter:
-        """按名称获取或创建视频写入器。
-
-        依次尝试配置的编码器, 遇到第一个可打开的回退编码器。
-
-        Args:
-            name: 相机名称, 同时也是输出文件名 (不含后缀)。
-
-        Returns:
-            OpenCV 视频写入器。
-
-        Raises:
-            RuntimeError: 没有编码器能成功创建写入器。
-        """
-        if name not in self.writers:
-            path = self.temporary_path / f"{name}.mp4"
-            codecs = dict.fromkeys([self.config.collection.video_codec, "mp4v"])
-            for codec in codecs:
-                writer = cv2.VideoWriter(
-                    str(path),
-                    cv2.VideoWriter_fourcc(*codec),
-                    self.config.timing.policy_hz,
-                    (self.config.camera.width, self.config.camera.height),
-                )
-                if writer.isOpened():
-                    break
-                writer.release()
-            else:
-                raise RuntimeError(f"cannot open video writer: {path}")
-            self.writers[name] = writer
-        return self.writers[name]
-
     def finish(self, metadata: dict[str, Any]) -> Path:
         """完成录制: 关闭写入器, 验证数据, 持久化到磁盘。
 
@@ -154,9 +126,7 @@ class EpisodeRecorder:
         Raises:
             ValueError: state 与 action 数量不匹配。
         """
-        for writer in self.writers.values():
-            writer.release()
-        self.writers.clear()
+        self.video.finish()
         arrays = {name: np.asarray(values) for name, values in self.arrays.items()}
         state_count = len(arrays["timestamp"])
         action_count = len(arrays["phase"])
@@ -208,7 +178,5 @@ class EpisodeRecorder:
 
     def abort(self) -> None:
         """中止录制: 释放写入器并清理暂存目录。"""
-        for writer in self.writers.values():
-            writer.release()
-        self.writers.clear()
+        self.video.close()
         shutil.rmtree(self.temporary_path, ignore_errors=True)

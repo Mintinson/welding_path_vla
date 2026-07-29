@@ -33,8 +33,8 @@ def test_collision_report_preserves_contact_pairs() -> None:
 
 def test_training_command_uses_unified_config() -> None:
     config = AppConfig()
-    config.training.dataset_repo_id = "mintinson/weldpath_sim_v1"
+    config.training.dataset_repo_id = "mintinson/weldpath_sim_v2"
     command = TrainingRequest(config.policy, config.training).command()
     assert "--policy.type=smolvla" in command
-    assert "--policy.chunk_size=10" in command
-    assert "--dataset.root=datasets/weldpath_lerobot_v1" in command
+    assert "--policy.chunk_size=15" in command
+    assert "--dataset.root=datasets/weldpath_lerobot_v2" in command

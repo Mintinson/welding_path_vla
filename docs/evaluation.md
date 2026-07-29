@@ -84,7 +84,7 @@ evaluation:
 
 ```bash
 pixi run -e dev evaluate-episode \
-  --episode=datasets/weldpath_raw_v1/episodes/episode_000000 \
+  --episode=datasets/weldpath_raw_v2/episodes/episode_000000 \
   --config_path=configs/default.yaml \
   --assume_reference_task=true
 ```
@@ -93,7 +93,7 @@ pixi run -e dev evaluate-episode \
 
 ```bash
 pixi run -e dev evaluate-dataset \
-  --collection.dataset_root=datasets/weldpath_raw_v1 \
+  --collection.dataset_root=datasets/weldpath_raw_v2 \
   --config_path=configs/default.yaml \
   --assume_reference_task=true \
   --output=outputs/evaluation/simulation-summary.json
@@ -196,7 +196,7 @@ pixi run -e dev evaluate-episode \
 - 动作增量：记录安全投影前后的命令，超限或被裁剪都应留下事件。
 - 超时/人工终止：由状态机和操作员面板写入，不从轨迹长度猜测。
 
-控制日志建议 100 Hz，图像仍可保持 20 Hz，通过时间戳关联。低于
+真机控制日志建议保持 100 Hz，图像至少保持 30 Hz，通过时间戳关联。低于
 `jerk_min_sample_rate_hz` 时，jerk 三项输出为 `null`。若专家轨迹近似直线匀速，
 其 jerk 小于 `jerk_reference_floor_m_s3`，分母退化，此时只报告双方 jerk，
 `jerk_ratio` 输出为 `null`，而不是给出误导性的巨大比值。

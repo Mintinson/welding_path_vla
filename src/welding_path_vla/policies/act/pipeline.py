@@ -48,7 +48,7 @@ class ACTPipeline:
         return evaluate_checkpoint(config, checkpoint)
 
     def deploy_simulation(self, config: AppConfig, checkpoint: str) -> Any:
-        """在项目 MuJoCo 环境运行 ACT 闭环 rollout。"""
+        """在项目 robosuite 环境运行 ACT 闭环 rollout。"""
         from welding_path_vla.policies.act.rollout import deploy_simulation
 
         return deploy_simulation(config, checkpoint)

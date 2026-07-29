@@ -1,9 +1,9 @@
 <mujoco model="elfin5_welding">
-  <compiler angle="radian" meshdir="meshes/visual"/>
+  <compiler angle="radian"/>
   <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
   <visual>
     <global offwidth="640" offheight="480"/>
-    <headlight ambient="0.35 0.35 0.35" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
+    <headlight ambient="0.30 0.30 0.30" diffuse="0.60 0.60 0.60" specular="0.1 0.1 0.1"/>
   </visual>
 
   <default>
@@ -21,13 +21,13 @@
   </default>
 
   <asset>
-    <mesh name="elfin_base" file="elfin_base.STL"/>
-    <mesh name="elfin_link1" file="elfin_link1.STL"/>
-    <mesh name="elfin_link2" file="elfin_link2.STL"/>
-    <mesh name="elfin_link3" file="elfin_link3.STL"/>
-    <mesh name="elfin_link4" file="elfin_link4.STL"/>
-    <mesh name="elfin_link5" file="elfin_link5.STL"/>
-    <mesh name="elfin_link6" file="elfin_link6.STL"/>
+    <mesh name="elfin_base" file="meshes/visual/elfin_base.STL"/>
+    <mesh name="elfin_link1" file="meshes/visual/elfin_link1.STL"/>
+    <mesh name="elfin_link2" file="meshes/visual/elfin_link2.STL"/>
+    <mesh name="elfin_link3" file="meshes/visual/elfin_link3.STL"/>
+    <mesh name="elfin_link4" file="meshes/visual/elfin_link4.STL"/>
+    <mesh name="elfin_link5" file="meshes/visual/elfin_link5.STL"/>
+    <mesh name="elfin_link6" file="meshes/visual/elfin_link6.STL"/>
   </asset>
 
   <worldbody>
@@ -89,7 +89,7 @@
                 <geom name="wrist_camera_standoff" type="cylinder" pos="0 -0.069 0.134" quat="0.707107 0.707107 0 0" size="0.008 0.010" contype="1" conaffinity="2" rgba="0.55 0.57 0.59 1"/>
                 <geom name="wrist_camera_bracket" type="box" pos="0 -0.083 0.134" size="0.045 0.003 0.045" contype="1" conaffinity="2" rgba="0.58 0.60 0.62 1"/>
                 <geom name="wrist_camera_body" type="box" pos="0 -0.104 0.134" size="0.025 0.015 0.020" contype="1" conaffinity="2" rgba="0.025 0.028 0.032 1"/>
-                <camera name="wrist" pos="0 -0.080 0.134" quat="0.337521 -0.286428 -0.768263 0.461534" fovy="85"/>
+                <camera name="wrist" pos="0.008607 -0.071891 0.172212" quat="0.059263 -0.391964 -0.907753 0.137249" fovy="85"/>
                 <body name="tool_payload" pos="0.086831 -0.072975 0.442456" gravcomp="1">
                   <inertial pos="0 0 0" mass="0.216" diaginertia="0.0001 0.0001 0.0001"/>
                 </body>

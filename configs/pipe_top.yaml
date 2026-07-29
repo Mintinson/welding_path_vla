@@ -1,0 +1,28 @@
+workpiece:
+  kind: pipe_on_plate
+
+task:
+  instruction: 沿圆管上沿的圆弧完成焊接轨迹。
+  seam_id: pipe_top
+  direction: forward
+  # 上圆完整执行一周；进度提示负责消除首尾同点造成的投影歧义。
+  arc_start_deg: -90.0
+  arc_sweep_deg: 360.0
+  # 接近阶段继承 60 mm/s；焊接阶段降为 4 mm/s。
+  speed_mps: 0.004
+  tcp_clearance_m: 0.002
+  # 枪身近似竖直并保持起点姿态，避免整圆时腕部无意义地旋转 360°。
+  work_angle_deg: 0.0
+  travel_angle_deg: 0.0
+  orientation_follow_ratio: 0.0
+
+randomization:
+  xy_m: 0.03
+  yaw_deg: 30.0
+
+collection:
+  dataset_root: datasets/weldpath_pipe_top_raw_v2
+
+deployment:
+  # 4 mm/s 完整圆周约需 79 秒，留出接近、退出和策略修正时间。
+  max_steps: 3300

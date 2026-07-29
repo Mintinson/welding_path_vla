@@ -7,8 +7,9 @@ import pytest
 import torch
 
 from welding_path_vla.core.config import AppConfig
+from welding_path_vla.dataset.video import VideoRecorder
 from welding_path_vla.policies.act.data_adapter import scale_uint8_images
-from welding_path_vla.policies.act.rollout import RolloutVideoRecorder, rollout_episode
+from welding_path_vla.policies.act.rollout import rollout_episode
 from welding_path_vla.policies.act.rollout_diagnostics import rollout_completed
 from welding_path_vla.policies.act.runtime import resolve_checkpoint
 from welding_path_vla.policies.act.training import lerobot_train_config
@@ -22,8 +23,8 @@ def test_act_training_command_uses_lerobot_dataset_tools() -> None:
     assert "--dataset.video_backend=torchcodec" in command
     assert "--dataset.eval_split=0.1" in command
     assert "--policy.type=act" in command
-    assert "--policy.chunk_size=20" in command
-    assert "--policy.n_action_steps=5" in command
+    assert "--policy.chunk_size=30" in command
+    assert "--policy.n_action_steps=8" in command
 
 
 def test_act_uses_official_lerobot_training_config() -> None:
@@ -39,7 +40,8 @@ def test_rollout_video_is_browser_compatible_and_torchcodec_decodable(tmp_path: 
     from torchcodec.decoders import VideoDecoder
 
     config = AppConfig.load("configs/act.yaml")
-    recorder = RolloutVideoRecorder.start(tmp_path, config)
+    names = (config.camera.global_name, config.camera.wrist_name)
+    recorder = VideoRecorder.start(tmp_path, names, config.timing.policy_hz)
     images = {
         name: np.zeros((32, 32, 3), dtype=np.uint8)
         for name in (config.camera.global_name, config.camera.wrist_name)

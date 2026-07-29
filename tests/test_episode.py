@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import av
 import numpy as np
 
 from welding_path_vla.core.config import AppConfig
@@ -10,7 +11,36 @@ from welding_path_vla.dataset.actions import (
     build_relative_actions,
 )
 from welding_path_vla.dataset.raw_schema import EpisodeReader
+from welding_path_vla.dataset.recorder import EpisodeRecorder
 from welding_path_vla.simulation.collector import collect_episode
+
+
+def test_default_video_recorder_does_not_probe_unavailable_hardware_codec(
+    tmp_path: Path,
+    capfd,
+) -> None:
+    """LeRobot 录制器不应探测不可用的 V4L2 硬件编码器。"""
+    config = AppConfig.load("configs/default.yaml")
+    recorder = EpisodeRecorder(tmp_path, 0, config)
+    recorder.abort()
+    errors = capfd.readouterr().err
+    assert "h264_v4l2m2m" not in errors
+    assert "Failed to initialize VideoWriter" not in errors
+
+
+def test_raw_video_is_browser_compatible_h264(tmp_path: Path) -> None:
+    """原始视频应采用 VS Code 内置 Chromium 可播放的 H.264 格式。"""
+    config = AppConfig.load("configs/default.yaml")
+    recorder = EpisodeRecorder(tmp_path, 0, config)
+    image = np.zeros((config.camera.height, config.camera.width, 3), dtype=np.uint8)
+    recorder.video.append({"global": image, "wrist": image})
+    recorder.video.finish()
+    with av.open(recorder.temporary_path / "global.mp4") as container:
+        stream = container.streams.video[0]
+        assert stream.codec_context.name == "h264"
+        assert stream.codec_context.pix_fmt == "yuv420p"
+        assert float(stream.average_rate) >= 30
+    recorder.abort()
 
 
 def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
@@ -27,6 +57,10 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     episode = EpisodeReader(episode_path)
     assert episode.state_count == episode.action_count + 1
     assert (episode_path / "global.mp4").exists()
+    with av.open(episode_path / "global.mp4") as container:
+        stream = container.streams.video[0]
+        assert float(stream.average_rate) == config.timing.policy_hz
+        assert stream.frames == episode.state_count
     assert episode.metadata["quaternion_order"] == "wxyz"
     assert "collision_pairs" in episode.trajectory
     assert "command_delta_pose_world" in episode.trajectory

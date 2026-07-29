@@ -7,14 +7,14 @@
 
 | Pixi 任务 | 直接脚本 | 职责 |
 |---|---|---|
-| `sim-view` | `scripts/view_simulation.py` | 检查 MuJoCo 场景 |
+| `sim-view` | `scripts/view_simulation.py` | 检查 robosuite / MuJoCo 场景 |
 | `sim-collect` | `scripts/collect_simulation_data.py` | 采集仿真原始 episode |
 | `sim-replay` | `scripts/replay_episode.py` | 回放双相机视频 |
 | `data-validate` | `scripts/validate_dataset.py` | 校验原始数据质量 |
 | `export-lerobot` | `scripts/export_lerobot.py` | 导出 LeRobot 数据集 |
 | `policy-data-check` | `scripts/check_policy_data.py` | 检查策略训练数据契约 |
 | `policy-evaluate` | `scripts/evaluate_policy.py` | 离线评估策略 checkpoint |
-| `policy-sim-deploy` | `scripts/deploy_simulation_policy.py` | 策略 MuJoCo 闭环部署 |
+| `policy-sim-deploy` | `scripts/deploy_simulation_policy.py` | 策略 robosuite 闭环部署 |
 | `evaluate-episode` | `scripts/evaluate.py --mode=episode` | 评估单条仿真/真机 episode |
 | `evaluate-dataset` | `scripts/evaluate.py --mode=dataset` | 聚合仿真数据集指标 |
 | `robot-config` | `scripts/show_robot_config.py` | 检查机器人和安全配置 |
@@ -41,7 +41,7 @@ dataclass/YAML 完全一致，布尔值使用 `--field=true/false`。
 
 ```bash
 pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=50
-pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v1
+pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2
 pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
 ```
 
@@ -57,7 +57,9 @@ python scripts/collect_simulation_data.py \
 ## 包内边界
 
 - `core/`：类型化配置、领域对象和坐标几何函数；
-- `simulation/`：MuJoCo 环境、专家轨迹和采集业务逻辑；
+- `simulation/models/`：Elfin5-Pro、Arena 和可替换工件模型；
+- `simulation/tasks/`：直线/圆弧焊缝的采样、投影和局部标架；
+- `simulation/`：robosuite 环境、专家轨迹和采集业务逻辑；
 - `dataset/`：原始 episode、录制、动作构造和数据导出；
 - `evaluation/`：轨迹指标、聚合规则和日志适配器；
 - `robot/`：真机驱动、实时控制和安全门；

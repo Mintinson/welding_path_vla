@@ -11,9 +11,9 @@ from draccus.argparsing import parse
 
 @dataclass(slots=True)
 class TimingConfig:
-    physics_hz: int = 500
-    control_hz: int = 100
-    policy_hz: int = 20
+    physics_hz: int = 600
+    control_hz: int = 120
+    policy_hz: int = 30
 
     def validate(self) -> None:
         if self.physics_hz % self.control_hz or self.control_hz % self.policy_hz:
@@ -37,7 +37,9 @@ class CameraConfig:
     global_fovy_deg: float = 55.0
     wrist_fovy_deg: float = 85.0
     offscreen_backend: str = "egl"
-    wrist_position_link6_m: list[float] = field(default_factory=lambda: [0.0, -0.080, 0.134])
+    wrist_position_link6_m: list[float] = field(
+        default_factory=lambda: [0.008607, -0.071891, 0.172212]
+    )
     wrist_target_link6_m: list[float] = field(
         default_factory=lambda: [0.057557, -0.025778, 0.389520]
     )
@@ -59,7 +61,7 @@ class SceneConfig:
 @dataclass(slots=True)
 class RobotConfig:
     model_id: str = "elfin5pro_photo_layout_v6"
-    model_asset: str = "elfin5/elfin5_welding.xml"
+    model_asset: str = "elfin5/elfin5pro_robot.xml"
     initial_joint_deg: list[float] = field(
         default_factory=lambda: [90.9411, -72.1133, 22.0613, 45.5546, 128.4704, -51.3849]
     )
@@ -71,9 +73,65 @@ class RobotConfig:
 
 
 @dataclass(slots=True)
+class WorkpieceConfig:
+    """可替换工件的几何参数。
+
+    Attributes:
+        kind: 工件类型，当前支持 ``l_joint`` 和 ``pipe_on_plate``。
+        l_joint_length_m: L 形工件沿焊缝方向的总长度。
+        l_joint_width_m: L 形工件水平板宽度及竖板高度。
+        l_joint_thickness_m: L 形工件两块钢板的厚度。
+        pipe_plate_size_m: 圆管工件底板的长、宽、厚。
+        pipe_outer_radius_m: 圆管外半径。
+        pipe_wall_thickness_m: 圆管壁厚。
+        pipe_height_m: 圆管从底板上表面起算的高度。
+        pipe_segments: 用于近似空心圆管的环向分段数。
+    """
+
+    kind: str = "l_joint"
+    l_joint_length_m: float = 0.30
+    l_joint_width_m: float = 0.10
+    l_joint_thickness_m: float = 0.005
+    pipe_plate_size_m: list[float] = field(default_factory=lambda: [0.18, 0.18, 0.005])
+    pipe_outer_radius_m: float = 0.05
+    pipe_wall_thickness_m: float = 0.004
+    pipe_height_m: float = 0.12
+    pipe_segments: int = 32
+
+
+@dataclass(slots=True)
 class TaskConfig:
+    """焊缝任务、分阶段速度和焊枪姿态参数。
+
+    Attributes:
+        instruction: 当前任务的自然语言描述。
+        seam_id: 工件提供的焊缝标识。
+        direction: 沿焊缝正向或反向执行。
+        arc_start_deg: 圆弧起始角；直线任务忽略该字段。
+        arc_sweep_deg: 圆弧扫描角；正负号表示方向。
+        approach_speed_mps: 空中接近工件阶段的 TCP 参考速度。
+        speed_mps: 沿焊缝执行阶段的目标速度，也是评价使用的期望速度。
+        retreat_speed_mps: 完成焊接后远离工件的 TCP 参考速度。
+        orientation_follow_ratio: 姿态跟随局部焊缝标架的比例，范围为 ``[0, 1]``。
+        work_angle_deg: 焊枪相对工件法向的工作角。
+        travel_angle_deg: 焊枪相对焊缝切向的行走角。
+        tool_roll_deg: 焊枪绕自身轴线的滚转角。
+        approach_distance_m: 焊缝起点外的预接近距离。
+        retreat_distance_m: 焊缝终点外的退出距离。
+        staging_clearance_m: 空中转移点高于焊缝的最小距离。
+        tcp_clearance_m: TCP 相对理论焊缝中心的安全净空。
+        seam_length_m: 直线焊缝长度。
+    """
+
     instruction: str = "沿 L 形工件的直线角焊缝完成焊接轨迹。"
+    seam_id: str = "straight_fillet"
+    direction: str = "forward"
+    arc_start_deg: float = -175.0
+    arc_sweep_deg: float = 350.0
+    approach_speed_mps: float = 0.06
     speed_mps: float = 0.02
+    retreat_speed_mps: float = 0.04
+    orientation_follow_ratio: float = 1.0
     work_angle_deg: float = 45.0
     travel_angle_deg: float = 10.0
     tool_roll_deg: float = -20.0
@@ -99,11 +157,10 @@ class RandomizationConfig:
 
 @dataclass(slots=True)
 class CollectionConfig:
-    dataset_root: str = "datasets/weldpath_raw_v1"
+    dataset_root: str = "datasets/weldpath_raw_v2"
     episodes: int = 50
     max_attempt_multiplier: int = 3
     seed: int = 20260721
-    video_codec: str = "avc1"
     headless: bool = True
 
 
@@ -112,7 +169,7 @@ class QualityConfig:
     minimum_progress: float = 0.98
     cross_track_mean_m: float = 0.001
     cross_track_p95_m: float = 0.002
-    cross_track_max_m: float = 0.005
+    cross_track_max_m: float = 0.01
     orientation_p95_deg: float = 2.0
     orientation_max_deg: float = 5.0
 
@@ -146,11 +203,24 @@ class RealRobotConfig:
 
 @dataclass(slots=True)
 class SafetyConfig:
+    """机器人运行与焊接接触安全参数。
+
+    Attributes:
+        enabled: 是否启用实机安全监控。
+        joint_position_margin_rad: 关节位置相对软限位的安全余量。
+        joint_velocity_limit_rad_s: 允许的最大关节速度。
+        tcp_speed_limit_m_s: 允许的最大 TCP 平移速度。
+        command_timeout_s: 实机控制命令的超时时间。
+        tip_contact_force_limit_n: 焊丝尖端接触工件时允许的合力上限；超过
+            该值仍按碰撞处理，其他几何体之间的接触不使用此容差。
+    """
+
     enabled: bool = True
     joint_position_margin_rad: float = 0.02
     joint_velocity_limit_rad_s: float = 1.57
-    tcp_speed_limit_m_s: float = 0.10
+    tcp_speed_limit_m_s: float = 0.20
     command_timeout_s: float = 0.10
+    tip_contact_force_limit_n: float = 5.0
 
 
 @dataclass(slots=True)
@@ -158,8 +228,8 @@ class PolicyConfig:
     family: str = "smolvla"
     checkpoint: str | None = None
     device: str = "cuda"
-    action_horizon: int = 10
-    action_steps: int = 10
+    action_horizon: int = 15
+    action_steps: int = 15
     action_stride: int = 1
     action_source: str = "safe_command"
     include_current: bool = False
@@ -169,7 +239,7 @@ class PolicyConfig:
 @dataclass(slots=True)
 class TrainingConfig:
     dataset_repo_id: str | None = None
-    dataset_root: str | None = "datasets/weldpath_lerobot_v1"
+    dataset_root: str | None = "datasets/weldpath_lerobot_v2"
     output_dir: str = "outputs/train"
     batch_size: int = 16
     steps: int = 100_000
@@ -210,9 +280,9 @@ class LeRobotExportConfig:
     image_writer_threads: int = 8
     encoder_queue_maxsize: int = 64
     encoder_threads: int | None = None
-    video_codec: str = "h264"
-    video_quality: int = 23
-    video_preset: str | int | None = "veryfast"
+    video_codec: str = "libsvtav1"
+    video_quality: int = 30
+    video_preset: str | int | None = "12"
 
 
 @dataclass(slots=True)
@@ -233,6 +303,7 @@ class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     scene: SceneConfig = field(default_factory=SceneConfig)
     robot: RobotConfig = field(default_factory=RobotConfig)
+    workpiece: WorkpieceConfig = field(default_factory=WorkpieceConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
     collection: CollectionConfig = field(default_factory=CollectionConfig)
@@ -259,6 +330,42 @@ class AppConfig:
         self.timing.validate()
         if len(self.robot.initial_joint_deg) != 6:
             raise ValueError("robot.initial_joint_deg must contain six values")
+        if self.workpiece.kind not in {"l_joint", "pipe_on_plate"}:
+            raise ValueError("workpiece.kind must be l_joint or pipe_on_plate")
+        if len(self.workpiece.pipe_plate_size_m) != 3:
+            raise ValueError("workpiece.pipe_plate_size_m must contain three values")
+        if self.workpiece.pipe_segments < 12:
+            raise ValueError("workpiece.pipe_segments must be at least 12")
+        if not 0 < self.workpiece.pipe_wall_thickness_m < self.workpiece.pipe_outer_radius_m:
+            raise ValueError("pipe wall thickness must be smaller than the outer radius")
+        if (
+            self.workpiece.kind == "l_joint"
+            and self.task.seam_length_m > self.workpiece.l_joint_length_m
+        ):
+            raise ValueError("task.seam_length_m cannot exceed the L-joint length")
+        allowed_seams = {
+            "l_joint": {"straight_fillet"},
+            "pipe_on_plate": {"pipe_bottom", "pipe_top"},
+        }
+        if self.task.seam_id not in allowed_seams[self.workpiece.kind]:
+            raise ValueError(
+                f"task.seam_id={self.task.seam_id!r} is invalid for {self.workpiece.kind}"
+            )
+        if self.task.direction not in {"forward", "reverse"}:
+            raise ValueError("task.direction must be forward or reverse")
+        if not 0 < abs(self.task.arc_sweep_deg) <= 360:
+            raise ValueError("task.arc_sweep_deg must be in [-360, 360] and non-zero")
+        if (
+            min(
+                self.task.approach_speed_mps,
+                self.task.speed_mps,
+                self.task.retreat_speed_mps,
+            )
+            <= 0
+        ):
+            raise ValueError("task phase speeds must be positive")
+        if not 0 <= self.task.orientation_follow_ratio <= 1:
+            raise ValueError("task.orientation_follow_ratio must be in [0, 1]")
         if not 0 < self.camera.global_fovy_deg < 180 or not 0 < self.camera.wrist_fovy_deg < 180:
             raise ValueError("camera field of view must be in (0, 180)")
         if self.camera.offscreen_backend not in {"egl", "glfw", "osmesa"}:
@@ -288,6 +395,8 @@ class AppConfig:
             raise ValueError("evaluation jerk sampling rate/floor is invalid")
         if self.real_robot.enabled and not self.real_robot.host:
             raise ValueError("real_robot.host is required when real_robot.enabled is true")
+        if self.safety.tip_contact_force_limit_n < 0:
+            raise ValueError("safety.tip_contact_force_limit_n must be non-negative")
         if (
             self.policy.action_horizon < 1
             or self.policy.action_steps < 1

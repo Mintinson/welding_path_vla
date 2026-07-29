@@ -1,8 +1,9 @@
-"""MuJoCo 焊接仿真环境: 封装场景配置、IK 解算、碰撞检测与渲染。"""
+"""基于 robosuite 的 Elfin5-Pro 焊接环境。"""
 
 from __future__ import annotations
 
-from importlib.resources import files
+from collections import OrderedDict
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -11,233 +12,460 @@ from scipy.spatial.transform import Rotation
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import Pose, RobotState
 from welding_path_vla.core.geometry import (
-    look_at_quaternion,
     matrix_to_quaternion,
     quaternion_to_matrix,
     rotation_error,
     yaw_degrees_to_matrix,
 )
+from welding_path_vla.simulation.models import (
+    Elfin5ProRobotModel,
+    WeldingArena,
+    WorkpieceObject,
+)
+from welding_path_vla.simulation.robosuite_compat import (
+    MujocoEnv,
+    Observable,
+    Task,
+    register_env,
+    sensor,
+)
+from welding_path_vla.simulation.tasks import SeamPath
 
 
-class WeldingSimulation:
-    """华研 Elfin5-Pro 焊接仿真环境的 MuJoCo 封装。
+class WeldingEnv(MujocoEnv):
+    """Elfin5-Pro 焊接任务的 robosuite 环境。
 
-    管理场景配置、工件随机化、正逆运动学、碰撞检测和多视角渲染。
-    提供 IK 解算、轨迹跟踪执行和 TCP 扰动等核心接口。
+    robosuite 负责 ``reset``、``step``、观测更新和 episode 时钟；项目继续
+    复用已经验证的完整 MJCF、阻尼最小二乘 IK、TCP 与碰撞几何。环境动作是
+    世界坐标系下的绝对 TCP 位姿 ``[x, y, z, qw, qx, qy, qz]``。
+
+    Attributes:
+        config: 项目统一配置。
+        last_collision_pairs: 最近一个策略周期内出现过的碰撞几何体名称对。
+        last_joint_command: 最近一次送入 MuJoCo 位置执行器的六关节目标。
+        last_ik_residual: 最近一次 IK 的六维位姿误差范数。
     """
 
-    joint_names = tuple(f"elfin_joint{i}" for i in range(1, 7))
-    motor_names = tuple(f"motor{i}" for i in range(1, 7))
+    joint_names = tuple(f"elfin_joint{index}" for index in range(1, 7))
+    motor_names = tuple(f"motor{index}" for index in range(1, 7))
 
-    def __init__(self, config: AppConfig) -> None:
-        """加载模型, 配置场景, 初始化 MuJoCo 数据与渲染器。
+    def __init__(
+        self,
+        config: AppConfig,
+        seed: int | None = None,
+        camera_observations: bool = True,
+        ignore_done: bool = False,
+    ) -> None:
+        """创建环境并初始化 robosuite 生命周期。
 
         Args:
-            config: 全局应用配置, 含机器人、场景、相机等参数。
+            config: 全局应用配置。
+            seed: 环境随机数种子；任务采样仍可显式传入独立生成器。
+            camera_observations: 是否创建离屏上下文并返回双相机观测。
+            ignore_done: 是否忽略 horizon；专家采集使用该模式保存完整轨迹。
         """
         self.config = config
-        path = files("welding_path_vla").joinpath("assets", config.robot.model_asset)
-        self.model = mujoco.MjModel.from_xml_path(str(path))
-        self.model.opt.timestep = 1.0 / config.timing.physics_hz
-        self.configure_scene()
-        self.data = mujoco.MjData(self.model)
+        self.camera_observations = camera_observations
+        self.last_collision_pairs: tuple[tuple[str, str], ...] = ()
+        self.last_joint_command = np.radians(config.robot.initial_joint_deg)
+        self.last_ik_residual = float("nan")
+        self.target_pose: Pose | None = None
+        self.policy_physics_step = 0
+        self.control_index = 0
+        self.seam_progress_hint = 0.0
+        self.observed_contacts: set[tuple[str, str]] = set()
+        super().__init__(
+            has_renderer=False,
+            has_offscreen_renderer=camera_observations,
+            render_camera=config.camera.global_name,
+            render_collision_mesh=False,
+            render_visual_mesh=True,
+            control_freq=config.timing.policy_hz,
+            horizon=config.deployment.max_steps,
+            ignore_done=ignore_done,
+            hard_reset=False,
+            renderer="mujoco",
+            seed=seed,
+        )
+
+    @property
+    def robosuite_sim(self) -> Any:
+        """返回 robosuite 的 MuJoCo 运行时包装器。"""
+        return self.sim
+
+    @property
+    def mj_model(self) -> mujoco.MjModel:
+        """返回 robosuite 持有的底层 MuJoCo 模型。"""
+        return self.robosuite_sim.model._model
+
+    @property
+    def mj_data(self) -> mujoco.MjData:
+        """返回 robosuite 持有的底层 MuJoCo 运行时数据。"""
+        return self.robosuite_sim.data._data
+
+    @property
+    def action_dim(self) -> int:
+        """返回绝对 TCP 位姿动作维数。"""
+        return 7
+
+    @property
+    def action_spec(self) -> tuple[np.ndarray, np.ndarray]:
+        """返回 ``[位置, wxyz 四元数]`` 动作的数值范围。"""
+        low = np.array([-np.inf, -np.inf, -np.inf, -1, -1, -1, -1], dtype=np.float64)
+        high = np.array([np.inf, np.inf, np.inf, 1, 1, 1, 1], dtype=np.float64)
+        return low, high
+
+    def initialize_time(self, control_freq: float) -> None:
+        """按项目配置建立 600/120/30 Hz 多速率时钟。
+
+        robosuite 默认从全局宏读取物理步长。这里使用实例配置，避免修改进程
+        级全局状态，也允许测试用配置安全地改变频率。
+
+        Args:
+            control_freq: robosuite 调用 ``step`` 的策略频率。
+        """
+        self.cur_time = 0
+        self.model_timestep = 1.0 / self.config.timing.physics_hz
+        self.control_freq = control_freq
+        self.control_timestep = 1.0 / control_freq
+
+    def _load_model(self) -> None:
+        """分别构建机器人、Arena 和可替换工件，再组合为 robosuite Task。"""
+        self.robot_model = Elfin5ProRobotModel(self.config)
+        self.arena = WeldingArena(self.config)
+        self.workpiece = WorkpieceObject(self.config)
+        self.model = Task(self.arena, self.robot_model, self.workpiece)
+        self.arena.apply_headlight(self.model.root)
+
+    def _setup_references(self) -> None:
+        """缓存关节、执行器、TCP 和工件的底层索引。"""
+        super()._setup_references()
+        self.mj_model.opt.timestep = 1.0 / self.config.timing.physics_hz
         self.tcp_id = self.name_id(mujoco.mjtObj.mjOBJ_SITE, "tcp")
         self.workpiece_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "workpiece")
+        self.torch_tip_id = self.name_id(mujoco.mjtObj.mjOBJ_GEOM, "torch_tip")
+        self.workpiece_geom_ids = {
+            geom_id
+            for geom_id in range(self.mj_model.ngeom)
+            if self.mj_model.geom_bodyid[geom_id] == self.workpiece_id
+        }
         self.joint_ids = [
             self.name_id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in self.joint_names
         ]
-        self.qpos_ids = [int(self.model.jnt_qposadr[joint_id]) for joint_id in self.joint_ids]
-        self.dof_ids = [int(self.model.jnt_dofadr[joint_id]) for joint_id in self.joint_ids]
-        self.joint_ranges = self.model.jnt_range[self.joint_ids].copy()
+        self.qpos_ids = [int(self.mj_model.jnt_qposadr[joint_id]) for joint_id in self.joint_ids]
+        self.dof_ids = [int(self.mj_model.jnt_dofadr[joint_id]) for joint_id in self.joint_ids]
+        self.joint_ranges = self.mj_model.jnt_range[self.joint_ids].copy()
         self.motor_ids = [
             self.name_id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in self.motor_names
         ]
-        self.scene_option = mujoco.MjvOption()
-        self.scene_option.geomgroup[3] = 0
-        self.scene_option.sitegroup[5] = 0
-        self.last_collision_pairs: tuple[tuple[str, str], ...] = ()
-        self.renderers: dict[str, mujoco.Renderer] = {}
-        self.reset()
+        self.ik_data = mujoco.MjData(self.mj_model)
 
-    def configure_scene(self) -> None:
-        """根据配置设置桌子、机器人底座、工件、相机等场景元素。
+    def _reset_internal(self) -> None:
+        """重置 robosuite 状态、关节初值和渲染可见组。"""
+        super()._reset_internal()
+        if self.camera_observations:
+            context = self.robosuite_sim._render_context_offscreen
+            context.vopt.geomgroup[0] = 0
+            context.vopt.sitegroup[5] = 0
+        self.set_joint_position(np.radians(self.config.robot.initial_joint_deg))
+        self.last_collision_pairs = ()
+        self.target_pose = None
+        self.seam_progress_hint = 0.0
 
-        将配置中的位置/姿态参数写入 MuJoCo 模型的对应字段。
+    def _setup_observables(self) -> OrderedDict[str, Observable]:
+        """建立双相机、关节和 TCP 的统一 observation dictionary。"""
+        observables: OrderedDict[str, Observable] = OrderedDict()
+
+        @sensor(modality="proprio")
+        def joint_position(obs_cache: dict[str, Any]) -> np.ndarray:
+            """读取六轴关节角，单位为弧度。"""
+            return self.mj_data.qpos[self.qpos_ids].copy()
+
+        @sensor(modality="proprio")
+        def joint_velocity(obs_cache: dict[str, Any]) -> np.ndarray:
+            """读取六轴关节速度，单位为弧度每秒。"""
+            return self.mj_data.qvel[self.dof_ids].copy()
+
+        @sensor(modality="proprio")
+        def tcp_position(obs_cache: dict[str, Any]) -> np.ndarray:
+            """读取 TCP 世界坐标，单位为米。"""
+            return self.mj_data.site_xpos[self.tcp_id].copy()
+
+        @sensor(modality="proprio")
+        def tcp_quaternion_wxyz(obs_cache: dict[str, Any]) -> np.ndarray:
+            """读取 TCP 世界姿态，四元数顺序为 wxyz。"""
+            matrix = self.mj_data.site_xmat[self.tcp_id].reshape(3, 3)
+            return matrix_to_quaternion(matrix)
+
+        proprio_sensors = (
+            joint_position,
+            joint_velocity,
+            tcp_position,
+            tcp_quaternion_wxyz,
+        )
+        for proprio_sensor in proprio_sensors:
+            name = proprio_sensor.__name__
+            observables[name] = Observable(
+                name=name,
+                sensor=proprio_sensor,
+                sampling_rate=self.config.timing.control_hz,
+            )
+
+        camera_names = (
+            (self.config.camera.global_name, self.config.camera.wrist_name)
+            if self.camera_observations
+            else ()
+        )
+        for camera_name in camera_names:
+            image_name = f"{camera_name}_image"
+
+            @sensor(modality="image")
+            def camera_image(
+                obs_cache: dict[str, Any],
+                camera_name: str = camera_name,
+            ) -> np.ndarray:
+                """渲染 RGB 图像，并转换为常用的左上角原点约定。"""
+                image = self.robosuite_sim.render(
+                    camera_name=camera_name,
+                    width=self.config.camera.width,
+                    height=self.config.camera.height,
+                )
+                return image[::-1].copy()
+
+            camera_image.__name__ = image_name
+            observables[image_name] = Observable(
+                name=image_name,
+                sensor=camera_image,
+                sampling_rate=self.config.timing.policy_hz,
+            )
+        return observables
+
+    def _pre_action(self, action: np.ndarray, policy_step: bool = False) -> None:
+        """把一个绝对 TCP 目标转换为 120 Hz 关节位置命令。
+
+        robosuite 在一个 30 Hz ``step`` 内调用本方法 20 次。每隔 5 个
+        物理步重新求解一次 IK，从而保持 600 Hz 物理、120 Hz 控制
+        和 30 Hz 策略时序。
+
+        Args:
+            action: 世界系绝对 TCP 位姿 ``[x, y, z, qw, qx, qy, qz]``。
+            policy_step: 当前调用是否为新策略动作的第一个物理步。
         """
-        scene = self.config.scene
-        table_id = self.name_id(mujoco.mjtObj.mjOBJ_GEOM, "table")
-        table_frame_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "table_frame")
-        mount_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "robot_mount")
-        workpiece_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, "workpiece")
-        camera_id = self.name_id(mujoco.mjtObj.mjOBJ_CAMERA, self.config.camera.global_name)
-        wrist_camera_id = self.name_id(mujoco.mjtObj.mjOBJ_CAMERA, self.config.camera.wrist_name)
-        seam_start_id = self.name_id(mujoco.mjtObj.mjOBJ_SITE, "seam_start")
-        seam_end_id = self.name_id(mujoco.mjtObj.mjOBJ_SITE, "seam_end")
-        base = np.asarray(scene.robot_base_position_m)
-        base_quaternion = matrix_to_quaternion(yaw_degrees_to_matrix(scene.robot_base_yaw_deg))
-        self.model.body_pos[table_frame_id] = scene.table_center_m
-        self.model.geom_pos[table_id] = 0
-        self.model.geom_size[table_id] = scene.table_half_size_m
-        self.model.body_pos[mount_id] = base
-        self.model.body_quat[mount_id] = base_quaternion
-        self.model.body_pos[workpiece_id] = scene.workpiece_position_m
-        camera_position = np.asarray(scene.global_camera_position_table_m)
-        self.model.cam_mode[camera_id] = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
-        self.model.cam_targetbodyid[camera_id] = -1
-        self.model.cam_pos[camera_id] = camera_position
-        self.model.cam_quat[camera_id] = look_at_quaternion(
-            camera_position,
-            np.asarray(scene.global_camera_target_table_m),
-            np.asarray(scene.global_camera_up_table),
+        self.observed_contacts.update(self.collision_pairs)
+        if policy_step:
+            values = np.asarray(action, dtype=np.float64).reshape(self.action_dim)
+            quaternion = values[3:] / np.linalg.norm(values[3:])
+            self.target_pose = Pose(values[:3].copy(), quaternion)
+            self.policy_physics_step = 0
+            self.control_index = 0
+            self.observed_contacts.clear()
+
+        if self.policy_physics_step % self.config.timing.physics_steps_per_control == 0:
+            current = self.tcp_pose()
+            controls_left = self.config.timing.controls_per_policy - self.control_index
+            fraction = 1.0 / controls_left
+            target = self.target_pose
+            assert target is not None
+            intermediate = Pose(
+                current.position + fraction * (target.position - current.position),
+                target.quaternion_wxyz,
+            )
+            command, residual = self.solve_ik(intermediate)
+            current_joint = self.mj_data.qpos[self.qpos_ids]
+            max_delta = self.config.robot.joint_velocity_limit / self.config.timing.control_hz
+            command = current_joint + np.clip(command - current_joint, -max_delta, max_delta)
+            self.last_joint_command = command.copy()
+            self.last_ik_residual = residual
+            self.control_index += 1
+
+        self.mj_data.ctrl[self.motor_ids] = self.last_joint_command
+        self.policy_physics_step += 1
+
+    def _post_action(self, action: np.ndarray) -> tuple[float, bool, dict[str, Any]]:
+        """汇总一个策略周期的接触、成功状态和控制诊断。"""
+        self.observed_contacts.update(self.collision_pairs)
+        self.last_collision_pairs = tuple(sorted(self.observed_contacts))
+        reward, done, info = super()._post_action(action)
+        info.update(
+            {
+                "success": self._check_success(),
+                "collision": bool(self.last_collision_pairs),
+                "collision_pairs": self.last_collision_pairs,
+                "joint_command": self.last_joint_command.copy(),
+                "ik_residual_m": self.last_ik_residual,
+            }
         )
-        self.model.cam_fovy[camera_id] = self.config.camera.global_fovy_deg
-        wrist_position = np.asarray(self.config.camera.wrist_position_link6_m)
-        self.model.cam_pos[wrist_camera_id] = wrist_position
-        self.model.cam_quat[wrist_camera_id] = look_at_quaternion(
-            wrist_position,
-            np.asarray(self.config.camera.wrist_target_link6_m),
-            np.asarray(self.config.camera.wrist_up_link6),
+        return reward, done, info
+
+    def reward(self, action: np.ndarray | None = None) -> float:
+        """使用稀疏任务奖励：到达焊缝末端且仍在跟踪带内时为 1。"""
+        return float(self._check_success())
+
+    def _check_success(self) -> bool:
+        """判断 TCP 是否到达配置定义的自然完成区域。"""
+        projection = self.active_seam().project(
+            self.tcp_pose().position,
+            self.seam_progress_hint,
         )
-        self.model.cam_fovy[wrist_camera_id] = self.config.camera.wrist_fovy_deg
-        seam_surface = 0.0025 + self.config.task.tcp_clearance_m
-        self.model.site_pos[[seam_start_id, seam_end_id], 0] = seam_surface
-        self.model.site_pos[[seam_start_id, seam_end_id], 2] = seam_surface
+        if projection.distance_m <= self.config.evaluation.tracking_band_m:
+            self.seam_progress_hint = projection.progress
+        return (
+            projection.raw_progress >= self.config.deployment.completion_progress_min
+            and projection.distance_m <= self.config.deployment.completion_distance_m
+        )
+
+    def active_seam(self) -> SeamPath:
+        """返回当前随机化工件位姿下的有向焊缝。"""
+        position = self.mj_data.xpos[self.workpiece_id].copy()
+        rotation = self.mj_data.xmat[self.workpiece_id].reshape(3, 3).copy()
+        return self.workpiece.seam(position, rotation)
 
     def base_rotation(self) -> np.ndarray:
-        """返回机器人底座的旋转矩阵 (仅偏航角)。
-
-        Returns:
-            3x3 旋转矩阵。
-        """
+        """返回机器人底座相对世界系的旋转矩阵。"""
         return yaw_degrees_to_matrix(self.config.scene.robot_base_yaw_deg)
 
     def name_id(self, kind: mujoco.mjtObj, name: str) -> int:
-        """通过 MuJoCo 名称查询对象 ID。
+        """按名称查询底层 MuJoCo 对象 ID。
 
         Args:
-            kind: MuJoCo 对象类型 (如 mjOBJ_BODY、mjOBJ_SITE)。
-            name: 对象名称。
+            kind: MuJoCo 对象类型。
+            name: MJCF 中的对象名称。
 
         Returns:
-            对象 ID。
-
-        Raises:
-            ValueError: 名称不存在于模型中。
+            对象整数 ID。
         """
-        value = mujoco.mj_name2id(self.model, kind, name)
+        value = mujoco.mj_name2id(self.mj_model, kind, name)
         if value < 0:
             raise ValueError(f"MuJoCo object not found: {name}")
         return value
 
-    def reset(self, seed: int = 0) -> None:
-        """重置仿真到初始关节位置, 清除碰撞记录。
+    def reset(self, seed: int | None = None) -> OrderedDict[str, np.ndarray]:
+        """重置环境，并可同时更新 robosuite 随机数生成器。
 
         Args:
-            seed: 未使用, 保留以兼容接口。
+            seed: 新的随机种子；未传入时延续当前生成器。
+
+        Returns:
+            robosuite observation dictionary。
         """
-        mujoco.mj_resetData(self.model, self.data)
-        joint_position = np.radians(self.config.robot.initial_joint_deg)
-        self.data.qpos[self.qpos_ids] = joint_position
-        self.data.ctrl[self.motor_ids] = joint_position
-        mujoco.mj_forward(self.model, self.data)
-        self.last_collision_pairs = ()
+        if seed is not None:
+            self.seed = seed
+            self.rng = np.random.default_rng(seed)
+        return super().reset()
+
+    def observe(self) -> OrderedDict[str, np.ndarray]:
+        """立即读取与 ``reset`` / ``step`` 同构的最新观测。"""
+        return self._get_observations(force_update=True)
+
+    def visualize(self, vis_settings: dict[str, bool]) -> None:
+        """保留 robosuite 可视化接口。
+
+        当前不显示 robosuite 辅助 site，因此重置时无需切换对象标记。
+
+        Args:
+            vis_settings: robosuite 请求的可视化开关。
+        """
+
+    def images_from_observation(
+        self,
+        observation: OrderedDict[str, np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        """从 robosuite 观测中提取数据集使用的相机名称映射。
+
+        Args:
+            observation: ``reset``、``step`` 或 ``observe`` 返回的观测。
+
+        Returns:
+            ``{"global": RGB, "wrist": RGB}`` 形式的图像字典。
+        """
+        return {
+            name: observation[f"{name}_image"]
+            for name in (self.config.camera.global_name, self.config.camera.wrist_name)
+        }
 
     def randomize_workpiece(self, rng: np.random.Generator) -> None:
-        """在配置范围内随机化工件位置和偏航角。
+        """在 YAML 配置范围内随机化工件位置和偏航角。
 
         Args:
-            rng: 随机数生成器。
+            rng: episode 专用随机数生成器。
         """
         randomization = self.config.randomization
-        base = np.asarray(self.config.scene.workpiece_position_m, dtype=np.float64).copy()
-        base += rng.uniform(
+        position = np.asarray(self.config.scene.workpiece_position_m, dtype=np.float64).copy()
+        position += rng.uniform(
             [-randomization.xy_m, -randomization.xy_m, -randomization.z_m],
             [randomization.xy_m, randomization.xy_m, randomization.z_m],
         )
         yaw = np.radians(rng.uniform(-randomization.yaw_deg, randomization.yaw_deg))
-        self.model.body_pos[self.workpiece_id] = base
-        self.model.body_quat[self.workpiece_id] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
-        mujoco.mj_forward(self.model, self.data)
+        self.mj_model.body_pos[self.workpiece_id] = position
+        self.mj_model.body_quat[self.workpiece_id] = [
+            np.cos(yaw / 2),
+            0,
+            0,
+            np.sin(yaw / 2),
+        ]
+        self.robosuite_sim.forward()
 
     def site_position(self, name: str) -> np.ndarray:
-        """获取指定 site 的世界坐标位置。
-
-        Args:
-            name: site 名称 (如 "seam_start")。
-
-        Returns:
-            三维位置向量。
-        """
+        """返回指定 site 的世界坐标位置。"""
         site_id = self.name_id(mujoco.mjtObj.mjOBJ_SITE, name)
-        return self.data.site_xpos[site_id].copy()
+        return self.mj_data.site_xpos[site_id].copy()
 
     def body_rotation(self, name: str) -> np.ndarray:
-        """获取指定 body 的世界坐标系旋转矩阵。
-
-        Args:
-            name: body 名称 (如 "workpiece")。
-
-        Returns:
-            3x3 旋转矩阵。
-        """
+        """返回指定 body 的世界坐标旋转矩阵。"""
         body_id = self.name_id(mujoco.mjtObj.mjOBJ_BODY, name)
-        return self.data.xmat[body_id].reshape(3, 3).copy()
+        return self.mj_data.xmat[body_id].reshape(3, 3).copy()
 
     def tcp_pose(self) -> Pose:
-        """获取 TCP 当前位姿。
-
-        Returns:
-            包含位置和四元数的位姿对象。
-        """
-        matrix = self.data.site_xmat[self.tcp_id].reshape(3, 3).copy()
-        return Pose(self.data.site_xpos[self.tcp_id].copy(), matrix_to_quaternion(matrix))
+        """返回当前 TCP 世界位姿。"""
+        matrix = self.mj_data.site_xmat[self.tcp_id].reshape(3, 3)
+        return Pose(
+            self.mj_data.site_xpos[self.tcp_id].copy(),
+            matrix_to_quaternion(matrix),
+        )
 
     def state(self) -> RobotState:
-        """获取当前完整机器人状态。
-
-        Returns:
-            包含关节位置、速度和 TCP 位姿的状态对象。
-        """
+        """返回当前关节状态和 TCP 位姿。"""
         return RobotState(
-            joint_position=self.data.qpos[self.qpos_ids].copy(),
-            joint_velocity=self.data.qvel[self.dof_ids].copy(),
+            joint_position=self.mj_data.qpos[self.qpos_ids].copy(),
+            joint_velocity=self.mj_data.qvel[self.dof_ids].copy(),
             tcp=self.tcp_pose(),
         )
 
     def set_joint_position(self, joint_position: np.ndarray) -> None:
-        """设置六轴位置并同步控制目标。"""
-        self.data.qpos[self.qpos_ids] = joint_position
-        self.data.qvel[:] = 0
-        self.data.ctrl[self.motor_ids] = joint_position
-        mujoco.mj_forward(self.model, self.data)
+        """直接设置六轴位置，并同步位置执行器目标。"""
+        self.mj_data.qpos[self.qpos_ids] = joint_position
+        self.mj_data.qvel[:] = 0
+        self.mj_data.ctrl[self.motor_ids] = joint_position
+        self.robosuite_sim.forward()
 
     def pose_for_joint_position(self, joint_position: np.ndarray) -> Pose:
-        """计算关节命令对应的 TCP 位姿，不改变当前仿真状态。"""
-        original_qpos = self.data.qpos.copy()
-        original_qvel = self.data.qvel.copy()
-        try:
-            self.data.qpos[self.qpos_ids] = joint_position
-            mujoco.mj_forward(self.model, self.data)
-            return self.tcp_pose()
-        finally:
-            self.data.qpos[:] = original_qpos
-            self.data.qvel[:] = original_qvel
-            mujoco.mj_forward(self.model, self.data)
+        """使用独立 IK 数据计算关节命令对应的 TCP 位姿。"""
+        self.ik_data.qpos[:] = self.mj_data.qpos
+        self.ik_data.qpos[self.qpos_ids] = joint_position
+        mujoco.mj_forward(self.mj_model, self.ik_data)
+        matrix = self.ik_data.site_xmat[self.tcp_id].reshape(3, 3)
+        return Pose(
+            self.ik_data.site_xpos[self.tcp_id].copy(),
+            matrix_to_quaternion(matrix),
+        )
 
     def randomize_joint_position(
-        self, rng: np.random.Generator, max_offset_deg: list[float], attempts: int
+        self,
+        rng: np.random.Generator,
+        max_offset_deg: list[float],
+        attempts: int,
     ) -> tuple[np.ndarray, int]:
         """在当前构型附近采样无碰撞初始关节位置。
 
         Args:
             rng: episode 专用随机数生成器。
-            max_offset_deg: 六个关节各自允许的最大角度偏移。
+            max_offset_deg: 六个关节各自允许的最大偏移角。
             attempts: 最大采样次数。
 
         Returns:
-            实际关节偏移（度）和成功时的采样次数。
+            实际关节偏移（度）和成功采样次数。
         """
-        center = self.data.qpos[self.qpos_ids].copy()
+        center = self.mj_data.qpos[self.qpos_ids].copy()
         radius = np.radians(max_offset_deg)
         margin = self.config.safety.joint_position_margin_rad
         lower = np.maximum(center - radius, self.joint_ranges[:, 0] + margin)
@@ -251,140 +479,92 @@ class WeldingSimulation:
         self.set_joint_position(center)
         raise RuntimeError(f"cannot sample collision-free initial joints after {attempts} attempts")
 
-    def render(self) -> dict[str, np.ndarray]:
-        """渲染全局和腕部相机画面。
-
-        相机通过配置中的名称确定, 使用场景选项隐藏碰撞几何体。
-
-        Returns:
-            相机名称到 RGB 图像的映射字典。
-        """
-        output: dict[str, np.ndarray] = {}
-        for name in (self.config.camera.global_name, self.config.camera.wrist_name):
-            if name not in self.renderers:
-                self.renderers[name] = mujoco.Renderer(
-                    self.model,
-                    height=self.config.camera.height,
-                    width=self.config.camera.width,
-                )
-            renderer = self.renderers[name]
-            renderer.update_scene(self.data, camera=name, scene_option=self.scene_option)
-            output[name] = renderer.render().copy()
-        return output
-
     def solve_ik(self, target: Pose) -> tuple[np.ndarray, float]:
-        """使用阻尼最小二乘法求解逆运动学。
+        """在独立 ``MjData`` 上使用阻尼最小二乘法求解 IK。
 
-        在当前位置进行迭代, 雅可比转置法配合阻尼正则化, 避免奇异点附近的
-        数值不稳定。
+        独立数据避免在 robosuite 的 ``mj_step1`` / ``mj_step2`` 之间改写主
+        仿真状态。
 
         Args:
-            target: 目标 TCP 位姿。
+            target: 世界坐标系下的目标 TCP 位姿。
 
         Returns:
-            (solution, residual), 分别为关节位置解和最终位姿误差范数。
+            六关节解和最终六维位姿误差范数。
         """
         robot = self.config.robot
-        original_qpos = self.data.qpos.copy()
-        original_qvel = self.data.qvel.copy()
+        data = self.ik_data
+        data.qpos[:] = self.mj_data.qpos
+        data.qvel[:] = self.mj_data.qvel
+        mujoco.mj_forward(self.mj_model, data)
         residual = float("inf")
-        try:
-            for _ in range(robot.ik_iterations):
-                current = self.tcp_pose()
-                error = np.concatenate(
-                    [
-                        target.position - current.position,
-                        rotation_error(target.quaternion_wxyz, current.quaternion_wxyz),
-                    ]
-                )
-                residual = float(np.linalg.norm(error))
-                if residual <= robot.ik_tolerance:
-                    break
-                jacobian_position = np.zeros((3, self.model.nv))
-                jacobian_rotation = np.zeros((3, self.model.nv))
-                mujoco.mj_jacSite(
-                    self.model,
-                    self.data,
-                    jacobian_position,
-                    jacobian_rotation,
-                    self.tcp_id,
-                )
-                jacobian = np.vstack(
-                    [jacobian_position[:, self.dof_ids], jacobian_rotation[:, self.dof_ids]]
-                )
-                regularizer = robot.ik_damping**2 * np.eye(6)
-                delta = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + regularizer, error)
-                norm = float(np.linalg.norm(delta))
-                if norm > robot.ik_max_step:
-                    delta *= robot.ik_max_step / norm
-                self.data.qpos[self.qpos_ids] += delta
-                self.data.qpos[self.qpos_ids] = np.clip(
-                    self.data.qpos[self.qpos_ids],
-                    self.joint_ranges[:, 0],
-                    self.joint_ranges[:, 1],
-                )
-                mujoco.mj_forward(self.model, self.data)
-            solution = self.data.qpos[self.qpos_ids].copy()
-        finally:
-            self.data.qpos[:] = original_qpos
-            self.data.qvel[:] = original_qvel
-            mujoco.mj_forward(self.model, self.data)
-        return solution, residual
-
-    def execute_pose(self, target: Pose) -> tuple[np.ndarray, float]:
-        """多步执行目标位姿: 逐步插值 IK 解算 + 物理步进。
-
-        将目标位姿拆分为多个 control 步, 每步 IK 求解后限幅关节速度,
-        再执行多个 physics 子步收集接触信息。
-
-        Args:
-            target: 目标 TCP 位姿。
-
-        Returns:
-            (joint_command, ik_residual), 最终关节命令和 IK 残差。
-        """
-        controls = self.config.timing.controls_per_policy
-        physics_steps = self.config.timing.physics_steps_per_control
-        residual = float("inf")
-        command = self.state().joint_position
-        observed_contacts: set[tuple[str, str]] = set()
-        for control_index in range(controls):
-            current = self.tcp_pose()
-            fraction = 1.0 / (controls - control_index)
-            intermediate = Pose(
-                current.position + fraction * (target.position - current.position),
-                target.quaternion_wxyz,
+        remaining_iterations = robot.ik_iterations
+        while remaining_iterations:
+            matrix = data.site_xmat[self.tcp_id].reshape(3, 3)
+            error = np.concatenate(
+                [
+                    target.position - data.site_xpos[self.tcp_id],
+                    rotation_error(
+                        target.quaternion_wxyz,
+                        matrix_to_quaternion(matrix),
+                    ),
+                ]
             )
-            command, residual = self.solve_ik(intermediate)
-            current_joint = self.data.qpos[self.qpos_ids].copy()
-            max_delta = self.config.robot.joint_velocity_limit / self.config.timing.control_hz
-            command = current_joint + np.clip(command - current_joint, -max_delta, max_delta)
-            self.data.ctrl[self.motor_ids] = command
-            for _ in range(physics_steps):
-                mujoco.mj_step(self.model, self.data)
-                observed_contacts.update(self.collision_pairs)
-        self.last_collision_pairs = tuple(sorted(observed_contacts))
-        return command, residual
+            residual = float(np.linalg.norm(error))
+            if residual <= robot.ik_tolerance:
+                break
+            jacobian_position = np.zeros((3, self.mj_model.nv))
+            jacobian_rotation = np.zeros((3, self.mj_model.nv))
+            mujoco.mj_jacSite(
+                self.mj_model,
+                data,
+                jacobian_position,
+                jacobian_rotation,
+                self.tcp_id,
+            )
+            jacobian = np.vstack(
+                [
+                    jacobian_position[:, self.dof_ids],
+                    jacobian_rotation[:, self.dof_ids],
+                ]
+            )
+            regularizer = robot.ik_damping**2 * np.eye(6)
+            delta = jacobian.T @ np.linalg.solve(
+                jacobian @ jacobian.T + regularizer,
+                error,
+            )
+            norm = float(np.linalg.norm(delta))
+            if norm > robot.ik_max_step:
+                delta *= robot.ik_max_step / norm
+            data.qpos[self.qpos_ids] = np.clip(
+                data.qpos[self.qpos_ids] + delta,
+                self.joint_ranges[:, 0],
+                self.joint_ranges[:, 1],
+            )
+            mujoco.mj_forward(self.mj_model, data)
+            remaining_iterations -= 1
+        return data.qpos[self.qpos_ids].copy(), residual
 
-    def perturb_tcp(self, offset: np.ndarray, rotation_vector: np.ndarray | None = None) -> bool:
-        """给 TCP 施加偏移和旋转扰动, 模拟恢复场景。
-
-        通过 IK 求解新位姿, 若结果碰撞或无解则恢复原构型。
+    def perturb_tcp(
+        self,
+        offset: np.ndarray,
+        rotation_vector: np.ndarray | None = None,
+    ) -> bool:
+        """给 TCP 施加位置和姿态扰动，用于生成恢复样本。
 
         Args:
-            offset: 三维位置偏移 (米)。
-            rotation_vector: 旋转向量 (弧度), 可选。
+            offset: 三维世界系位置偏移，单位为米。
+            rotation_vector: 三维旋转向量，单位为弧度。
 
         Returns:
-            扰动是否成功应用。
+            扰动是否成功且未产生碰撞。
         """
         current = self.tcp_pose()
-        current_joints = self.data.qpos[self.qpos_ids].copy()
-        rotation = np.eye(3)
-        if rotation_vector is not None:
-            angle = float(np.linalg.norm(rotation_vector))
-            if angle:
-                rotation = Rotation.from_rotvec(rotation_vector).as_matrix()
+        current_joints = self.mj_data.qpos[self.qpos_ids].copy()
+        rotation = (
+            Rotation.from_rotvec(rotation_vector).as_matrix()
+            if rotation_vector is not None and np.linalg.norm(rotation_vector)
+            else np.eye(3)
+        )
         target = Pose(
             current.position + offset,
             matrix_to_quaternion(rotation @ quaternion_to_matrix(current.quaternion_wxyz)),
@@ -400,24 +580,35 @@ class WeldingSimulation:
 
     @property
     def collision(self) -> bool:
-        """是否有任何碰撞接触。"""
-        return bool(self.data.ncon)
+        """返回当前时刻是否存在需要中止任务的有效碰撞。"""
+        return bool(self.collision_pairs)
 
     @property
     def collision_pairs(self) -> tuple[tuple[str, str], ...]:
-        """当前碰撞接触的几何体名称对列表。"""
+        """返回有效碰撞对，忽略焊丝尖端对工件的低力正常接触。"""
         pairs: list[tuple[str, str]] = []
-        for contact in self.data.contact:
+        for index, contact in enumerate(self.mj_data.contact):
+            geom_ids = (contact.geom1, contact.geom2)
+            if self.torch_tip_id in geom_ids:
+                other_id = contact.geom2 if contact.geom1 == self.torch_tip_id else contact.geom1
+                if other_id in self.workpiece_geom_ids:
+                    force = np.zeros(6)
+                    mujoco.mj_contactForce(self.mj_model, self.mj_data, index, force)
+                    if np.linalg.norm(force[:3]) < self.config.safety.tip_contact_force_limit_n:
+                        continue
             names = tuple(
-                mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                mujoco.mj_id2name(
+                    self.mj_model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    geom_id,
+                )
                 or f"geom_{geom_id}"
-                for geom_id in (contact.geom1, contact.geom2)
+                for geom_id in geom_ids
             )
             pairs.append((names[0], names[1]))
         return tuple(pairs)
 
-    def close(self) -> None:
-        """释放所有渲染器资源。"""
-        for renderer in self.renderers.values():
-            renderer.close()
-        self.renderers.clear()
+
+register_env(WeldingEnv)
+
+__all__ = ["WeldingEnv"]

@@ -16,6 +16,8 @@
 
 工件默认只进行 XY 平移和 yaw 随机化，Z 固定在桌面支撑高度；未经夹具模型约束的正负 Z 随机会让工件嵌入桌面，因此默认关闭。随机到 IK 不可达或 staging 碰撞的位姿属于无效场景样本，采集器会按相同 episode seed 继续重采样，最多尝试 `randomization.max_sampling_attempts` 次。该 rejection sampling 保证被录制的 episode 都有高精度、无碰撞的有效起始姿态。
 
-腕部相机安装在 link6 的负 Y 侧，光心局部位置为 `[0, -0.080, 0.134] m`，与 mesh 上突出的安装螺钉同轴，并位于安装板的前表面。它是固定相机而非跟踪相机，光轴由 YAML 中的目标点对准标定 TCP。
+腕部相机安装架与 link6 负 Y 侧突出的螺钉对齐；镜头光心从安装点沿光轴前移
+`40 mm`，局部位置为 `[0.008607, -0.071891, 0.172212] m`，避免支架进入自身视野。
+它是固定相机而非跟踪相机，光轴由 YAML 中的目标点对准标定 TCP。
 
 Elfin STL 在 link5 与 link6 的 joint6 交界处没有独立轴环，运行 MJCF 使用纯视觉的 `elfin_joint6_ring` 黑色圆环补齐外观；它不参与碰撞检测。基座 yaw 同时作用于 base mesh 和整条运动链，episode 中的 base-frame 位移由 world-frame 位移显式转换得到。

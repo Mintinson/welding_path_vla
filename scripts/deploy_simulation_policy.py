@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把训练好的策略部署到项目 MuJoCo 环境并记录评估轨迹。"""
+"""把训练好的策略部署到项目 robosuite 环境并记录评估轨迹。"""
 
 import os
 
