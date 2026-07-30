@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-from .data_adapter import ACTDataReport, validate_dataset
-
 
 @dataclass(frozen=True, slots=True)
 class ActPolicyConfig:
@@ -14,7 +12,7 @@ class ActPolicyConfig:
 
 
 __all__ = [
-    "ACTDataReport",
+    # "ACTDataReport",
     "ActPolicyConfig",
-    "validate_dataset",
+    # "validate_dataset",
 ]

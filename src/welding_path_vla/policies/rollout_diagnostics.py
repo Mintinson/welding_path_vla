@@ -1,4 +1,4 @@
-"""ACT 仿真 rollout 的逐步记录结构与诊断摘要。"""
+"""策略仿真 rollout 的逐步记录结构与诊断摘要。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
         "observation_tcp_position": [],
         # 策略执行前看到的 TCP 世界系姿态，四元数顺序为 wxyz。
         "observation_tcp_quaternion_wxyz": [],
-        # 策略执行前看到的六关节角，也是 ACT 13 维状态向量的一部分。
+        # 策略执行前看到的六关节角，也是 13 维策略状态向量的一部分。
         "observation_joint_position": [],
         # 动作执行后的实际 TCP 世界系位置，即 state_{t+1}。
         "tcp_position": [],
@@ -28,7 +28,7 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
         "joint_position": [],
         # 动作执行后的实际六关节速度，用于安全与平滑性评价。
         "joint_velocity": [],
-        # ACT 输出的 9D TCP 局部增量：[平移 3D，旋转 6D]。
+        # 策略输出的 9D TCP 局部增量：[平移 3D，旋转 6D]。
         "action": [],
         # 将 action 解码到世界系后，希望 TCP 到达的目标位置。
         "command_tcp_position": [],

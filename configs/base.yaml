@@ -1,0 +1,165 @@
+timing:
+  physics_hz: 600
+  control_hz: 120
+  policy_hz: 30
+
+camera:
+  width: 640
+  height: 480
+  global_name: global
+  wrist_name: wrist
+  global_fovy_deg: 55.0
+  wrist_fovy_deg: 85.0
+  # 无头采集使用 EGL；sim view 仍使用 GLFW 创建交互窗口。
+  offscreen_backend: egl
+  # link6 局部坐标：安装架仍与负 Y 侧螺钉对齐，镜头光心沿光轴前移 40 mm。
+  wrist_position_link6_m: [0.008607, -0.071891, 0.172212]
+  wrist_target_link6_m: [0.057557, -0.025778, 0.389520]
+  wrist_up_link6: [0.0, 0.0, -1.0]
+
+scene:
+  table_center_m: [0.35, 0.0, 0.27]
+  table_half_size_m: [0.55, 0.45, 0.02]
+  robot_base_position_m: [0.0, 0.0, 0.29]
+  robot_base_yaw_deg: -90.0
+  workpiece_position_m: [0.45, 0.0, 0.2925]
+  # 全局相机安装在 table_frame 上，以下外参均使用桌面局部坐标。
+  global_camera_position_table_m: [0.90, 0.0, 0.78]
+  global_camera_target_table_m: [0.10, 0.0, 0.0225]
+  global_camera_up_table: [0.0, 0.0, 1.0]
+
+robot:
+  model_id: elfin5pro_photo_layout_v6
+  model_asset: elfin5/elfin5pro_robot.xml
+  initial_joint_deg: [90.9411, -72.1133, 22.0613, 45.5546, 128.4704, -51.3849]
+  joint_velocity_limit: 1.57
+  ik_damping: 0.01
+  ik_max_step: 0.08
+  ik_tolerance: 0.0005
+  ik_iterations: 80
+
+real_robot:
+  enabled: false
+  host: null
+  port: 10003
+  connect_timeout_s: 3.0
+  command_timeout_s: 0.1
+  control_mode: servo_j
+
+safety:
+  enabled: true
+  joint_position_margin_rad: 0.02
+  joint_velocity_limit_rad_s: 1.57
+  tcp_speed_limit_m_s: 0.40
+  command_timeout_s: 0.10
+  # 焊丝尖端轻触工件属于焊接接触；超过该合力才判为碰撞。
+  tip_contact_force_limit_n: 3.0
+
+randomization:
+  xy_m: 0.1
+  z_m: 0.0
+  yaw_deg: 30.0
+  # staging 构型附近六个关节的最大独立偏移（度）。
+  joint_degs: [60, 20, 20, 30, 60, 60]
+  # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
+  max_sampling_attempts: 10
+  initial_tcp_m: 0.1
+  recovery_probability: 0.25
+  recovery_position_m: 0.005
+  recovery_rotation_deg: 3.0
+
+collection:
+  dataset_root: datasets/weldpath_raw_v2
+  episodes: 50
+  max_attempt_multiplier: 3
+  seed: 20260721
+  # 原始数据和 rollout 统一由 LeRobot / PyAV 写入可直接预览的 H.264 MP4。
+  headless: true
+
+quality:
+  minimum_progress: 0.98
+  cross_track_mean_m: 0.001
+  cross_track_p95_m: 0.002
+  cross_track_max_m: 0.01
+  orientation_p95_deg: 2.0
+  orientation_max_deg: 5.0
+
+evaluation:
+  pcr_min: 0.95
+  direction_ratio_min: 0.90
+  tracking_band_m: 0.01
+  cte_rmse_m: 0.0015
+  cte_p95_m: 0.002
+  cte_max_m: 0.005
+  orientation_p95_deg: 2.0
+  speed_mape_max: 0.20
+  jerk_ratio_max: 2.0
+  jerk_min_sample_rate_hz: 80.0
+  jerk_reference_floor_m_s3: 0.001
+  joint_acceleration_limit_rad_s2: 10.0
+  require_smoothness_for_success: false
+
+policy:
+  family: smolvla
+  checkpoint: null
+  device: cuda
+  # 30 Hz 下覆盖未来 0.5 秒。
+  action_horizon: 15
+  action_steps: 15
+  action_stride: 1
+  action_source: safe_command
+  include_current: false
+  parameters: {}
+
+training:
+  dataset_repo_id: null
+  dataset_root: datasets/weldpath_lerobot_v2
+  output_dir: outputs/train
+  batch_size: 16
+  steps: 100000
+  num_workers: 4
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 2000
+  max_eval_samples: 1000
+  log_freq: 100
+  save_freq: 10000
+  seed: 20260724
+  wandb: false
+  amp_dtype: bfloat16
+
+policy_evaluation:
+  batch_size: 4
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+lerobot_export:
+  incremental: false
+  start_episode: null
+  end_episode: null
+  # 默认只保留 MP4；true 时改为逐帧图片格式。
+  save_images: false
+  # 流式编码跳过临时 PNG，两个相机由独立编码线程并行处理。
+  streaming_encoding: true
+  parallel_video_encoding: true
+  image_writer_processes: 0
+  image_writer_threads: 8
+  # 每个相机最多缓存 64 帧，限制长 episode 的峰值内存。
+  encoder_queue_maxsize: 64
+  encoder_threads: null
+  # LeRobot 官方默认 AV1 配置适合训练数据归档；原始视频仍使用兼容性更好的 H.264。
+  video_codec: libsvtav1
+  video_quality: 30
+  video_preset: 12
+
+deployment:
+  dry_run: true
+  log_dir: outputs/deploy
+  episodes: 5
+  max_steps: 1000
+  seed: 20260724
+  record_video: true
+  completion_progress_min: 0.95
+  completion_distance_m: 0.01

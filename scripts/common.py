@@ -3,16 +3,42 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
 from draccus.argparsing import wrap
 
+from welding_path_vla.core.config_files import materialized_config
+
 
 def cli[Config](command: Callable[[Config], None]) -> Callable[[], None]:
-    """为 draccus 装饰器补充准确的无参入口类型。"""
-    return cast(Callable[[], None], wrap()(command))
+    """组合 YAML 模块，再由 Draccus 解析类型和命令行覆盖。"""
+    wrapped = cast(Callable[[], None], wrap()(command))
+
+    def entrypoint() -> None:
+        config_argument = next(
+            (argument for argument in sys.argv[1:] if argument.startswith("--config_path=")),
+            None,
+        )
+        if config_argument is None:
+            wrapped()
+            return
+
+        source = config_argument.split("=", 1)[1]
+        with materialized_config(source) as config_path:
+            arguments = sys.argv
+            sys.argv = [
+                f"--config_path={config_path}" if item == config_argument else item
+                for item in arguments
+            ]
+            try:
+                wrapped()
+            finally:
+                sys.argv = arguments
+
+    return entrypoint
 
 
 def output_json(value: object, output: str | Path | None = None) -> None:

@@ -35,6 +35,6 @@ def test_training_command_uses_unified_config() -> None:
     config = AppConfig()
     config.training.dataset_repo_id = "mintinson/weldpath_sim_v2"
     command = TrainingRequest(config.policy, config.training).command()
-    assert "--policy.type=smolvla" in command
+    assert "--policy.path=lerobot/smolvla_base" in command
     assert "--policy.chunk_size=15" in command
     assert "--dataset.root=datasets/weldpath_lerobot_v2" in command

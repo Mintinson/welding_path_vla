@@ -1,0 +1,57 @@
+policy:
+  family: smolvla
+  checkpoint: null
+  device: cuda
+  # 30 Hz 下预测未来 1 秒，每次闭环执行约 0.27 秒后重新规划。
+  action_horizon: 30
+  action_steps: 8
+  action_source: safe_command
+  parameters:
+    # 使用官方完整 SmolVLA 权重，而不是仅加载 VLM 后随机初始化动作专家。
+    pretrained_model: lerobot/smolvla_base
+    # 256² 将双相机视觉 token 的显存控制在 RTX 4060 8GB 可训练范围。
+    # resize_imgs_with_padding: [256, 256]
+    # num_steps: 5
+    use_amp: true
+    freeze_vision_encoder: true
+    train_expert_only: true
+    train_state_proj: true
+    scheduler_warmup_steps: 100
+    scheduler_decay_steps: 5000
+
+training:
+  dataset_repo_id: huayan/weldpath_smolvla_v1
+  dataset_root: datasets/weldpath_lerobot_smolvla_v1
+  output_dir: outputs/train/smolvla_weldpath_v1_5
+  # 实测 batch 16 峰值约 2.6 GiB、吞吐约 83 samples/s；batch 32 反而降至约 78。
+  batch_size: 16
+  steps: 5000
+  num_workers: 4
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 500
+  max_eval_samples: 100
+  log_freq: 20
+  save_freq: 500
+  seed: 20260729
+  wandb: false
+  amp_dtype: bfloat16
+  resume: true
+
+policy_evaluation:
+  batch_size: 1
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+deployment:
+  dry_run: false
+  log_dir: outputs/deploy/smolvla_weldpath_v2
+  episodes: 3
+  max_steps: 3300
+  seed: 20260729
+  record_video: true
+  # SmolVLA 是对比基线；自然完成门槛与 ACT 保持一致。
+  completion_progress_min: 0.85
+  completion_distance_m: 0.015

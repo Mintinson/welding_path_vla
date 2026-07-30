@@ -8,6 +8,8 @@ from typing import Any
 
 from draccus.argparsing import parse
 
+from welding_path_vla.core.config_files import materialized_config
+
 
 @dataclass(slots=True)
 class TimingConfig:
@@ -220,7 +222,7 @@ class SafetyConfig:
     joint_velocity_limit_rad_s: float = 1.57
     tcp_speed_limit_m_s: float = 0.20
     command_timeout_s: float = 0.10
-    tip_contact_force_limit_n: float = 5.0
+    tip_contact_force_limit_n: float = 3.0
 
 
 @dataclass(slots=True)
@@ -253,6 +255,7 @@ class TrainingConfig:
     seed: int = 20260724
     wandb: bool = False
     amp_dtype: str = "bfloat16"
+    resume: bool = False
 
 
 @dataclass(slots=True)
@@ -323,8 +326,9 @@ class AppConfig:
 
     @classmethod
     def load(cls, path: str | Path) -> AppConfig:
-        """通过 draccus 读取 YAML，供包内非 CLI 调用复用。"""
-        return parse(cls, config_path=path, args=[])
+        """组合 YAML 模块后通过 Draccus 完成类型解析。"""
+        with materialized_config(path) as config_path:
+            return parse(cls, config_path=config_path, args=[])
 
     def validate(self) -> None:
         self.timing.validate()

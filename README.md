@@ -15,7 +15,8 @@ pixi run -e sim sim-replay --episode=datasets/weldpath_raw_v2/episodes/episode_0
 pixi run -e dev check
 ```
 
-Pixi 环境按用途拆分：`sim`、`data`、`real`、`train`、`deploy` 和 `dev`。真机驱动和模型训练将在后续里程碑实现，当前不会从 `repo/` 迁移旧控制代码。
+Pixi 环境按用途拆分为 `sim`、`data`、`real`、`train`、`deploy` 和 `dev`；项目代码不依赖
+后期会删除的 `repo/` 目录。
 
 机器人 URDF、原始 MJCF 和真实 STL 集中在 `src/welding_path_vla/assets/elfin5/`。运行时由
 `Elfin5ProRobotModel`、`WeldingArena` 和 `WorkpieceObject` 分别构建机器人、桌面场景和
@@ -64,7 +65,9 @@ scripts/
 ├── evaluate.py                 # episode/数据集论文指标
 ├── show_robot_config.py        # 机器人配置检查
 ├── show_policy_config.py       # 策略配置检查
-└── train_policy.py             # 模型训练
+├── train_policy.py             # 模型训练
+├── evaluate_policy.py          # 留出数据离线评估
+└── deploy_simulation_policy.py # robosuite 闭环部署
 ```
 
 原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_action_chunk` 可在训练期构造相对当前末端坐标系的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
@@ -97,6 +100,24 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/act.yaml --policy
 ```
 
 完整的数据约定、checkpoint、日志和评估说明见 [ACT pipeline](docs/act-pipeline.md)。
+
+SmolVLA 基线使用统一的三任务 LeRobot 数据集和相同入口：
+
+```bash
+pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
+pixi run -e train train-policy --config_path=configs/smolvla.yaml
+pixi run -e train policy-evaluate --config_path=configs/smolvla.yaml --policy.checkpoint=CHECKPOINT
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_l_joint.yaml
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_bottom.yaml
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_top.yaml
+```
+
+配置由 `base.yaml`、`tasks/`、`policies/` 和 `deploy/` 分层组合；部署时更换一个入口
+YAML 即可同时切换工件、焊缝、指令、最大步数和输出目录。公共 checkpoint 只需在
+`configs/deploy/smolvla.yaml` 修改一次。
+
+实际采集数量、增量合并、RTX 4060 训练参数和最终产物见
+[SmolVLA 三任务基线](docs/smolvla-pipeline.md)。
 
 `export-lerobot` 默认采用 LeRobot 官方 AV1 配置，只保存视频 feature。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
 

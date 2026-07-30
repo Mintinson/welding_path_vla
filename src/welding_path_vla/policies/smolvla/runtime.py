@@ -1,4 +1,4 @@
-"""带 LeRobot 前后处理器的 ACT 推理运行时。"""
+"""带 LeRobot tokenizer、归一化器和动作反归一化器的 SmolVLA 运行时。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any
 
 import numpy as np
 from lerobot.configs import PreTrainedConfig
-from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
 from welding_path_vla.policies.base import Observation
@@ -17,25 +17,24 @@ from welding_path_vla.policies.checkpoint import resolve_checkpoint
 
 
 @dataclass(slots=True)
-class ACTRuntime:
-    """实现项目 Policy 协议，并忽略自然语言字段。"""
+class SmolVLARuntime:
+    """实现项目 Policy 协议，并保留自然语言任务输入。"""
 
-    policy: ACTPolicy
+    policy: SmolVLAPolicy
     preprocessor: Any
     postprocessor: Any
     device: str
 
     @classmethod
-    def from_pretrained(cls, checkpoint: str | Path, device: str) -> ACTRuntime:
-        """加载权重以及训练时保存的归一化处理器。"""
-
+    def from_pretrained(cls, checkpoint: str | Path, device: str) -> SmolVLARuntime:
+        """加载模型、tokenizer 和训练数据归一化统计。"""
         path = resolve_checkpoint(checkpoint)
         selected_device = (
             device if is_torch_device_available(device) else str(auto_select_torch_device())
         )
         config = PreTrainedConfig.from_pretrained(path)
         config.device = selected_device
-        policy = ACTPolicy.from_pretrained(path, config=config).to(selected_device).eval()
+        policy = SmolVLAPolicy.from_pretrained(path, config=config).to(selected_device).eval()
         preprocessor, postprocessor = make_pre_post_processors(
             config,
             pretrained_path=str(path),
@@ -44,25 +43,27 @@ class ACTRuntime:
         return cls(policy, preprocessor, postprocessor, selected_device)
 
     def reset(self) -> None:
-        """清空 ACT 内部动作队列。"""
+        """清空 SmolVLA 内部动作队列。"""
         self.policy.reset()
 
     def select_action(self, observation: Observation) -> np.ndarray:
-        """把双相机 RGB 和 13D 状态送入 ACT，返回一个物理量 action。"""
+        """把双相机、13D 状态和任务指令转换为一个物理量动作。"""
         import torch
 
         batch: dict[str, Any] = {
-            "observation.state": torch.as_tensor(observation.state, dtype=torch.float32).unsqueeze(
-                0
-            )
+            "observation.state": torch.as_tensor(
+                observation.state,
+                dtype=torch.float32,
+            ).unsqueeze(0),
+            "task": [observation.instruction],
         }
         for name, image in observation.images.items():
-            key = f"observation.images.{name}"
-            tensor = torch.as_tensor(
-                np.ascontiguousarray(image),
-                dtype=torch.float32,
-            ).permute(2, 0, 1)
-            batch[key] = tensor.div(255).unsqueeze(0)
+            batch[f"observation.images.{name}"] = (
+                torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32)
+                .permute(2, 0, 1)
+                .div(255)
+                .unsqueeze(0)
+            )
         processed = self.preprocessor(batch)
         with torch.inference_mode():
             action = self.policy.select_action(processed)
@@ -70,4 +71,4 @@ class ACTRuntime:
         return action.squeeze(0).detach().cpu().numpy()
 
 
-__all__ = ["ACTRuntime", "resolve_checkpoint"]
+__all__ = ["SmolVLARuntime"]

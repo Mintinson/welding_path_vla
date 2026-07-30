@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from welding_path_vla.core.config import AppConfig, TimingConfig
+from welding_path_vla.core.config_files import compose_config
 
 
 def test_default_config_is_valid() -> None:
     config = AppConfig.load(Path("configs/default.yaml"))
-    assert config.as_dict() == AppConfig().as_dict()
     assert config.timing.physics_steps_per_control == 5
     assert config.timing.controls_per_policy == 4
     assert config.timing.policy_hz >= 30
@@ -41,6 +41,46 @@ def test_pipe_configs_select_matching_workpiece_and_seam(path: str, seam_id: str
     if seam_id == "pipe_top":
         assert config.task.arc_sweep_deg == 360
         assert config.task.orientation_follow_ratio == 0
+
+
+@pytest.mark.parametrize(
+    ("path", "seam_id", "max_steps"),
+    [
+        ("configs/deploy/smolvla_l_joint.yaml", "straight_fillet", 1000),
+        ("configs/deploy/smolvla_pipe_bottom.yaml", "pipe_bottom", 1200),
+        ("configs/deploy/smolvla_pipe_top.yaml", "pipe_top", 3300),
+    ],
+)
+def test_deployment_profiles_select_complete_task(
+    path: str,
+    seam_id: str,
+    max_steps: int,
+) -> None:
+    """单个部署入口应同时选定模型、工件、焊缝和运行参数。"""
+    config = AppConfig.load(path)
+    assert config.policy.family == "smolvla"
+    assert config.policy.checkpoint
+    assert config.task.seam_id == seam_id
+    assert config.deployment.max_steps == max_steps
+
+
+def test_config_includes_merge_nested_sections_in_order(tmp_path: Path) -> None:
+    """入口文件和后置模块应只覆盖自己声明的嵌套字段。"""
+    (tmp_path / "base.yaml").write_text(
+        "deployment:\n  episodes: 1\n  max_steps: 1000\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "task.yaml").write_text(
+        "deployment:\n  max_steps: 3300\n",
+        encoding="utf-8",
+    )
+    entry = tmp_path / "entry.yaml"
+    entry.write_text(
+        "includes: [base.yaml, task.yaml]\ndeployment:\n  episodes: 5\n",
+        encoding="utf-8",
+    )
+
+    assert compose_config(entry)["deployment"] == {"episodes": 5, "max_steps": 3300}
 
 
 def test_frequency_layers_must_be_integral() -> None:

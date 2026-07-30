@@ -7,13 +7,14 @@ from dataclasses import asdict, dataclass, replace
 import numpy as np
 
 from welding_path_vla.core.config import AppConfig
-from welding_path_vla.policies.act.data_adapter import (
+from welding_path_vla.policies.act.runtime import ACTRuntime
+from welding_path_vla.policies.data import (
+    balanced_frame_indices,
     held_out_episode_indices,
     make_dataset,
     scale_uint8_images,
     validate_dataset,
 )
-from welding_path_vla.policies.act.runtime import ACTRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,8 +51,13 @@ def evaluate_checkpoint(config: AppConfig, checkpoint: str) -> ACTEvaluationRepo
         config.policy_evaluation.held_out_episodes,
     )
     dataset = make_dataset(policy_config, config.training, episodes)
-    loader = DataLoader(
+    frame_indices = balanced_frame_indices(
         dataset,
+        config.policy_evaluation.max_batches * config.policy_evaluation.batch_size,
+    )
+    sampled_dataset = torch.utils.data.Subset(dataset, frame_indices)
+    loader = DataLoader(
+        sampled_dataset,
         batch_size=config.policy_evaluation.batch_size,
         num_workers=config.policy_evaluation.num_workers,
         shuffle=False,

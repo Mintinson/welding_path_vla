@@ -1,0 +1,25 @@
+workpiece:
+  kind: l_joint
+  l_joint_length_m: 0.30
+  l_joint_width_m: 0.10
+  l_joint_thickness_m: 0.005
+
+task:
+  instruction: 沿 L 形工件的直线角焊缝完成焊接轨迹。
+  seam_id: straight_fillet
+  direction: forward
+  approach_speed_mps: 0.06
+  speed_mps: 0.02
+  retreat_speed_mps: 0.04
+  orientation_follow_ratio: 1.0
+  work_angle_deg: 45.0
+  travel_angle_deg: 10.0
+  tool_roll_deg: -20.0
+  approach_distance_m: 0.04
+  staging_clearance_m: 0.18
+  retreat_distance_m: 0.04
+  seam_length_m: 0.20
+  tcp_clearance_m: 0.0015
+
+collection:
+  dataset_root: datasets/weldpath_raw_v2

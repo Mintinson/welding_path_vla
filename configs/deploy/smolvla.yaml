@@ -1,0 +1,11 @@
+includes:
+  - ../policies/smolvla.yaml
+
+policy:
+  checkpoint: outputs/train/smolvla_weldpath_v1_5/checkpoints/005000/pretrained_model
+
+training:
+  resume: false
+
+deployment:
+  episodes: 5

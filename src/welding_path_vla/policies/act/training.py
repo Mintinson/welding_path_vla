@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
-from welding_path_vla.policies.act.data_adapter import validate_dataset
+from welding_path_vla.policies.data import validate_dataset
+from welding_path_vla.policies.process import lerobot_training_log
 
 
 def split_episodes(total: int, fraction: float) -> tuple[list[int], list[int]]:
@@ -92,7 +93,8 @@ def train(policy: PolicyConfig, training: TrainingConfig) -> Path:
     accelerator = Accelerator(
         mixed_precision={"bfloat16": "bf16", "float16": "fp16"}.get(precision, "no")
     )
-    lerobot_train(config, accelerator=accelerator)
+    with lerobot_training_log(Path(training.output_dir) / "train.log"):
+        lerobot_train(config, accelerator=accelerator)
     return Path(training.output_dir)
 
 

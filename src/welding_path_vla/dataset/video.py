@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from av.logging import ERROR, set_level
 from lerobot.configs import RGBEncoderConfig
 from lerobot.datasets.video_utils import StreamingVideoEncoder
 
@@ -32,6 +33,7 @@ class VideoRecorder:
             已启动的录制器。
         """
 
+        set_level(ERROR)
         video_config = RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast")
         encoder = StreamingVideoEncoder(fps, rgb_encoder=video_config, queue_maxsize=0)
         encoder.start_episode(list(names), root)

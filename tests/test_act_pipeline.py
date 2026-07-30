@@ -8,11 +8,11 @@ import torch
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.dataset.video import VideoRecorder
-from welding_path_vla.policies.act.data_adapter import scale_uint8_images
 from welding_path_vla.policies.act.rollout import rollout_episode
-from welding_path_vla.policies.act.rollout_diagnostics import rollout_completed
 from welding_path_vla.policies.act.runtime import resolve_checkpoint
 from welding_path_vla.policies.act.training import lerobot_train_config
+from welding_path_vla.policies.data import scale_uint8_images
+from welding_path_vla.policies.rollout_diagnostics import rollout_completed
 from welding_path_vla.policies.training import TrainingRequest
 
 

@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - smolvla.yaml
+  - ../tasks/pipe_top.yaml
+
+deployment:
+  log_dir: outputs/deploy/smolvla_pipe_top

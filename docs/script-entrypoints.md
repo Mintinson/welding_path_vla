@@ -23,19 +23,28 @@
 
 ## 统一参数规则
 
-脚本统一由 draccus 解析类型化 dataclass。未指定文件时使用 `AppConfig` 默认值（与
-`configs/default.yaml` 一致），`--config_path=PATH` 可载入其他配置；命令行通过点号路径
-覆盖任意字段：
+配置按职责拆分为基础场景、任务、策略和部署入口：
 
-```bash
-pixi run -e sim sim-collect \
-  --config_path=configs/default.yaml \
-  --collection.episodes=50 \
-  --randomization.yaw_deg=45
+```text
+configs/
+├── base.yaml
+├── tasks/{l_joint,pipe_bottom,pipe_top}.yaml
+├── policies/{act,smolvla}.yaml
+└── deploy/smolvla_{l_joint,pipe_bottom,pipe_top}.yaml
 ```
 
-draccus 负责读取、合并和类型转换，脚本中不再维护 YAML loader 或字段覆盖表。参数名称与
-dataclass/YAML 完全一致，布尔值使用 `--field=true/false`。
+入口 YAML 使用 `includes` 按顺序组合模块，后面的模块覆盖前面的同名字段，入口自身
+优先级最高。组合完成后仍由 Draccus 解析类型化 dataclass，并应用命令行点号覆盖：
+
+```bash
+pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla_pipe_top.yaml \
+  --deployment.episodes=10
+```
+
+`configs/default.yaml`、`pipe_bottom.yaml`、`pipe_top.yaml`、`act.yaml` 和
+`smolvla.yaml` 是兼容旧命令的组合入口。参数名称仍与 dataclass/YAML 完全一致，
+布尔值使用 `--field=true/false`。
 
 推荐通过 Pixi 运行，以确保使用正确的依赖环境：
 
@@ -67,3 +76,7 @@ python scripts/collect_simulation_data.py \
 
 脚本只负责参数解析和调用这些模块。新增可执行流程时，应在对应包中实现业务逻辑，
 再在 `scripts/` 增加薄入口；不要重新建立集中式总 CLI。
+
+ACT 与 SmolVLA 共用 `train-policy`、`policy-evaluate` 和 `policy-sim-deploy`，
+由 `policy.family` 选择实现。SmolVLA 三任务流程见
+[`smolvla-pipeline.md`](smolvla-pipeline.md)。

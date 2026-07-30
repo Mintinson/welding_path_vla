@@ -6,51 +6,57 @@ from dataclasses import dataclass
 from typing import Any
 
 from welding_path_vla.core.config import AppConfig, PolicyConfig
-from welding_path_vla.policies.process import run_logged_command
+from welding_path_vla.policies.smolvla.training import DEFAULT_PRETRAINED_MODEL
 
 
 @dataclass(frozen=True, slots=True)
 class SmolVLAPipeline:
-    """保留 SmolVLA 基线的训练接口。"""
+    """提供 SmolVLA 的训练、加载、离线评估和仿真部署入口。"""
 
     def training_overrides(self, config: PolicyConfig) -> dict[str, Any]:
+        """把项目配置转换为等价的 LeRobot CLI 参数。"""
+        parameters = dict(config.parameters)
+        configured_source = parameters.pop("pretrained_model", DEFAULT_PRETRAINED_MODEL)
+        pretrained = config.checkpoint or configured_source
         return {
-            "policy.type": "smolvla",
+            "policy.path": pretrained,
             "policy.device": config.device,
             "policy.push_to_hub": False,
+            "policy.input_features": None,
             "policy.chunk_size": config.action_horizon,
             "policy.n_action_steps": config.action_steps,
-            **{f"policy.{name}": value for name, value in config.parameters.items()},
+            **{f"policy.{name}": value for name, value in parameters.items()},
         }
 
     def train(self, policy: PolicyConfig, training: Any) -> Any:
-        """SmolVLA 继续使用 LeRobot 官方训练入口。"""
-        from pathlib import Path
+        """运行 LeRobot 官方 SmolVLA 训练流水线。"""
+        from welding_path_vla.policies.smolvla.training import train
 
-        from welding_path_vla.policies.training import TrainingRequest
-
-        command = TrainingRequest(policy, training).command()
-        return run_logged_command(command, Path(training.output_dir))
+        return train(policy, training)
 
     def training_plan(self, policy: PolicyConfig, training: Any) -> dict[str, Any]:
-        return {
-            "backend": "lerobot-train",
-            "policy": policy.family,
-            "dataset": training.dataset_root,
-            "steps": training.steps,
-            "output_dir": training.output_dir,
-        }
+        """返回可记录、可复查的 SmolVLA 训练计划。"""
+        from welding_path_vla.policies.smolvla.training import training_plan
+
+        return training_plan(policy, training)
 
     def load(self, checkpoint: str, device: str) -> Any:
-        raise NotImplementedError(
-            "SmolVLA runtime will be implemented with its deployment pipeline"
-        )
+        """加载带语言 tokenizer 和归一化器的 SmolVLA runtime。"""
+        from welding_path_vla.policies.smolvla.runtime import SmolVLARuntime
+
+        return SmolVLARuntime.from_pretrained(checkpoint, device)
 
     def evaluate(self, config: AppConfig, checkpoint: str) -> Any:
-        raise NotImplementedError("SmolVLA evaluation will be implemented with its policy pipeline")
+        """运行 SmolVLA 留出 episode 的离线评估。"""
+        from welding_path_vla.policies.smolvla.evaluation import evaluate_checkpoint
+
+        return evaluate_checkpoint(config, checkpoint)
 
     def deploy_simulation(self, config: AppConfig, checkpoint: str) -> Any:
-        raise NotImplementedError("SmolVLA simulation deployment is not implemented")
+        """在项目 robosuite 环境运行 SmolVLA 闭环 rollout。"""
+        from welding_path_vla.policies.smolvla.rollout import deploy_simulation
+
+        return deploy_simulation(config, checkpoint)
 
 
 PIPELINE = SmolVLAPipeline()
