@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
@@ -11,7 +11,7 @@ from typing import Any
 
 
 @contextmanager
-def lerobot_config_argument(config_path: Path | None) -> Iterator[None]:
+def lerobot_config_argument(config_path: Path | None) -> Generator[None, None, None]:
     """让 LeRobot 在恢复训练时读取 checkpoint 配置。
 
     项目 CLI 的 ``config_path`` 指向统一 YAML，而 LeRobot 恢复逻辑要求它指向
@@ -34,7 +34,7 @@ def lerobot_config_argument(config_path: Path | None) -> Iterator[None]:
 
 
 @contextmanager
-def lerobot_training_log(log_path: Path) -> Iterator[None]:
+def lerobot_training_log(log_path: Path) -> Generator[None, None, None]:
     """把 LeRobot 控制台指标同步保存到本地日志。
 
     LeRobot 自带的 ``init_logging`` 已支持文件 handler，但其训练入口没有暴露
