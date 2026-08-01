@@ -8,10 +8,9 @@ import torch
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.factory import get_policy_pipeline
-from welding_path_vla.policies.pi0.training import pi0_config
-from welding_path_vla.policies.pi0_5.training import pi05_config
-from welding_path_vla.policies.pi_family.runtime import PIRuntime
-from welding_path_vla.policies.pi_family.spec import PI0, PI05
+from welding_path_vla.policies.lerobot_training import make_policy_config
+from welding_path_vla.policies.runtime import LeRobotRuntime
+from welding_path_vla.policies.spec import PI0, PI05
 from welding_path_vla.policies.training import TrainingRequest
 
 
@@ -65,8 +64,8 @@ def test_pi_pipelines_use_official_lerobot_names() -> None:
     pi05_command = TrainingRequest(pi05.policy, pi05.training).command()
     assert "--policy.path=lerobot/pi0_base" in pi0_command
     assert "--policy.path=lerobot/pi05_base" in pi05_command
-    assert get_policy_pipeline("pi0").family.lerobot_type == "pi0"
-    assert get_policy_pipeline("pi0_5").family.lerobot_type == "pi05"
+    assert get_policy_pipeline("pi0").spec.policy_type == "pi0"
+    assert get_policy_pipeline("pi0_5").spec.policy_type == "pi05"
 
 
 def test_pi_configs_reuse_official_pretrained_models(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,8 +84,8 @@ def test_pi_configs_reuse_official_pretrained_models(monkeypatch: pytest.MonkeyP
         lambda source: models[str(source)],
     )
 
-    pi0 = pi0_config(AppConfig.load("configs/pi0.yaml").policy)
-    pi05 = pi05_config(AppConfig.load("configs/pi0_5.yaml").policy)
+    pi0 = make_policy_config(AppConfig.load("configs/pi0.yaml").policy, PI0)
+    pi05 = make_policy_config(AppConfig.load("configs/pi0_5.yaml").policy, PI05)
     assert pi0.input_features == {}
     assert pi0.output_features == {}
     assert pi0.chunk_size == 15
@@ -128,7 +127,7 @@ class StaticPIPolicy:
 def test_pi_runtime_keeps_language_and_dual_cameras(family: Any) -> None:
     """π0 与 π0.5 都必须保留语言、状态和双相机观测。"""
     processor = CaptureProcessor()
-    runtime = PIRuntime(
+    runtime = LeRobotRuntime(
         cast(Any, StaticPIPolicy()),
         processor,
         lambda action: action,

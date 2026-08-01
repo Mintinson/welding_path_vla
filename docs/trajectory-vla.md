@@ -13,12 +13,11 @@ smolvlm_action_expert.py         SmolVLM + 动作专家双流 Transformer
 flow_matching.py                context/action token、训练插值和 Euler 去噪
 modeling_trajectory_vla.py       LeRobot policy 与动作队列
 processor_trajectory_vla.py      tokenizer、归一化和反归一化
-training.py                      训练、日志和 resume
-runtime.py                       在线观测到物理动作
-evaluation.py                    留出集 loss 与动作 MAE
-rollout.py                       robosuite 闭环部署
-pipeline.py                      项目统一策略注册
 ```
+
+训练、在线运行时、离线评估和 robosuite rollout 位于上一级 `policies/` 公共模块中；
+`trajectory_vla/` 只保留该算法独有的模型代码。模型差异由
+`policies/spec.py` 中的 `TRAJECTORY_VLA` 声明，不再复制整套 pipeline。
 
 研究时优先修改公开接口：
 

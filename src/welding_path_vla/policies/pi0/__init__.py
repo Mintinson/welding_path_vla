@@ -1,5 +1,1 @@
-"""π0 策略 pipeline。"""
-
-from welding_path_vla.policies.pi0.pipeline import PIPELINE, PI0Pipeline
-
-__all__ = ["PIPELINE", "PI0Pipeline"]
+"""π0 实验说明；实现由 LeRobot 和项目公共策略层提供。"""

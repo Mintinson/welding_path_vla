@@ -53,7 +53,7 @@ src/welding_path_vla/
 ├── robot/       # Elfin5-Pro 驱动协议、实时控制与安全门
 ├── dataset/     # 原始数据协议、录制、动作构造与 LeRobot 导出
 ├── simulation/  # robosuite 环境、models、tasks、专家轨迹与采集
-├── policies/    # ACT / SmolVLA / π0 / π0.5 / Trajectory-VLA 及训练部署契约
+├── policies/    # 策略规格、公共训练/评估/部署流程及本地模型实现
 └── evaluation/  # 轨迹、碰撞与真机评估
 
 scripts/

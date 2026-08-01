@@ -8,6 +8,8 @@ import torch
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.factory import get_policy_pipeline
+from welding_path_vla.policies.runtime import LeRobotRuntime
+from welding_path_vla.policies.spec import TRAJECTORY_VLA
 from welding_path_vla.policies.training import TrainingRequest
 from welding_path_vla.policies.trajectory_vla.configuration_trajectory_vla import (
     TrajectoryVLAConfig,
@@ -19,7 +21,6 @@ from welding_path_vla.policies.trajectory_vla.flow_matching import (
     resize_with_pad,
     sinusoidal_time_embedding,
 )
-from welding_path_vla.policies.trajectory_vla.runtime import TrajectoryVLARuntime
 
 
 @pytest.mark.parametrize(
@@ -46,7 +47,7 @@ def test_trajectory_vla_uses_local_registered_policy() -> None:
     command = TrainingRequest(config.policy, config.training).command()
     assert "--policy.type=trajectory_vla" in command
     assert "--policy.pretrained_path=lerobot/smolvla_base" in command
-    assert get_policy_pipeline("trajectory_vla").__class__.__name__ == "TrajectoryVLAPipeline"
+    assert get_policy_pipeline("trajectory_vla").spec is TRAJECTORY_VLA
 
 
 def test_attention_mask_preserves_prefix_and_causal_blocks() -> None:
@@ -104,11 +105,12 @@ class StaticTrajectoryPolicy:
 def test_runtime_keeps_language_state_and_dual_cameras() -> None:
     """在线运行时必须保留语言、13D 状态和双相机观测。"""
     processor = CaptureProcessor()
-    runtime = TrajectoryVLARuntime(
+    runtime = LeRobotRuntime(
         cast(Any, StaticTrajectoryPolicy()),
         processor,
         lambda action: action,
         "cpu",
+        TRAJECTORY_VLA,
     )
     observation = Observation(
         0.0,

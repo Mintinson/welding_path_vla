@@ -8,11 +8,12 @@ import torch
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.dataset.video import VideoRecorder
-from welding_path_vla.policies.act.rollout import rollout_episode
-from welding_path_vla.policies.act.runtime import resolve_checkpoint
-from welding_path_vla.policies.act.training import lerobot_train_config
+from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.data import scale_uint8_images
+from welding_path_vla.policies.lerobot_training import make_train_config
 from welding_path_vla.policies.rollout_diagnostics import rollout_completed
+from welding_path_vla.policies.simulation_rollout import rollout_episode
+from welding_path_vla.policies.spec import ACT
 from welding_path_vla.policies.training import TrainingRequest
 
 
@@ -29,7 +30,7 @@ def test_act_training_command_uses_lerobot_dataset_tools() -> None:
 
 def test_act_uses_official_lerobot_training_config() -> None:
     config = AppConfig.load("configs/act.yaml")
-    training = lerobot_train_config(config.policy, config.training)
+    training = make_train_config(config.policy, config.training, ACT)
     assert training.policy.type == "act"
     assert training.dataset.video_backend == "torchcodec"
     assert training.dataset.eval_split == 0.1

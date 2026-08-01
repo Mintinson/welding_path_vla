@@ -7,22 +7,19 @@ import torch
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
-from welding_path_vla.policies.checkpoint import resolve_checkpoint
+from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
 from welding_path_vla.policies.data import balanced_frame_indices
+from welding_path_vla.policies.lerobot_training import make_policy_config, make_train_config
 from welding_path_vla.policies.process import lerobot_config_argument, lerobot_training_log
-from welding_path_vla.policies.smolvla.runtime import SmolVLARuntime
-from welding_path_vla.policies.smolvla.training import (
-    find_resume_checkpoint,
-    lerobot_train_config,
-    smolvla_config,
-)
+from welding_path_vla.policies.runtime import LeRobotRuntime
+from welding_path_vla.policies.spec import SMOLVLA
 from welding_path_vla.policies.training import TrainingRequest
 
 
 def test_smolvla_config_uses_official_pretrained_model() -> None:
     """SmolVLA 应复用官方权重，并让当前数据集重新推断 feature。"""
     config = AppConfig.load("configs/smolvla.yaml")
-    policy = smolvla_config(config.policy)
+    policy = make_policy_config(config.policy, SMOLVLA)
     assert str(policy.pretrained_path) == "lerobot/smolvla_base"
     assert policy.input_features == {}
     assert policy.output_features == {}
@@ -35,7 +32,11 @@ def test_smolvla_config_uses_official_pretrained_model() -> None:
 def test_smolvla_uses_lerobot_training_config() -> None:
     """训练计划应直接使用 LeRobot 的 SmolVLA 和视频数据集配置。"""
     config = AppConfig.load("configs/smolvla.yaml")
-    training = lerobot_train_config(config.policy, replace(config.training, resume=False))
+    training = make_train_config(
+        config.policy,
+        replace(config.training, resume=False),
+        SMOLVLA,
+    )
     assert training.policy.type == "smolvla"
     assert str(training.policy.pretrained_path) == "lerobot/smolvla_base"
     assert training.dataset.return_uint8
@@ -100,11 +101,12 @@ class StaticSmolPolicy:
 def test_smolvla_runtime_keeps_language_instruction() -> None:
     """运行时必须把焊接指令和双相机图像交给官方 processor。"""
     processor = CaptureProcessor()
-    runtime = SmolVLARuntime(
+    runtime = LeRobotRuntime(
         cast(Any, StaticSmolPolicy()),
         processor,
         lambda action: action,
         "cpu",
+        SMOLVLA,
     )
     observation = Observation(
         0.0,

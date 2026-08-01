@@ -140,7 +140,8 @@ smoke checkpoint 尚未学会任务时通常会被 action 安全门提前终止�
 
 ## 5. 策略切换边界
 
-`policies/factory.py` 是公共注册入口。每种策略实现同一组能力：
+`policies/factory.py` 是公共注册入口。ACT、SmolVLA、π0、π0.5 和 Trajectory-VLA
+共享同一个 `LeRobotPipeline`，对外提供同一组能力：
 
 - `training_overrides`：生成 LeRobot 训练参数；
 - `train`：执行对应策略的训练入口；
@@ -148,5 +149,5 @@ smoke checkpoint 尚未学会任务时通常会被 action 安全门提前终止�
 - `evaluate`：离线 checkpoint 评价；
 - `deploy_simulation`：robosuite 闭环 rollout。
 
-训练、评估和部署脚本只依赖该接口。后续加入 Diffusion、SmolVLA 或 Trajectory VLA 时，不需要
-修改数据采集协议或 ACT 内部代码。
+训练、评估和部署脚本只依赖该接口。策略间必要差异集中声明在 `policies/spec.py`；只有模型
+结构真正不同（例如 Trajectory-VLA）时，才在独立目录保留算法源码。

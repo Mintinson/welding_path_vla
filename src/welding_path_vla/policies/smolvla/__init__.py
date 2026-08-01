@@ -1,5 +1,1 @@
-"""SmolVLA 数据、训练、评估和部署适配器。"""
-
-from .pipeline import PIPELINE, SmolVLAPipeline
-
-__all__ = ["PIPELINE", "SmolVLAPipeline"]
+"""SmolVLA 实验说明；实现由 LeRobot 和项目公共策略层提供。"""

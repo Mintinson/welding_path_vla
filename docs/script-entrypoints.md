@@ -74,7 +74,7 @@ python scripts/collect_simulation_data.py \
 - `dataset/`：原始 episode、录制、动作构造和数据导出；
 - `evaluation/`：轨迹指标、聚合规则和日志适配器；
 - `robot/`：真机驱动、实时控制和安全门；
-- `policies/`：策略接口、训练与部署请求。
+- `policies/`：声明式策略规格、共享训练/评估/部署流程和本地算法实现。
 
 脚本只负责参数解析和调用这些模块。新增可执行流程时，应在对应包中实现业务逻辑，
 再在 `scripts/` 增加薄入口；不要重新建立集中式总 CLI。
@@ -82,4 +82,5 @@ python scripts/collect_simulation_data.py \
 ACT、SmolVLA、π0 与 π0.5 共用 `train-policy`、`policy-evaluate` 和
 `policy-sim-deploy`，由 `policy.family` 选择实现。SmolVLA 三任务流程见
 [`smolvla-pipeline.md`](smolvla-pipeline.md)，π0 系列流程见
-[`pi-pipeline.md`](pi-pipeline.md)。
+[`pi-pipeline.md`](pi-pipeline.md)。新增策略的最小接入方式见
+[`policy-extension.md`](policy-extension.md)。

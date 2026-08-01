@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from importlib import import_module
 from typing import Any, Protocol
 
 from welding_path_vla.core.config import AppConfig, PolicyConfig
+from welding_path_vla.policies.lerobot_pipeline import LeRobotPipeline
+from welding_path_vla.policies.spec import POLICY_SPECS, LeRobotPolicySpec
 
 
 class PolicyPipeline(Protocol):
     """不同策略需要实现的项目级接口。"""
+
+    @property
+    def spec(self) -> LeRobotPolicySpec:
+        """返回驱动公共流程的策略规格。"""
+        ...
 
     def training_overrides(self, config: PolicyConfig) -> dict[str, Any]: ...
 
@@ -24,21 +30,15 @@ class PolicyPipeline(Protocol):
     def deploy_simulation(self, config: AppConfig, checkpoint: str) -> Any: ...
 
 
-PIPELINE_MODULES = {
-    "act": "welding_path_vla.policies.act.pipeline",
-    "pi0": "welding_path_vla.policies.pi0.pipeline",
-    "pi0_5": "welding_path_vla.policies.pi0_5.pipeline",
-    "smolvla": "welding_path_vla.policies.smolvla.pipeline",
-    "trajectory_vla": "welding_path_vla.policies.trajectory_vla.pipeline",
-}
+PIPELINES = {name: LeRobotPipeline(spec) for name, spec in POLICY_SPECS.items()}
 
 
 def get_policy_pipeline(family: str) -> PolicyPipeline:
-    """按策略名称惰性加载实现，避免无关环境导入重依赖。"""
-    module_name = PIPELINE_MODULES.get(family)
-    if module_name is None:
+    """按项目配置中的策略名称返回统一 pipeline。"""
+    pipeline = PIPELINES.get(family)
+    if pipeline is None:
         raise ValueError(f"policy pipeline is not implemented: {family}")
-    return import_module(module_name).PIPELINE
+    return pipeline
 
 
-__all__ = ["PolicyPipeline", "get_policy_pipeline"]
+__all__ = ["PIPELINES", "PolicyPipeline", "get_policy_pipeline"]

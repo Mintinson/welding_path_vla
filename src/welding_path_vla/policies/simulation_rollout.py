@@ -126,8 +126,7 @@ def rollout_episode(
                     bounded_action[:3] *= 0.999999 * max_translation / translation_norm
                     action_increment = True
                     step_error = (
-                        f"clipped TCP increment {translation_norm:.6f} "
-                        f"to {max_translation:.6f}"
+                        f"clipped TCP increment {translation_norm:.6f} to {max_translation:.6f}"
                     )
                 command_pose = apply_tcp_action_to_world(
                     state.tcp,
