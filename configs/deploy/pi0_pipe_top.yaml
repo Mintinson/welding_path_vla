@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - pi0.yaml
+  - ../tasks/pipe_top.yaml
+
+deployment:
+  log_dir: outputs/deploy/pi0_pipe_top

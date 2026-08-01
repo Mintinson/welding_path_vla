@@ -26,7 +26,10 @@ class PolicyPipeline(Protocol):
 
 PIPELINE_MODULES = {
     "act": "welding_path_vla.policies.act.pipeline",
+    "pi0": "welding_path_vla.policies.pi0.pipeline",
+    "pi0_5": "welding_path_vla.policies.pi0_5.pipeline",
     "smolvla": "welding_path_vla.policies.smolvla.pipeline",
+    "trajectory_vla": "welding_path_vla.policies.trajectory_vla.pipeline",
 }
 
 

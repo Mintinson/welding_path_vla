@@ -53,7 +53,7 @@ src/welding_path_vla/
 ├── robot/       # Elfin5-Pro 驱动协议、实时控制与安全门
 ├── dataset/     # 原始数据协议、录制、动作构造与 LeRobot 导出
 ├── simulation/  # robosuite 环境、models、tasks、专家轨迹与采集
-├── policies/    # ACT / Diffusion / SmolVLA / Trajectory-VLA 及训练部署契约
+├── policies/    # ACT / SmolVLA / π0 / π0.5 / Trajectory-VLA 及训练部署契约
 └── evaluation/  # 轨迹、碰撞与真机评估
 
 scripts/
@@ -118,6 +118,31 @@ YAML 即可同时切换工件、焊缝、指令、最大步数和输出目录。
 
 实际采集数量、增量合并、RTX 4060 训练参数和最终产物见
 [SmolVLA 三任务基线](docs/smolvla-pipeline.md)。
+
+π0 与 π0.5 复用相同入口，并分别提供本机低显存和 2×A100 配置：
+
+```bash
+pixi run -e train train-policy --config_path=configs/pi0.yaml
+pixi run -e train train-policy --config_path=configs/pi0_5.yaml
+pixi run -e train train-policy-2gpu --config_path=configs/pi0_a100.yaml
+pixi run -e train train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
+```
+
+配置层次、显存取舍、恢复训练、离线评估和三任务部署见
+[π0 / π0.5 pipeline](docs/pi-pipeline.md)。
+
+Trajectory-VLA 将官方 SmolVLA 的网络与 flow matching 完整重写到项目内，并公开视觉、
+语言、状态、动作 token 和逐步去噪接口：
+
+```bash
+pixi run -e train train-policy --config_path=configs/trajectory_vla.yaml
+pixi run -e train policy-evaluate --config_path=configs/trajectory_vla.yaml --policy.checkpoint=CHECKPOINT
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/trajectory_vla_pipe_top.yaml
+```
+
+模块边界、可修改接口、官方权重兼容性和三任务部署见
+[Trajectory-VLA 本地实现](docs/trajectory-vla.md)。
 
 `export-lerobot` 默认采用 LeRobot 官方 AV1 配置，只保存视频 feature。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
 

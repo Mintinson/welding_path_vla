@@ -1,0 +1,26 @@
+includes:
+  - pi0.yaml
+
+policy:
+  # 双 A100 正式训练恢复 1 秒动作块和官方推理步数。
+  action_horizon: 30
+  action_steps: 8
+  parameters:
+    num_inference_steps: 10
+    freeze_vision_encoder: true
+    train_expert_only: false
+    scheduler_warmup_steps: 1000
+    scheduler_decay_steps: 30000
+
+training:
+  output_dir: outputs/train/pi0_weldpath_v1_a100
+  # accelerate 的每个进程使用 batch 2；双卡有效 batch 为 4。
+  batch_size: 2
+  steps: 30000
+  num_workers: 8
+  eval_steps: 2000
+  max_eval_samples: 300
+  log_freq: 50
+  save_freq: 2000
+  resume: false
+  peft: null

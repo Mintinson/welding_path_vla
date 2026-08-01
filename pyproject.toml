@@ -59,11 +59,11 @@ torchcodec = "==0.9.1"
 lerobot = { version = "==0.6.0", extras = ["core-scripts"] }
 
 [tool.pixi.feature.train.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["training", "smolvla"] }
+lerobot = { version = "==0.6.0", extras = ["peft", "pi", "training", "smolvla"] }
 torchcodec = "==0.11.1"
 
 [tool.pixi.feature.deploy.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["smolvla"] }
+lerobot = { version = "==0.6.0", extras = ["peft", "pi", "smolvla"] }
 
 [tool.pixi.feature.dev.dependencies]
 pytest = ">=9,<10"
@@ -98,6 +98,8 @@ export-lerobot = "python scripts/export_lerobot.py"
 robot-config = "python scripts/show_robot_config.py"
 policy-config = "python scripts/show_policy_config.py"
 train-policy = "python scripts/train_policy.py"
+# 在 2×A100 服务器上启动两个 DDP 进程；batch_size 是每张卡的 batch。
+train-policy-2gpu = "accelerate launch --num_processes=2 scripts/train_policy.py"
 policy-data-check = "python scripts/check_policy_data.py"
 policy-evaluate = "python scripts/evaluate_policy.py"
 policy-sim-deploy = "python scripts/deploy_simulation_policy.py"

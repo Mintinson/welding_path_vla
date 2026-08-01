@@ -1,0 +1,57 @@
+policy:
+  family: trajectory_vla
+  checkpoint: null
+  device: cuda
+  # 30 Hz 下预测未来 1 秒，每执行 8 帧重新规划。
+  action_horizon: 30
+  action_steps: 8
+  action_source: safe_command
+  parameters:
+    # 权重来自官方 SmolVLA，网络与 flow matching 在本项目内实现。
+    pretrained_model: lerobot/smolvla_base
+    # resize_imgs_with_padding: [256, 256]
+    # num_steps: 5
+    use_amp: true
+    freeze_vision_encoder: true
+    train_expert_only: true
+    train_state_proj: true
+    # 完整 policy checkpoint 会覆盖 VLM 权重，关闭额外的 VLM 重复加载。
+    load_vlm_weights: false
+    scheduler_warmup_steps: 100
+    scheduler_decay_steps: 5000
+
+training:
+  dataset_repo_id: huayan/weldpath_smolvla_v1
+  dataset_root: datasets/weldpath_lerobot_smolvla_v1
+  output_dir: outputs/train/trajectory_vla_weldpath_v1
+  lr : 1.5e-4
+  batch_size: 16
+  steps: 5000
+  num_workers: 4
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 500
+  max_eval_samples: 100
+  log_freq: 20
+  save_freq: 500
+  seed: 20260730
+  wandb: false
+  amp_dtype: bfloat16
+  resume: false
+
+policy_evaluation:
+  batch_size: 1
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+deployment:
+  dry_run: false
+  log_dir: outputs/deploy/trajectory_vla_l_joint
+  episodes: 3
+  max_steps: 3300
+  seed: 20260730
+  record_video: true
+  completion_progress_min: 0.85
+  completion_distance_m: 0.015

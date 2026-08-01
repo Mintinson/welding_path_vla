@@ -53,6 +53,7 @@ class TrainingRequest:
             "env_eval_freq": 0,
             "save_checkpoint": True,
             "wandb.enable": self.training.wandb,
+            **{f"peft.{name}": value for name, value in (self.training.peft or {}).items()},
             **get_policy_pipeline(self.policy.family).training_overrides(self.policy),
         }
         return ["lerobot-train", *(f"--{key}={cli_value(value)}" for key, value in options.items())]

@@ -19,7 +19,8 @@
 | `evaluate-dataset` | `scripts/evaluate.py --mode=dataset` | 聚合仿真数据集指标 |
 | `robot-config` | `scripts/show_robot_config.py` | 检查机器人和安全配置 |
 | `policy-config` | `scripts/show_policy_config.py` | 检查策略、训练和部署配置 |
-| `train-policy` | `scripts/train_policy.py` | 启动或预览训练 |
+| `train-policy` | `scripts/train_policy.py` | 单卡启动或预览训练 |
+| `train-policy-2gpu` | `scripts/train_policy.py` | 通过 Accelerate 在双卡启动 DDP 训练 |
 
 ## 统一参数规则
 
@@ -29,8 +30,9 @@
 configs/
 ├── base.yaml
 ├── tasks/{l_joint,pipe_bottom,pipe_top}.yaml
-├── policies/{act,smolvla}.yaml
-└── deploy/smolvla_{l_joint,pipe_bottom,pipe_top}.yaml
+├── policies/{act,smolvla,pi0,pi0_5}.yaml
+├── policies/{pi0,pi0_5}_a100.yaml
+└── deploy/{smolvla,pi0,pi0_5}_{l_joint,pipe_bottom,pipe_top}.yaml
 ```
 
 入口 YAML 使用 `includes` 按顺序组合模块，后面的模块覆盖前面的同名字段，入口自身
@@ -77,6 +79,7 @@ python scripts/collect_simulation_data.py \
 脚本只负责参数解析和调用这些模块。新增可执行流程时，应在对应包中实现业务逻辑，
 再在 `scripts/` 增加薄入口；不要重新建立集中式总 CLI。
 
-ACT 与 SmolVLA 共用 `train-policy`、`policy-evaluate` 和 `policy-sim-deploy`，
-由 `policy.family` 选择实现。SmolVLA 三任务流程见
-[`smolvla-pipeline.md`](smolvla-pipeline.md)。
+ACT、SmolVLA、π0 与 π0.5 共用 `train-policy`、`policy-evaluate` 和
+`policy-sim-deploy`，由 `policy.family` 选择实现。SmolVLA 三任务流程见
+[`smolvla-pipeline.md`](smolvla-pipeline.md)，π0 系列流程见
+[`pi-pipeline.md`](pi-pipeline.md)。

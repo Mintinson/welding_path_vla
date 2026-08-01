@@ -34,7 +34,7 @@ def act_config(policy: PolicyConfig) -> Any:
 
 def lerobot_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
     """构造 LeRobot 官方训练器使用的完整配置。"""
-    from lerobot.configs.default import DatasetConfig, WandBConfig
+    from lerobot.configs.default import DatasetConfig, PeftConfig, WandBConfig
     from lerobot.configs.train import TrainPipelineConfig
 
     return TrainPipelineConfig(
@@ -58,6 +58,7 @@ def lerobot_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
         max_eval_samples=training.max_eval_samples,
         save_freq=training.save_freq,
         wandb=WandBConfig(enable=training.wandb),
+        peft=PeftConfig(**training.peft) if training.peft else None,
     )
 
 

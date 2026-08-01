@@ -1,0 +1,8 @@
+includes:
+  - ../base.yaml
+  - pi0_5.yaml
+  - ../tasks/pipe_bottom.yaml
+
+deployment:
+  log_dir: outputs/deploy/pi0_5_pipe_bottom
+  max_steps: 1200

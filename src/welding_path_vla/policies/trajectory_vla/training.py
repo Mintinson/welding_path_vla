@@ -1,4 +1,4 @@
-"""把项目配置映射到 LeRobot 官方 SmolVLA 训练流水线。"""
+"""Trajectory-VLA 的 LeRobot 训练配置与执行入口。"""
 
 from __future__ import annotations
 
@@ -8,67 +8,55 @@ from typing import Any
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
 from welding_path_vla.policies.act.training import split_episodes
-from welding_path_vla.policies.checkpoint import ResumeCheckpoint, find_resume_checkpoint
+from welding_path_vla.policies.checkpoint import find_resume_checkpoint
 from welding_path_vla.policies.data import validate_dataset
 from welding_path_vla.policies.process import lerobot_config_argument, lerobot_training_log
+from welding_path_vla.policies.trajectory_vla.configuration_trajectory_vla import (
+    TrajectoryVLAConfig,
+)
 
 DEFAULT_PRETRAINED_MODEL = "lerobot/smolvla_base"
 
 
-def smolvla_config(policy: PolicyConfig) -> Any:
-    """加载官方 SmolVLA 基线，并覆盖焊接任务需要的运行参数。
+def trajectory_vla_config(policy: PolicyConfig) -> TrajectoryVLAConfig:
+    """构造本地模型配置，并把官方 SmolVLA 权重作为初始化来源。
 
     Args:
-        policy: 项目统一策略配置。``parameters.pretrained_model`` 可替换基线。
+        policy: 项目统一策略配置。
 
     Returns:
-        已清空旧机器人 feature、可由当前数据集重新推断 feature 的 SmolVLAConfig。
+        等待 LeRobot 从数据集推断 feature 的 Trajectory-VLA 配置。
     """
-    from lerobot.configs import PreTrainedConfig
-    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-
     parameters = dict(policy.parameters)
-    configured_source = parameters.pop("pretrained_model", DEFAULT_PRETRAINED_MODEL)
-    source = str(policy.checkpoint or configured_source)
-    config = PreTrainedConfig.from_pretrained(source)
-    if not isinstance(config, SmolVLAConfig):
-        raise ValueError(f"pretrained model is not SmolVLA: {source}")
-    config.pretrained_path = Path(source)
-    config.input_features = {}
-    config.output_features = {}
-    config.device = policy.device
-    config.push_to_hub = False
-    config.chunk_size = policy.action_horizon
-    config.n_action_steps = policy.action_steps
-    # config.optimizer_lr = 
-    # if policy.action_stride
-    for name, value in parameters.items():
-        if not hasattr(config, name):
-            raise ValueError(f"unknown SmolVLA parameter: {name}")
-        setattr(config, name, value)
-    config.__post_init__()
+    source = policy.checkpoint or parameters.pop(
+        "pretrained_model",
+        DEFAULT_PRETRAINED_MODEL,
+    )
+    config = TrajectoryVLAConfig(
+        pretrained_path=Path(source),
+        input_features={},
+        output_features={},
+        device=policy.device,
+        push_to_hub=False,
+        chunk_size=policy.action_horizon,
+        n_action_steps=policy.action_steps,
+        **parameters,
+    )
     return config
 
 
 def resumed_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
-    """从 LeRobot checkpoint 配置恢复训练器、optimizer 和 scheduler 定义。
-
-    LeRobot 的 ``steps`` 是目标总步数。比如 checkpoint 已完成 3,500 步且配置目标为
-    5,000 步，本次会继续执行 1,500 步。
-    """
+    """恢复模型、优化器、调度器和已完成步数。"""
     from lerobot.configs.train import TrainPipelineConfig
-    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
     checkpoint = find_resume_checkpoint(training.output_dir)
     if training.steps <= checkpoint.step:
         raise ValueError(
-            f"training.steps={training.steps} must exceed resumed step {checkpoint.step}; "
-            "LeRobot steps denotes the target total step count"
+            f"training.steps={training.steps} must exceed resumed step {checkpoint.step}"
         )
-
     config = TrainPipelineConfig.from_pretrained(checkpoint.config)
-    if not isinstance(config.policy, SmolVLAConfig):
-        raise ValueError(f"checkpoint policy is not SmolVLA: {checkpoint.config}")
+    if not isinstance(config.policy, TrajectoryVLAConfig):
+        raise ValueError(f"checkpoint policy is not Trajectory-VLA: {checkpoint.config}")
     config.resume = True
     config.checkpoint_path = checkpoint.root
     config.output_dir = Path(training.output_dir)
@@ -93,13 +81,15 @@ def resumed_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
 
 
 def lerobot_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
-    """构造 LeRobot 官方训练器使用的完整配置。"""
+    """构造 LeRobot 训练器需要的完整配置。"""
     from lerobot.configs.default import DatasetConfig, PeftConfig, WandBConfig
     from lerobot.configs.train import TrainPipelineConfig
 
     if training.resume:
         return resumed_train_config(policy, training)
-
+    policy_cfg = trajectory_vla_config(policy)
+    if training.lr is not None:
+        policy_cfg.optimizer_lr = training.lr
     return TrainPipelineConfig(
         dataset=DatasetConfig(
             repo_id=training.dataset_repo_id or "",
@@ -108,9 +98,9 @@ def lerobot_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
             eval_split=training.eval_split,
             return_uint8=True,
         ),
-        policy=smolvla_config(policy),
+        policy=policy_cfg,
         output_dir=Path(training.output_dir),
-        job_name="smolvla_weldpath",
+        job_name="trajectory_vla_weldpath",
         seed=training.seed,
         num_workers=training.num_workers,
         persistent_workers=training.num_workers > 0,
@@ -128,14 +118,15 @@ def lerobot_train_config(policy: PolicyConfig, training: TrainingConfig) -> Any:
 
 
 def training_plan(policy: PolicyConfig, training: TrainingConfig) -> dict[str, Any]:
-    """返回包含数据规模、预训练来源和显存相关参数的训练计划。"""
+    """返回便于复查的数据划分、模型来源与训练规模。"""
     report = validate_dataset(training)
     train_episodes, eval_episodes = split_episodes(report.episodes, training.eval_split)
     config = lerobot_train_config(policy, training)
     checkpoint = find_resume_checkpoint(training.output_dir) if training.resume else None
     return {
         "backend": "lerobot-train",
-        "policy": "smolvla",
+        "policy": "trajectory_vla",
+        "implementation": "local",
         "pretrained_model": str(config.policy.pretrained_path),
         "resume": training.resume,
         "resume_step": checkpoint.step if checkpoint else 0,
@@ -143,7 +134,6 @@ def training_plan(policy: PolicyConfig, training: TrainingConfig) -> dict[str, A
         "dataset": asdict(report),
         "train_episodes": len(train_episodes),
         "eval_episodes": len(eval_episodes),
-        "video_backend": training.video_backend,
         "batch_size": training.batch_size,
         "steps": training.steps,
         "output_dir": training.output_dir,
@@ -159,7 +149,7 @@ def training_plan(policy: PolicyConfig, training: TrainingConfig) -> dict[str, A
 
 
 def train(policy: PolicyConfig, training: TrainingConfig) -> Path:
-    """用 LeRobot 官方训练器在单卡 BF16 下微调 SmolVLA。"""
+    """运行 LeRobot 训练循环，同时持久化终端日志。"""
     from accelerate import Accelerator
     from lerobot.scripts.lerobot_train import train as lerobot_train
 
@@ -172,19 +162,19 @@ def train(policy: PolicyConfig, training: TrainingConfig) -> Path:
         if config.resume and config.checkpoint_path
         else None
     )
-    log_path = Path(training.output_dir) / "train.log"
-    with lerobot_config_argument(resume_config), lerobot_training_log(log_path):
+    with (
+        lerobot_config_argument(resume_config),
+        lerobot_training_log(Path(training.output_dir) / "train.log"),
+    ):
         lerobot_train(config, accelerator=accelerator)
     return Path(training.output_dir)
 
 
 __all__ = [
     "DEFAULT_PRETRAINED_MODEL",
-    "ResumeCheckpoint",
-    "find_resume_checkpoint",
     "lerobot_train_config",
     "resumed_train_config",
-    "smolvla_config",
     "train",
     "training_plan",
+    "trajectory_vla_config",
 ]

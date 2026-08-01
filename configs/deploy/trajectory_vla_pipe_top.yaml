@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - trajectory_vla.yaml
+  - ../tasks/pipe_top.yaml
+
+deployment:
+  log_dir: outputs/deploy/trajectory_vla_pipe_top

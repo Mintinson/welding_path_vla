@@ -618,6 +618,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/28/50/f203ff3a3ddfe19308efc83c5a3a29ed02bf786732ec35e68bf9162f3365/safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/4c/c0ec6b645dcfefdd158313edb68c676d36c3f93ce8d2d9f0725d6341e506/filelock-3.31.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/fb/162a66789c65e5afa3b051309240c26bf37fbc8fea285b4546ae747995a2/transformers-5.5.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl
@@ -1203,6 +1204,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/28/50/f203ff3a3ddfe19308efc83c5a3a29ed02bf786732ec35e68bf9162f3365/safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/4c/c0ec6b645dcfefdd158313edb68c676d36c3f93ce8d2d9f0725d6341e506/filelock-3.31.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/fb/162a66789c65e5afa3b051309240c26bf37fbc8fea285b4546ae747995a2/transformers-5.5.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl
@@ -1816,6 +1818,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/28/50/f203ff3a3ddfe19308efc83c5a3a29ed02bf786732ec35e68bf9162f3365/safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/4c/c0ec6b645dcfefdd158313edb68c676d36c3f93ce8d2d9f0725d6341e506/filelock-3.31.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/29/fb/162a66789c65e5afa3b051309240c26bf37fbc8fea285b4546ae747995a2/transformers-5.5.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl
@@ -6323,6 +6326,47 @@ packages:
   - safetensors[numpy] ; extra == 'torch'
   - torch>=2.4 ; extra == 'torch'
   requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl
+  name: peft
+  version: 0.20.0
+  sha256: 0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233
+  requires_dist:
+  - numpy>=1.17
+  - packaging>=20.0
+  - psutil
+  - pyyaml
+  - torch>=1.13.0
+  - transformers
+  - tqdm
+  - accelerate>=0.21.0
+  - safetensors
+  - huggingface-hub>=0.25.0
+  - black ; extra == 'dev'
+  - hf-doc-builder ; extra == 'dev'
+  - ruff~=0.15.12 ; extra == 'dev'
+  - requests ; extra == 'dev'
+  - black ; extra == 'docs-specific'
+  - requests ; extra == 'docs-specific'
+  - hf-doc-builder ; extra == 'docs-specific'
+  - black ; extra == 'quality'
+  - hf-doc-builder ; extra == 'quality'
+  - ruff~=0.15.12 ; extra == 'quality'
+  - black ; extra == 'test'
+  - hf-doc-builder ; extra == 'test'
+  - ruff~=0.15.12 ; extra == 'test'
+  - requests ; extra == 'test'
+  - pytest ; extra == 'test'
+  - pytest-cov ; extra == 'test'
+  - pytest-xdist ; extra == 'test'
+  - parameterized ; extra == 'test'
+  - datasets ; extra == 'test'
+  - diffusers ; extra == 'test'
+  - scipy ; extra == 'test'
+  - scikit-learn ; extra == 'test'
+  - protobuf ; extra == 'test'
+  - sentencepiece ; extra == 'test'
+  - torchvision ; extra == 'test'
+  requires_python: '>=3.10.0'
 - pypi: https://files.pythonhosted.org/packages/29/4c/c0ec6b645dcfefdd158313edb68c676d36c3f93ce8d2d9f0725d6341e506/filelock-3.31.2-py3-none-any.whl
   name: filelock
   version: 3.31.2

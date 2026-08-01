@@ -1,0 +1,59 @@
+policy:
+  family: pi0
+  checkpoint: null
+  device: cuda
+  # 本机训练使用 0.5 秒动作块，每 0.17 秒闭环重规划。
+  action_horizon: 15
+  action_steps: 5
+  action_source: safe_command
+  parameters:
+    pretrained_model: lerobot/pi0_base
+    dtype: bfloat16
+    num_inference_steps: 5
+    gradient_checkpointing: true
+    compile_model: false
+    freeze_vision_encoder: true
+    # 先冻结 VLM；下方 LoRA 再开启动作专家中少量可训练适配参数。
+    train_expert_only: true
+    scheduler_warmup_steps: 100
+    scheduler_decay_steps: 5000
+
+training:
+  dataset_repo_id: huayan/weldpath_smolvla_v1
+  dataset_root: datasets/weldpath_lerobot_smolvla_v1
+  output_dir: outputs/train/pi0_weldpath_v1
+  batch_size: 1
+  steps: 5000
+  num_workers: 2
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 500
+  max_eval_samples: 60
+  log_freq: 20
+  save_freq: 500
+  seed: 20260730
+  wandb: false
+  amp_dtype: bfloat16
+  resume: false
+  # LoRA 只适配动作专家的注意力和投影层，使完整官方模型可在低显存设备上微调。
+  peft:
+    method_type: LORA
+    r: 4
+    lora_alpha: 8
+
+policy_evaluation:
+  batch_size: 1
+  num_workers: 2
+  max_batches: 30
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+deployment:
+  dry_run: false
+  log_dir: outputs/deploy/pi0_weldpath_v1
+  episodes: 3
+  max_steps: 3300
+  seed: 20260730
+  record_video: true
+  completion_progress_min: 0.85
+  completion_distance_m: 0.015

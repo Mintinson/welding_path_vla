@@ -1,0 +1,11 @@
+includes:
+  - ../policies/pi0_5.yaml
+
+policy:
+  checkpoint: outputs/train/pi0_5_weldpath_v1/checkpoints/last/pretrained_model
+
+training:
+  resume: false
+
+deployment:
+  episodes: 5

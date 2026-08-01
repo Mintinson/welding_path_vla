@@ -244,6 +244,7 @@ class TrainingConfig:
     dataset_root: str | None = "datasets/weldpath_lerobot_v2"
     output_dir: str = "outputs/train"
     batch_size: int = 16
+    lr: float | None = None
     steps: int = 100_000
     num_workers: int = 4
     video_backend: str = "torchcodec"
@@ -256,6 +257,7 @@ class TrainingConfig:
     wandb: bool = False
     amp_dtype: str = "bfloat16"
     resume: bool = False
+    peft: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

@@ -127,6 +127,8 @@ training:
   seed: 20260724
   wandb: false
   amp_dtype: bfloat16
+  resume: false
+  peft: null
 
 policy_evaluation:
   batch_size: 4
