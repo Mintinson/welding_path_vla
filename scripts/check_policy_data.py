@@ -12,7 +12,7 @@ from welding_path_vla.policies.data import validate_dataset
 @cli
 def main(config: AppConfig) -> None:
     """输出策略训练所需 schema 与当前数据集规模。"""
-    output_json(asdict(validate_dataset(config.training)))
+    output_json(asdict(validate_dataset(config.training, config.policy)))
 
 
 if __name__ == "__main__":

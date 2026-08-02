@@ -95,11 +95,13 @@ class CaptureProcessor:
 class StaticTrajectoryPolicy:
     """返回固定动作的最小本地 policy 替身。"""
 
+    config = type("PolicyConfig", (), {"n_action_steps": 1})()
+
     def reset(self) -> None:
         pass
 
-    def select_action(self, batch: dict[str, Any]) -> torch.Tensor:
-        return torch.zeros((1, 9), dtype=torch.float32)
+    def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
+        return torch.zeros((1, 1, 9), dtype=torch.float32)
 
 
 def test_runtime_keeps_language_state_and_dual_cameras() -> None:

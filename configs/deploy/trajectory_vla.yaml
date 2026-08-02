@@ -2,7 +2,7 @@ includes:
   - ../policies/trajectory_vla.yaml
 
 policy:
-  checkpoint: outputs/train/trajectory_vla_weldpath_v1/checkpoints/005000/pretrained_model
+  checkpoint: outputs/train/trajectory_vla_weldpath_relative_v1/checkpoints/last/pretrained_model
 
 training:
   resume: false

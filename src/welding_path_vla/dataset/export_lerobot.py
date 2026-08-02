@@ -15,13 +15,19 @@ from tqdm import tqdm
 
 from welding_path_vla.core.config import LeRobotExportConfig
 from welding_path_vla.core.domain import EpisodeStatus
-from welding_path_vla.dataset.actions import build_relative_actions
+from welding_path_vla.core.geometry import relative_ee_actions_from_absolute
+from welding_path_vla.dataset.actions import (
+    ABSOLUTE_ACTION_NAMES,
+    build_absolute_actions,
+)
 from welding_path_vla.dataset.raw_schema import METADATA_FILE, EpisodeReader
 
 GLOBAL_IMAGE = "observation.images.global"
 WRIST_IMAGE = "observation.images.wrist"
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 VALID_STATUSES = {EpisodeStatus.VALID_SUCCESS.value, EpisodeStatus.VALID_RECOVERY.value}
+ACTION_REPRESENTATION = "relative_action"
+ACTION_STORAGE = "absolute_ee_world"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,20 +93,40 @@ def read_dataset_info(destination: Path) -> dict[str, Any]:
 def load_manifest(
     destination: Path,
     source: str,
-    all_source_episodes: list[Path],
     existing_count: int,
+    action_horizon: int,
+    action_stride: int,
 ) -> dict[str, Any]:
-    """读取增量清单；为旧版完整导出结果推断一次初始映射。"""
+    """读取增量清单，并拒绝混用旧动作定义的数据集。"""
     path = destination / MANIFEST_PATH
     if path.exists():
         manifest = json.loads(path.read_text(encoding="utf-8"))
+    elif existing_count:
+        raise ValueError("现有数据集缺少 relative_action 清单, 请重新导出")
     else:
-        if existing_count > len(all_source_episodes):
-            raise ValueError("cannot infer source episodes for the existing LeRobot dataset")
         manifest = {
-            "format_version": 1,
-            "sources": {source: [path.name for path in all_source_episodes[:existing_count]]},
+            "format_version": 2,
+            "action_representation": {
+                "type": ACTION_REPRESENTATION,
+                "storage": ACTION_STORAGE,
+                "frame": "prediction_tcp",
+                "rotation": "rotation_6d_rows",
+                "horizon": action_horizon,
+                "stride": action_stride,
+            },
+            "sources": {source: []},
         }
+    representation = manifest.get("action_representation", {})
+    expected = {
+        "type": ACTION_REPRESENTATION,
+        "storage": ACTION_STORAGE,
+        "frame": "prediction_tcp",
+        "rotation": "rotation_6d_rows",
+        "horizon": action_horizon,
+        "stride": action_stride,
+    }
+    if representation != expected:
+        raise ValueError(f"目标数据集动作定义不兼容: expected={expected}, got={representation}")
     recorded = sum(len(set(names)) for names in manifest["sources"].values())
     if recorded != existing_count:
         raise ValueError(
@@ -136,7 +162,7 @@ def features(camera: dict[str, Any], save_images: bool) -> dict[str, dict[str, o
         "action": {
             "dtype": "float32",
             "shape": (9,),
-            "names": ["dx", "dy", "dz", "r1x", "r1y", "r1z", "r2x", "r2y", "r2z"],
+            "names": list(ABSOLUTE_ACTION_NAMES),
         },
     }
 
@@ -156,6 +182,8 @@ def validate_existing_dataset(
             raise ValueError(f"existing dataset feature is incompatible: {key}")
     if info["fps"] != fps:
         raise ValueError(f"existing dataset fps={info['fps']} does not match source fps={fps}")
+    if info["features"]["action"].get("names") != list(ABSOLUTE_ACTION_NAMES):
+        raise ValueError("现有数据集不是 absolute EE storage, 不能增量写入 relative_action 数据")
 
 
 def rgb_encoder(options: LeRobotExportConfig, info: dict[str, Any] | None = None) -> Any:
@@ -234,7 +262,7 @@ def add_episode(dataset: Any, episode: EpisodeReader, options: LeRobotExportConf
         axis=1,
     ).astype(np.float32)
     action_source = episode.metadata["resolved_config"]["policy"]["action_source"]
-    actions = build_relative_actions(episode, source=action_source)
+    actions = build_absolute_actions(episode, source=action_source)
     for index, (global_frame, wrist_frame) in enumerate(video_frame_pairs(episode.path, count)):
         dataset.add_frame(
             {
@@ -260,20 +288,86 @@ def remove_empty_image_tree(destination: Path) -> None:
         root.rmdir()
 
 
+def update_episode_stats(
+    statistics: Any,
+    actions: list[list[float]],
+    states: list[list[float]],
+    action_horizon: int,
+    action_stride: int,
+) -> None:
+    """把一个 episode 中的有效 relative action chunks 加入统计量。"""
+    action_array = np.asarray(actions, dtype=np.float32)
+    state_array = np.asarray(states, dtype=np.float32)
+    sample_count = len(action_array) - (action_horizon - 1) * action_stride
+    if sample_count < 1:
+        return
+    offsets = np.arange(action_horizon) * action_stride
+    for start in range(0, sample_count, 1024):
+        starts = np.arange(start, min(start + 1024, sample_count))
+        chunks = action_array[starts[:, None] + offsets]
+        relative = relative_ee_actions_from_absolute(
+            chunks,
+            state_array[starts, 6:9],
+            state_array[starts, 9:13],
+        )
+        statistics.update(relative)
+
+
+def recompute_relative_action_stats(
+    destination: Path,
+    action_horizon: int,
+    action_stride: int,
+) -> None:
+    """按训练时的共享锚点定义重算 action normalization statistics。"""
+    import pyarrow.dataset as arrow_dataset
+    from lerobot.datasets.compute_stats import RunningQuantileStats
+
+    files = sorted((destination / "data").rglob("*.parquet"))
+    parquet = arrow_dataset.dataset([str(path) for path in files], format="parquet")
+    scanner = parquet.scanner(columns=["action", "observation.state", "episode_index"])
+    statistics = RunningQuantileStats()
+    current_episode: int | None = None
+    actions: list[list[float]] = []
+    states: list[list[float]] = []
+    for batch in scanner.to_batches():
+        for action, state, episode in zip(
+            batch.column("action").to_pylist(),
+            batch.column("observation.state").to_pylist(),
+            batch.column("episode_index").to_pylist(),
+            strict=True,
+        ):
+            if current_episode is not None and episode != current_episode:
+                update_episode_stats(statistics, actions, states, action_horizon, action_stride)
+                actions, states = [], []
+            current_episode = episode
+            actions.append(action)
+            states.append(state)
+    if actions:
+        update_episode_stats(statistics, actions, states, action_horizon, action_stride)
+    action_stats = {
+        name: np.asarray(value).tolist() for name, value in statistics.get_statistics().items()
+    }
+    path = destination / "meta/stats.json"
+    stats = json.loads(path.read_text(encoding="utf-8"))
+    stats["action"] = action_stats
+    path.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def export_lerobot(
     dataset_root: str | Path,
     output: str | Path,
     repo_id: str,
     options: LeRobotExportConfig | None = None,
+    action_horizon: int = 30,
+    action_stride: int = 1,
 ) -> ExportReport:
-    """选择并增量导出原始 episode，默认仅保存视频。"""
+    """导出绝对目标，并写入 relative action 训练所需的统计与契约。"""
     options = options or LeRobotExportConfig()
     root = Path(dataset_root)
     destination = Path(output)
     if destination.exists() and not options.incremental:
         raise FileExistsError(f"output already exists; enable incremental mode: {destination}")
 
-    all_episodes = valid_episode_paths(root)
     selected = valid_episode_paths(root, options.start_episode, options.end_episode)
     if not selected:
         raise ValueError(f"no valid episodes found in selected range: {root}")
@@ -283,7 +377,13 @@ def export_lerobot(
     source = source_id(root)
     existing_info = read_dataset_info(destination) if destination.exists() else None
     existing_count = int(existing_info["total_episodes"]) if existing_info else 0
-    manifest = load_manifest(destination, source, all_episodes, existing_count)
+    manifest = load_manifest(
+        destination,
+        source,
+        existing_count,
+        action_horizon,
+        action_stride,
+    )
     exported_names = set(manifest["sources"].get(source, []))
     pending = [path for path in selected if path.name not in exported_names]
     if not pending:
@@ -310,6 +410,7 @@ def export_lerobot(
         dataset.finalize()
         if saved:
             manifest["sources"].setdefault(source, []).extend(saved)
+            recompute_relative_action_stats(destination, action_horizon, action_stride)
             write_manifest(destination, manifest)
         if not options.save_images:
             remove_empty_image_tree(destination)

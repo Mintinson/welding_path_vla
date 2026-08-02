@@ -227,21 +227,31 @@ class SafetyConfig:
 
 @dataclass(slots=True)
 class PolicyConfig:
+    """策略结构与动作轨迹配置。
+
+    Attributes:
+        action_representation: 统一动作定义；当前仅支持 `relative_action`。
+        action_horizon: 每次预测的 future target 数量。
+        action_steps: 一次预测后实际执行的动作数量。
+        action_stride: chunk 中相邻 target 的数据帧间隔。
+        action_source: 原始数据中用于监督的绝对目标来源。
+    """
+
     family: str = "smolvla"
     checkpoint: str | None = None
     device: str = "cuda"
-    action_horizon: int = 15
-    action_steps: int = 15
+    action_horizon: int = 30
+    action_steps: int = 8
     action_stride: int = 1
+    action_representation: str = "relative_action"
     action_source: str = "safe_command"
-    include_current: bool = False
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class TrainingConfig:
     dataset_repo_id: str | None = None
-    dataset_root: str | None = "datasets/weldpath_lerobot_v2"
+    dataset_root: str | None = "datasets/weldpath_lerobot_relative_v1"
     output_dir: str = "outputs/train"
     batch_size: int = 16
     lr: float | None = None
@@ -412,6 +422,8 @@ class AppConfig:
             raise ValueError("policy action horizon and stride must be positive")
         if self.policy.action_source not in {"safe_command", "reference", "executed"}:
             raise ValueError("policy.action_source is not supported")
+        if self.policy.action_representation != "relative_action":
+            raise ValueError("policy.action_representation currently only supports relative_action")
         if (
             self.training.steps < 1
             or self.training.batch_size < 1

@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
+from welding_path_vla.policies.action_processors import (
+    relative_processor_factory,
+    require_relative_checkpoint,
+)
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint
 from welding_path_vla.policies.data import validate_dataset
 from welding_path_vla.policies.process import lerobot_config_argument, lerobot_training_log
@@ -90,6 +94,7 @@ def resumed_train_config(
 
     config_class = spec.config_class()
     checkpoint = find_resume_checkpoint(training.output_dir)
+    require_relative_checkpoint(checkpoint.model)
     if training.steps <= checkpoint.step:
         raise ValueError(
             f"training.steps={training.steps} must exceed resumed step {checkpoint.step}"
@@ -115,6 +120,8 @@ def make_train_config(
 
     if training.resume:
         return resumed_train_config(policy, training, spec)
+    if policy.checkpoint and Path(policy.checkpoint).exists():
+        require_relative_checkpoint(policy.checkpoint)
     policy_config = make_policy_config(policy, spec)
     if training.lr is not None and hasattr(policy_config, "optimizer_lr"):
         policy_config.optimizer_lr = training.lr
@@ -151,7 +158,7 @@ def training_plan(
     spec: LeRobotPolicySpec,
 ) -> dict[str, Any]:
     """返回所有策略统一的可复查训练计划。"""
-    report = validate_dataset(training)
+    report = validate_dataset(training, policy)
     eval_episodes = math.ceil(report.episodes * training.eval_split) if training.eval_split else 0
     config = make_train_config(policy, training, spec)
     checkpoint = find_resume_checkpoint(training.output_dir) if training.resume else None
@@ -174,6 +181,7 @@ def training_plan(
         "steps": training.steps,
         "output_dir": training.output_dir,
         "log_file": str(Path(training.output_dir) / "train.log"),
+        "action_representation": policy.action_representation,
         "action_horizon": policy.action_horizon,
         "action_steps": policy.action_steps,
         "device": policy.device,
@@ -208,6 +216,7 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
     with (
         lerobot_config_argument(resume_config),
         lerobot_training_log(Path(training.output_dir) / "train.log"),
+        relative_processor_factory(),
     ):
         lerobot_train(config, accelerator=accelerator)
     return Path(training.output_dir)

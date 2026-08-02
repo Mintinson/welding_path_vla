@@ -13,7 +13,7 @@ policy:
     scheduler_decay_steps: 30000
 
 training:
-  output_dir: outputs/train/pi0_weldpath_v1_a100
+  output_dir: outputs/train/pi0_weldpath_relative_v1_a100
   # accelerate 的每个进程使用 batch 2；双卡有效 batch 为 4。
   batch_size: 2
   steps: 30000

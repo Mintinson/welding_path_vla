@@ -33,22 +33,22 @@ pixi run -e sim sim-collect \
 pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_raw_v2 \
-  --output=datasets/weldpath_lerobot_smolvla_v1 \
-  --repo_id=huayan/weldpath_smolvla_v1 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=huayan/weldpath_relative_v1 \
   --lerobot_export.incremental=true
 
 pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_pipe_bottom_raw_v2 \
-  --output=datasets/weldpath_lerobot_smolvla_v1 \
-  --repo_id=huayan/weldpath_smolvla_v1 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=huayan/weldpath_relative_v1 \
   --lerobot_export.incremental=true
 
 pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_pipe_top_raw_v2 \
-  --output=datasets/weldpath_lerobot_smolvla_v1 \
-  --repo_id=huayan/weldpath_smolvla_v1 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=huayan/weldpath_relative_v1 \
   --lerobot_export.incremental=true
 
 pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
@@ -111,8 +111,8 @@ pixi run -e train train-policy \
 ```bash
 pixi run -e train train-policy \
   --config_path=configs/smolvla.yaml \
-  --policy.checkpoint=outputs/train/smolvla_weldpath_v1/checkpoints/last/pretrained_model \
-  --training.output_dir=outputs/train/smolvla_weldpath_v1_finetune \
+  --policy.checkpoint=outputs/train/smolvla_weldpath_relative_v1/checkpoints/last/pretrained_model \
+  --training.output_dir=outputs/train/smolvla_weldpath_relative_v1_finetune \
   --training.save_freq=2500
 ```
 
@@ -123,8 +123,8 @@ pixi run -e train train-policy \
 ```bash
 pixi run -e train policy-evaluate \
   --config_path=configs/smolvla.yaml \
-  --policy.checkpoint=outputs/train/smolvla_weldpath_v1_finetune/checkpoints/best/pretrained_model \
-  --output=outputs/evaluation/policies/smolvla_weldpath_v1_finetune.json
+  --policy.checkpoint=outputs/train/smolvla_weldpath_relative_v1_finetune/checkpoints/best/pretrained_model \
+  --output=outputs/evaluation/policies/smolvla_weldpath_relative_v1_finetune.json
 ```
 
 ## 4. 仿真闭环部署
@@ -157,7 +157,7 @@ rollout 会保存双视角 H.264 视频、逐步轨迹、碰撞对、IK 诊断�
 本次先训练 5,000 步，再从其最终 checkpoint 继续训练 5,000 步。最终模型位于：
 
 ```text
-outputs/train/smolvla_weldpath_v1_finetune/checkpoints/best/pretrained_model
+outputs/train/smolvla_weldpath_relative_v1_finetune/checkpoints/best/pretrained_model
 ```
 
 离线评估固定使用 9 个留出 episode，每个任务 3 个，并均衡抽取 50 帧。指标使用
@@ -181,6 +181,6 @@ LeRobot 归一化动作空间；数值越低越好。
 | 管件上圆周 | 3,300 步超时 | 最大进度 0.741，最近距离 12.75 mm，200 帧进入 15 mm 区域 | 无碰撞 |
 
 完整离线报告在 `outputs/evaluation/policies/`，三项 rollout 位于
-`outputs/deploy/smolvla_weldpath_v1_final_{straight,bottom,top}/`。每个目录均包含
+`outputs/deploy/smolvla_weldpath_relative_v1_final_{straight,bottom,top}/`。每个目录均包含
 `summary.json`、`rollout.npz` 和双视角视频。视频已验证为 640×480、30 FPS、
 H.264/yuv420p，并可由 TorchCodec 解码。

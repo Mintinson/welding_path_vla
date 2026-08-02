@@ -1,11 +1,11 @@
-"""几何工具: 四元数/旋转矩阵/齐次变换之间的转换和轨迹相关计算。
+"""支持 NumPy 与 PyTorch 的批量几何运算和轨迹工具。
 
 本模块提供的几何原语涵盖:
   - 四元数与旋转矩阵的双向转换 (wxyz 格式优先)
   - 位姿增量 (delta pose) 计算与坐标系变换
   - 6D 旋转表示 (rotation_6d) 与 SO(3) 的相互转换
   - 逆运动学中使用的旋转误差 (轴角) 计算
-  - 部署时将 9D 相对动作解码为世界坐标目标位姿
+  - 部署时将 processor 恢复后的 9D 世界系目标转换为位姿
 
 四元数约定: 全文使用 (w, x, y, z) 顺序, 与 MuJoCo 和 scipy 的
 (x, y, z, w) 不同, 因此在接口边界处需要 roll 转换。
@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
+import torch
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
@@ -22,75 +25,159 @@ from welding_path_vla.core.domain import Pose
 type FloatArray = NDArray[np.float64]
 
 
-def normalize(vector: np.ndarray) -> np.ndarray:
-    """归一化向量, 对零长度向量抛出明确的异常信息。
-
-    主要用于旋转表示的归一化, 零长度向量意味着网络预测退化了,
-    检测到这种情况直接报错比静默处理更安全。
+def concatenate[ArrayType: (np.ndarray, torch.Tensor)](
+    values: tuple[ArrayType, ...], axis: int = -1
+) -> ArrayType:
+    """使用输入对应的 NumPy 或 PyTorch 后端拼接数组。
 
     Args:
-        vector: 任意维度的向量。
+        values: 后端相同的数组或 Tensor。
+        axis: 拼接维度。
 
     Returns:
-        单位向量。
+        拼接结果，后端与输入一致。
+    """
+    if isinstance(values[0], torch.Tensor):
+        tensors = cast(tuple[torch.Tensor, ...], values)
+        return cast(ArrayType, torch.cat(tensors, dim=axis))
+    return cast(ArrayType, np.concatenate(values, axis=axis))
+
+
+def stack[ArrayType: (np.ndarray, torch.Tensor)](
+    values: tuple[ArrayType, ...], axis: int = -1
+) -> ArrayType:
+    """使用输入对应的 NumPy 或 PyTorch 后端堆叠数组。
+
+    Args:
+        values: 后端相同的数组或 Tensor。
+        axis: 新维度的位置。
+
+    Returns:
+        堆叠结果，后端与输入一致。
+    """
+    if isinstance(values[0], torch.Tensor):
+        tensors = cast(tuple[torch.Tensor, ...], values)
+        return cast(ArrayType, torch.stack(tensors, dim=axis))
+    return cast(ArrayType, np.stack(values, axis=axis))
+
+
+def normalize[ArrayType: (np.ndarray, torch.Tensor)](
+    vector: ArrayType, eps: float = 1e-8
+) -> ArrayType:
+    """沿最后一维归一化单个或批量向量。
+
+    Args:
+        vector: NumPy 数组或 Tensor，最后一维为向量维度。
+        eps: 判定退化向量的阈值。
+
+    Returns:
+        与输入后端、形状相同的单位向量。
 
     Raises:
-        ValueError: 向量长度 < 1e-8, 网络预测退化。
+        ValueError: 任意向量长度小于 `eps`。
     """
-    norm = float(np.linalg.norm(vector))
-    if norm < 1e-8:
-        raise ValueError("ACT predicted a degenerate rotation")
-    return vector / norm
+    if isinstance(vector, torch.Tensor):
+        values = vector if vector.is_floating_point() else vector.to(torch.float32)
+        norm = torch.linalg.vector_norm(values, dim=-1, keepdim=True)
+        degenerate = bool(torch.any(norm < eps))
+    else:
+        values = np.asarray(vector)
+        norm = np.linalg.norm(values, axis=-1, keepdims=True)
+        degenerate = bool(np.any(norm < eps))
+    if degenerate:
+        raise ValueError("cannot normalize a degenerate vector")
+    return cast(ArrayType, values / norm)
 
 
-def normalize_quaternion(quaternion_wxyz: FloatArray) -> FloatArray:
+def normalize_quaternion[ArrayType: (np.ndarray, torch.Tensor)](
+    quaternion_wxyz: ArrayType,
+) -> ArrayType:
     """归一化四元数并确保 w >= 0, 消除四元数的符号歧义。
 
     四元数 q 和 -q 代表相同的旋转, 但符号变化会导致插值和误差计算
     不连续。约定 w >= 0 确保表示唯一。
 
     Args:
-        quaternion_wxyz: 输入四元数 (w, x, y, z)。
+        quaternion_wxyz: `[..., 4]` 四元数，最后一维采用 `(w, x, y, z)`。
 
     Returns:
-        归一化后的四元数, w >= 0。
+        与输入后端、dtype、device 和 batch 前缀一致的四元数，且 `w >= 0`。
     """
-    quaternion = np.asarray(quaternion_wxyz, dtype=np.float64)
+    quaternion = normalize(quaternion_wxyz)
     # 取 w >= 0 的等价表示, 消除符号歧义
-    if quaternion[0] < 0:
-        quaternion = -quaternion
-    return quaternion / np.linalg.norm(quaternion)
+    if isinstance(quaternion, torch.Tensor):
+        sign = torch.where(quaternion[..., :1] < 0, -1, 1)
+    else:
+        sign = np.where(quaternion[..., :1] < 0, -1, 1)
+    return quaternion * sign
 
 
-def quaternion_to_matrix(quaternion_wxyz: FloatArray) -> FloatArray:
-    """将 (w, x, y, z) 四元数转换为 3x3 旋转矩阵。
-
-    pip 安装的 scipy 的 Rotation.from_quat 接受 (x, y, z, w) 格式,
-    因此需要在接口处 roll 顺序。
+def quaternion_to_matrix[ArrayType: (np.ndarray, torch.Tensor)](
+    quaternion_wxyz: ArrayType,
+) -> ArrayType:
+    """将单个或批量 `(w, x, y, z)` 四元数转换为旋转矩阵。
 
     Args:
-        quaternion_wxyz: 四元数 (w, x, y, z)。
+        quaternion_wxyz: `[..., 4]` NumPy 数组或 Tensor。
 
     Returns:
-        3x3 旋转矩阵 (SO(3))。
+        `[..., 3, 3]` 旋转矩阵，保持输入后端、dtype 和 device。
     """
-    w, x, y, z = normalize_quaternion(quaternion_wxyz)
-    return Rotation.from_quat([x, y, z, w]).as_matrix()
+    quaternion = normalize_quaternion(quaternion_wxyz)
+    if isinstance(quaternion, torch.Tensor):
+        w, x, y, z = quaternion.unbind(-1)
+    else:
+        w, x, y, z = np.moveaxis(quaternion, -1, 0)
+    matrix = stack(
+        (
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - z * w),
+            2 * (x * z + y * w),
+            2 * (x * y + z * w),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - x * w),
+            2 * (x * z - y * w),
+            2 * (y * z + x * w),
+            1 - 2 * (x * x + y * y),
+        ),
+        axis=-1,
+    )
+    return cast(ArrayType, matrix.reshape(*quaternion.shape[:-1], 3, 3))
 
 
-def matrix_to_quaternion(matrix: FloatArray) -> FloatArray:
-    """将 3x3 旋转矩阵转换为 (w, x, y, z) 四元数。
+def matrix_to_quaternion[ArrayType: (np.ndarray, torch.Tensor)](matrix: ArrayType) -> ArrayType:
+    """将单个或批量旋转矩阵转换为 `(w, x, y, z)` 四元数。
 
     scipy 的 as_quat() 返回 (x, y, z, w), 需要转回本项目的 (w, x, y, z) 约定。
 
     Args:
-        matrix: 3x3 旋转矩阵。
+        matrix: `[..., 3, 3]` NumPy 数组或 Tensor。
 
     Returns:
-        四元数 (w, x, y, z), 归一化且 w >= 0。
+        `[..., 4]` 四元数，保持输入后端、dtype 和 device，且 `w >= 0`。
     """
-    x, y, z, w = Rotation.from_matrix(matrix).as_quat()
-    return normalize_quaternion(np.array([w, x, y, z]))
+    if not isinstance(matrix, torch.Tensor):
+        quaternion_xyzw = Rotation.from_matrix(matrix).as_quat()
+        quaternion = normalize_quaternion(np.roll(quaternion_xyzw, 1, axis=-1))
+        if np.issubdtype(matrix.dtype, np.floating):
+            quaternion = quaternion.astype(matrix.dtype, copy=False)
+        return quaternion
+    values = matrix if matrix.is_floating_point() else matrix.to(torch.float32)
+    m00, m11, m22 = values[..., 0, 0], values[..., 1, 1], values[..., 2, 2]
+    w = 0.5 * torch.sqrt(torch.clamp(1 + m00 + m11 + m22, min=0))
+    x = 0.5 * torch.copysign(
+        torch.sqrt(torch.clamp(1 + m00 - m11 - m22, min=0)),
+        values[..., 2, 1] - values[..., 1, 2],
+    )
+    y = 0.5 * torch.copysign(
+        torch.sqrt(torch.clamp(1 - m00 + m11 - m22, min=0)),
+        values[..., 0, 2] - values[..., 2, 0],
+    )
+    z = 0.5 * torch.copysign(
+        torch.sqrt(torch.clamp(1 - m00 - m11 + m22, min=0)),
+        values[..., 1, 0] - values[..., 0, 1],
+    )
+    return normalize_quaternion(torch.stack((w, x, y, z), dim=-1))
 
 
 def look_at_quaternion(position: FloatArray, target: FloatArray, up: FloatArray) -> FloatArray:
@@ -240,7 +327,9 @@ def transform_points(
     return np.asarray(points) @ quaternion_to_matrix(quaternion).T + np.asarray(position)
 
 
-def rotation_from_6d_rows(values: np.ndarray) -> np.ndarray:
+def rotation_from_6d_rows[ArrayType: (np.ndarray, torch.Tensor)](
+    values: ArrayType,
+) -> ArrayType:
     """从 6D 旋转表示还原 3x3 SO(3) 旋转矩阵。
 
     6D 旋转表示 (Zhou et al., CVPR 2019) 使用旋转矩阵的前两行,
@@ -256,69 +345,128 @@ def rotation_from_6d_rows(values: np.ndarray) -> np.ndarray:
       R = [f1, f2, f3]^T
 
     Args:
-        values: 6D 向量 [r1x, r1y, r1z, r2x, r2y, r2z], 即旋转矩阵前两行。
+        values: `[..., 6]` 向量，最后一维是旋转矩阵前两行。
 
     Returns:
-        3x3 SO(3) 旋转矩阵。
+        `[..., 3, 3]` SO(3) 旋转矩阵，保持输入后端、dtype 和 device。
     """
-    first = normalize(np.asarray(values[:3], dtype=np.float64))
-    second = np.asarray(values[3:6], dtype=np.float64)
-    # 从 second 中移除 first 方向的分量, 保证正交性
-    second = normalize(second - np.dot(first, second) * first)
-    # 第三行由前两行的叉积得到, 自动满足右手系
-    third = normalize(np.cross(first, second))
-    return np.stack((first, second, third))
+    first = normalize(values[..., :3])
+    second = values[..., 3:6]
+    if isinstance(first, torch.Tensor):
+        second_tensor = cast(torch.Tensor, second)
+        projection = torch.sum(first * second_tensor, dim=-1, keepdim=True)
+        second = normalize(second_tensor - projection * first)
+        third = normalize(torch.linalg.cross(first, second, dim=-1))
+    else:
+        second_array = cast(np.ndarray, second)
+        projection = np.sum(first * second_array, axis=-1, keepdims=True)
+        second = normalize(second_array - projection * first)
+        third = normalize(np.cross(first, second))
+    return cast(ArrayType, stack((first, second, third), axis=-2))
 
 
-def apply_tcp_action_to_world(current: Pose, action: np.ndarray, max_translation_m: float) -> Pose:
-    """将策略预测的 9D 相对动作解码为世界坐标系下的目标位姿。
+def rotation_to_6d_rows[ArrayType: (np.ndarray, torch.Tensor)](matrix: ArrayType) -> ArrayType:
+    """把 `[..., 3, 3]` 旋转矩阵编码为 `[..., 6]` rotation-6D。"""
+    return matrix[..., :2, :].reshape(*matrix.shape[:-2], 6)
 
-    这是 build_relative_action_chunk 的逆过程:
-      build_relative_action_chunk:  T_current → T_target → T_rel
-      apply_tcp_action_to_world:    T_current + action → T_target
 
-    数学原理 (与 build_relative_action_chunk 反向):
-      action[:3]   = R_current^T @ (t_target - t_current)
-      → t_target   = t_current + R_current @ action[:3]
+def expand_anchor[ArrayType: (np.ndarray, torch.Tensor)](
+    anchor: ArrayType, action: ArrayType, trailing_dimensions: int
+) -> ArrayType:
+    """为动作比锚点多出的时间维插入广播轴。
 
-      action[3:]   = rotation_6d(R_current^T @ R_target)
-      → R_target   = R_current @ R_rel
-      → q_target   = matrix_to_quaternion(R_current @ R_rel)
-
-    其中 R_rel 由 rotation_from_6d_rows(action[3:]) 恢复得到。
-
-    通常部署时用于:
-      1. 策略在 TCP 局部坐标系中预测动作 (好处: 与工件位姿解耦)
-      2. 本函数将 9D 动作映射回世界坐标系
-      3. 映射结果传给 IK 求解器或位置控制器执行
+    例如动作 `[B, H, 9]` 与锚点 `[B, 3]` 会把锚点变为 `[B, 1, 3]`；
+    动作 `[H, 9]` 与单个锚点 `[3]` 会把锚点变为 `[1, 3]`。
 
     Args:
-        current: 当前 TCP 位姿。
-        action: 9D 动作 [dx, dy, dz, r1x, r1y, r1z, r2x, r2y, r2z]。
-        max_translation_m: 平移最大允许值, 超限报错防止危险动作。
+        anchor: 位置或旋转矩阵锚点。
+        action: 单步动作、动作块或批量动作块。
+        trailing_dimensions: 锚点自身占用的维数；位置为 1，旋转矩阵为 2。
+
+    Returns:
+        可沿动作时间维广播的锚点视图。
+    """
+    action_prefix = action.ndim - 1
+    anchor_prefix = anchor.ndim - trailing_dimensions
+    extra_dimensions = action_prefix - anchor_prefix
+    shape = (*anchor.shape[:-trailing_dimensions], *((1,) * extra_dimensions))
+    return anchor.reshape(*shape, *anchor.shape[-trailing_dimensions:])
+
+
+def relative_ee_actions_from_absolute[ArrayType: (np.ndarray, torch.Tensor)](
+    absolute_actions: ArrayType,
+    anchor_positions: ArrayType,
+    anchor_quaternions_wxyz: ArrayType,
+) -> ArrayType:
+    """将 absolute EE actions 转到预测时刻的 TCP 坐标系。
+
+    支持 `[9]`、`[H, 9]`、`[B, H, 9]` 等动作形状。锚点可以是
+    `[3]/[4]` 或带有相同 batch 前缀的数组，并自动沿动作时间维广播。
+
+    Args:
+        absolute_actions: 世界系 9D 末端目标，最后一维为位置和 rotation-6D。
+        anchor_positions: 预测时刻的世界系 TCP 位置。
+        anchor_quaternions_wxyz: 预测时刻的世界系 TCP 姿态。
+
+    Returns:
+        形状和后端不变、以对应 TCP 为共同锚点的 relative actions。
+    """
+    anchor_rotations = quaternion_to_matrix(anchor_quaternions_wxyz)
+    target_rotations = rotation_from_6d_rows(absolute_actions[..., 3:])
+    positions = expand_anchor(anchor_positions, absolute_actions, 1)
+    rotations = expand_anchor(anchor_rotations, absolute_actions, 2)
+    position_delta = absolute_actions[..., :3] - positions
+    relative_positions = (rotations.swapaxes(-1, -2) @ position_delta[..., None])[..., 0]
+    relative_rotations = rotations.swapaxes(-1, -2) @ target_rotations
+    return concatenate(
+        (relative_positions, rotation_to_6d_rows(relative_rotations)),
+        axis=-1,
+    )
+
+
+def absolute_ee_actions_from_relative[ArrayType: (np.ndarray, torch.Tensor)](
+    relative_actions: ArrayType,
+    anchor_positions: ArrayType,
+    anchor_quaternions_wxyz: ArrayType,
+) -> ArrayType:
+    """将共享 TCP 锚点的 relative EE actions 恢复到世界系。
+
+    Args:
+        relative_actions: TCP 局部系 9D 动作，最后一维为位置和 rotation-6D。
+        anchor_positions: 编码动作时使用的世界系 TCP 位置。
+        anchor_quaternions_wxyz: 编码动作时使用的世界系 TCP 姿态。
+
+    Returns:
+        形状和后端不变的世界系 absolute EE targets。
+    """
+    anchor_rotations = quaternion_to_matrix(anchor_quaternions_wxyz)
+    relative_rotations = rotation_from_6d_rows(relative_actions[..., 3:])
+    positions = expand_anchor(anchor_positions, relative_actions, 1)
+    rotations = expand_anchor(anchor_rotations, relative_actions, 2)
+    absolute_positions = positions + (rotations @ relative_actions[..., :3, None])[..., 0]
+    absolute_rotations = rotations @ relative_rotations
+    return concatenate(
+        (absolute_positions, rotation_to_6d_rows(absolute_rotations)),
+        axis=-1,
+    )
+
+
+def absolute_ee_action_to_pose(action: np.ndarray) -> Pose:
+    """将 postprocessor 输出的 9D 世界系绝对 EE 目标转换为位姿。
+
+    relative action 的 SE(3) 解码由 processor 对完整 chunk 一次完成；这里不再读取
+    每一步变化的当前 TCP，避免同一预测块被错误地重复换锚点。
+
+    Args:
+        action: 9D 世界系目标 `[x, y, z, rotation_6d_rows]`。
 
     Returns:
         世界坐标系下的目标位姿。
 
     Raises:
-        ValueError: action 不是合法的 9D 有限值向量或超出平移限制。
+        ValueError: action 不是合法的 9D 有限值向量。
     """
     values = np.asarray(action, dtype=np.float64)
     if values.shape != (9,) or not np.all(np.isfinite(values)):
         raise ValueError("Input action must be a finite 9D vector")
-    translation_norm = float(np.linalg.norm(values[:3]))
-    if translation_norm > max_translation_m:
-        raise ValueError(
-            f"Input action {translation_norm:.6f} exceeds the configured "
-            f"TCP increment limit {max_translation_m:.6f}"
-        )
-
-    current_rotation = quaternion_to_matrix(current.quaternion_wxyz)
-
-    # 从 6D 旋转表示恢复相对旋转矩阵, 应用到世界系
-    relative_rotation = rotation_from_6d_rows(values[3:])
-
-    return Pose(
-        current.position + current_rotation @ values[:3],
-        matrix_to_quaternion(current_rotation @ relative_rotation),
-    )
+    return Pose(values[:3], matrix_to_quaternion(rotation_from_6d_rows(values[3:])))

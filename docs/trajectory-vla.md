@@ -48,7 +48,7 @@ pixi run -e train train-policy --config_path=configs/trajectory_vla.yaml
 `configs/policies/trajectory_vla.yaml` 默认从官方完整 policy 权重初始化。配置中的
 `load_vlm_weights: false` 仅避免在加载完整 policy 前重复加载一次裸 SmolVLM，不会跳过
 checkpoint 中的 VLM 权重。日志始终写入
-`outputs/train/trajectory_vla_weldpath_v1/train.log`。
+`outputs/train/trajectory_vla_weldpath_relative_v1/train.log`。
 
 中断后把总步数调大并恢复：
 

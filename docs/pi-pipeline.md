@@ -63,7 +63,7 @@ pixi run -e train train-policy \
 ```bash
 pixi run -e train policy-evaluate \
   --config_path=configs/pi0_5.yaml \
-  --policy.checkpoint=outputs/train/pi0_5_weldpath_v1/checkpoints/last/pretrained_model
+  --policy.checkpoint=outputs/train/pi0_5_weldpath_relative_v1/checkpoints/last/pretrained_model
 ```
 
 每个部署入口已经组合模型、场景和任务。切换工件只切换文件：

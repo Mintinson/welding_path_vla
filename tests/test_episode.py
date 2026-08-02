@@ -6,8 +6,8 @@ import numpy as np
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.geometry import frame_delta, yaw_degrees_to_matrix
 from welding_path_vla.dataset.actions import (
-    build_action_chunk,
-    build_relative_action_chunk,
+    build_absolute_actions,
+    build_delta_action,
     build_relative_actions,
 )
 from welding_path_vla.dataset.raw_schema import EpisodeReader
@@ -75,17 +75,15 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     np.testing.assert_allclose(episode.trajectory["command_delta_pose_base"][0], expected_base)
     assert episode.metadata["coordinate_frames"]["command_delta_pose_base"] == "robot_base"
     assert episode.metadata["episode_start"] == "collision_checked_staging_pose"
-    chunk = build_action_chunk(episode, 0, horizon=4, source="executed_tcp")
-    assert chunk.shape == (4, 6)
-    relative = build_relative_action_chunk(episode, 0, horizon=4)
+    absolute = build_absolute_actions(episode)
+    assert absolute.shape == (episode.action_count, 9)
+    relative = build_relative_actions(episode, 0, horizon=4)
     assert relative.values.shape == (4, 9)
     assert relative.valid_mask.tolist() == [True] * 4
-    compatible = build_relative_action_chunk(episode, 0, horizon=4, include_current=True)
-    np.testing.assert_allclose(compatible.values[0], [0, 0, 0, 1, 0, 0, 0, 1, 0], atol=1e-7)
-    tail = build_relative_action_chunk(episode, episode.action_count - 2, horizon=4)
+    tail = build_relative_actions(episode, episode.action_count - 2, horizon=4)
     assert tail.valid_mask.tolist() == [True, True, False, False]
-    batched = build_relative_actions(episode)
-    assert batched.shape == (episode.action_count, 9)
+    delta = build_delta_action(episode)
+    assert delta.shape == (episode.action_count, 9)
     for index in (0, episode.action_count // 2, episode.action_count - 1):
-        expected = build_relative_action_chunk(episode, index, horizon=1).values[0]
-        np.testing.assert_allclose(batched[index], expected, atol=1e-6)
+        expected = build_relative_actions(episode, index, horizon=1).values[0]
+        np.testing.assert_allclose(delta[index], expected, atol=1e-6)

@@ -2,7 +2,7 @@
 
 ## 1. 数据契约
 
-ACT 直接读取 `datasets/weldpath_lerobot_v2`，不复制数据。项目适配器会检查：
+ACT 与其他策略统一读取 `datasets/weldpath_lerobot_relative_v1`，不复制数据。项目适配器会检查：
 
 - `observation.images.global` 与 `observation.images.wrist`：双路 RGB；
 - `observation.state`：6 轴关节角 + 3D TCP 位置 + 4D `wxyz` 四元数，共 13 维；
@@ -62,7 +62,7 @@ episode-aware sampler、optimizer preset、日志、评估和 checkpoint 恢复�
 LeRobot checkpoint 位于：
 
 ```text
-outputs/train/act_weldpath_v2/checkpoints/last/pretrained_model/
+outputs/train/act_weldpath_relative_v1/checkpoints/last/pretrained_model/
 ```
 
 模型默认预测 30 步（1 秒）动作块，每执行 8 步（约 0.27 秒）后重新观察并规划。视觉骨干使用
@@ -84,7 +84,7 @@ ImageNet ResNet-18 权重；首次运行可能下载该权重。
 ```bash
 pixi run -e train policy-evaluate \
   --config_path=configs/act.yaml \
-  --policy.checkpoint=outputs/train/act_weldpath_v2
+  --policy.checkpoint=outputs/train/act_weldpath_relative_v1
 ```
 
 报告包含总 loss、ACT L1/KL loss、归一化 action MAE、样本数和数据 schema。快速检查可加
@@ -95,9 +95,9 @@ pixi run -e train policy-evaluate \
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/act.yaml \
-  --policy.checkpoint=outputs/train/act_weldpath_v2 \
+  --policy.checkpoint=outputs/train/act_weldpath_relative_v1 \
   --deployment.episodes=5 \
-  --deployment.log_dir=outputs/deploy/act_weldpath_v2_eval
+  --deployment.log_dir=outputs/deploy/act_weldpath_relative_v1_eval
 ```
 
 每个 rollout 会：

@@ -125,27 +125,26 @@ OpenCV backend、FFmpeg 子进程或码率参数；输出可由 VS Code 和浏�
 
 仿真监督标签优先使用 `safe_command`，因为它代表经过 IK 和速度限制后真正发送给控制器的目标。`reference` 用于几何轨迹消融，`executed` 用于拖拽示教或没有显式命令的真机数据。
 
-`build_relative_action_chunk` 根据 `reference.md` 实现相对当前末端坐标系的累计 future chunk：
+`build_relative_actions` 根据 LeRobot 的定义实现相对当前末端坐标系的累计 future chunk：
 
 ```python
-from welding_path_vla.dataset.actions import build_relative_action_chunk
+from welding_path_vla.dataset.actions import build_relative_actions
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 
 episode = EpisodeReader("datasets/weldpath_raw_v2/episodes/episode_000000")
-chunk = build_relative_action_chunk(
+chunk = build_relative_actions(
     episode,
     frame_index=100,
-    horizon=15,
+    horizon=30,
     stride=1,
     source="safe_command",
-    include_current=False,
 )
 
-actions = chunk.values       # (15, 9): xyz + rotation_6d_rows
+actions = chunk.values       # (30, 9): xyz + rotation_6d_rows
 valid_mask = chunk.valid_mask
 ```
 
-每个 future target 都以当前真实 TCP 为共同参考，而不是相对前一个 future target。episode 尾部重复最后目标以维持固定形状，同时必须用 `valid_mask` 屏蔽填充损失。若要兼容包含当前帧单位变换的 Hy-VLA 语义，将 `include_current` 设为 `true`。
+每个 future target 都以当前真实 TCP 为共同参考，而不是相对前一个 future target。episode 尾部重复最后目标以维持固定形状，同时必须用 `valid_mask` 屏蔽填充损失。
 
 ## 5. 导出 LeRobot 数据
 
@@ -156,8 +155,8 @@ pixi install -e data
 pixi run -e data export-lerobot \
   --config_path=configs/default.yaml \
   --dataset=datasets/weldpath_raw_v2 \
-  --output=datasets/weldpath_lerobot_v2 \
-  --repo_id=YOUR_NAME/weldpath_sim_v2
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=YOUR_NAME/weldpath_relative_v1
 ```
 
 默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程；这样省去了整段视频驻留内存和临时 PNG I/O。最终数据使用 LeRobot 官方的
@@ -172,7 +171,7 @@ schema。
 # 仅转换 episode_000100 到 episode_000199
 pixi run -e data export-lerobot \
   --dataset=datasets/weldpath_raw_v2 \
-  --output=datasets/weldpath_lerobot_v2 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
   --lerobot_export.start_episode=100 \
   --lerobot_export.end_episode=199
 ```
@@ -183,19 +182,19 @@ pixi run -e data export-lerobot \
 ```bash
 pixi run -e data export-lerobot \
   --dataset=datasets/weldpath_raw_v2 \
-  --output=datasets/weldpath_lerobot_v2 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
   --lerobot_export.incremental=true \
   --lerobot_export.start_episode=200
 ```
 
-转换器在目标的 `meta/welding_path_vla_export.json` 中记录已完成的源 episode；重叠区间会自动跳过，不会重复写入。旧版完整导出的目标没有清单时，会按已有 episode 数从有效源数据开头推断一次映射。恢复视频目标时沿用其原编码格式，避免在同一视频 chunk 中混入不同 codec。
+转换器在目标的 `meta/welding_path_vla_export.json` 中记录已完成的源 episode 和动作契约；重叠区间会自动跳过，不会重复写入。旧数据缺少该契约时会要求重新导出。恢复视频目标时沿用其原编码格式，避免在同一视频 chunk 中混入不同 codec。
 
 如果不使用流式编码，可用
 `--lerobot_export.streaming_encoding=false --lerobot_export.image_writer_processes=2`
 `--lerobot_export.image_writer_threads=4` 启用 LeRobot 的临时图片与多进程相机编码路径。
 通常默认流式模式 I/O 更少，更适合本项目的双相机长 episode。
 
-当前 LeRobot 基线导出的单帧 action 是 9D 的“当前真实 TCP → 下一安全命令 TCP”末端局部变换。LeRobot 再按时间抽取这些单步局部 action 形成 SmolVLA chunk。严格的 Hy-VLA“所有 future target 共用当前帧参考”实验应使用上一节的动作构造器和 mask 接入自定义 Dataset；不要把两种 chunk 语义放在同一个实验名称下比较。
+LeRobot parquet 中保存 9D 世界系 absolute EE targets。加载 future chunk 后，项目 processor 在归一化前把整段目标统一转换到预测时刻 TCP 坐标系；`meta/stats.json` 中的 action 统计量也在相同 relative action 空间计算。这样所有 policy 共享完全一致的动作语义。
 
 ## 6. 如何训练 SmolVLA 基线
 
@@ -205,12 +204,14 @@ pixi run -e data export-lerobot \
 policy:
   family: smolvla
   device: cuda
-  action_horizon: 15
+  action_horizon: 30
+  action_steps: 8
+  action_representation: relative_action
   action_source: safe_command
 
 training:
-  dataset_repo_id: YOUR_NAME/weldpath_sim_v2
-  dataset_root: datasets/weldpath_lerobot_v2
+  dataset_repo_id: YOUR_NAME/weldpath_relative_v1
+  dataset_root: datasets/weldpath_lerobot_relative_v1
   output_dir: outputs/train/smolvla_v2
   batch_size: 16
   steps: 100000
@@ -257,4 +258,4 @@ pixi run -e train train-policy --config_path=configs/default.yaml
 - `scene_sampling_attempts` 和初态采样次数没有长期接近上限；
 - 全局相机能同时看到机械臂、工件和焊缝，腕部相机不被焊枪完全遮挡；
 - `safe_command`、`reference`、`executed` 三条轨迹的差异符合控制器行为；
-- 训练动作的 source、frame、rotation、horizon、stride 和 `include_current` 固定写入实验配置。
+- 训练动作的 source、frame、rotation、horizon 和 stride 固定写入实验配置。

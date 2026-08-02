@@ -21,9 +21,9 @@ policy:
     scheduler_decay_steps: 5000
 
 training:
-  dataset_repo_id: huayan/weldpath_smolvla_v1
-  dataset_root: datasets/weldpath_lerobot_smolvla_v1
-  output_dir: outputs/train/trajectory_vla_weldpath_v1
+  dataset_repo_id: huayan/weldpath_relative_v1
+  dataset_root: datasets/weldpath_lerobot_relative_v1
+  output_dir: outputs/train/trajectory_vla_weldpath_relative_v1
   lr : 1.5e-4
   batch_size: 16
   steps: 5000

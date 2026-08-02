@@ -91,11 +91,13 @@ class CaptureProcessor:
 class StaticSmolPolicy:
     """返回固定 9D 动作的最小 SmolVLA 替身。"""
 
+    config = type("PolicyConfig", (), {"n_action_steps": 1})()
+
     def reset(self) -> None:
         pass
 
-    def select_action(self, batch: dict[str, object]) -> torch.Tensor:
-        return torch.zeros((1, 9), dtype=torch.float32)
+    def predict_action_chunk(self, batch: dict[str, object]) -> torch.Tensor:
+        return torch.zeros((1, 1, 9), dtype=torch.float32)
 
 
 def test_smolvla_runtime_keeps_language_instruction() -> None:

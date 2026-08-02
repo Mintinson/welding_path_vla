@@ -28,9 +28,9 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
         "joint_position": [],
         # 动作执行后的实际六关节速度，用于安全与平滑性评价。
         "joint_velocity": [],
-        # 策略输出的 9D TCP 局部增量：[平移 3D，旋转 6D]。
+        # postprocessor 输出的 9D 世界系绝对 EE 目标：[位置 3D，旋转 6D]。
         "action": [],
-        # 将 action 解码到世界系后，希望 TCP 到达的目标位置。
+        # 经单步速度限制后实际送给 IK 的世界系目标位置。
         "command_tcp_position": [],
         # 将 action 解码到世界系后，希望 TCP 到达的目标姿态。
         "command_tcp_quaternion_wxyz": [],
@@ -54,7 +54,7 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
         "joint_velocity_limit": [],
         # 相邻策略周期估算的关节加速度是否超过评价上限。
         "joint_acceleration": [],
-        # ACT 平移增量或旋转表示是否合法。
+        # 目标相对当前 TCP 的单步位移是否触发限制，或旋转表示是否合法。
         "action_increment": [],
         # 当前步骤的碰撞、安全门或动作解码错误；正常步骤为空字符串。
         "step_error": [],
@@ -116,7 +116,9 @@ def build_rollout_diagnostics(
     errors = sorted({value for value in trajectory["step_error"].astype(str) if value})
     distance = np.asarray(trajectory["seam_distance_m"], dtype=np.float64)
     progress = np.asarray(trajectory["seam_progress"], dtype=np.float64)
-    action = np.asarray(trajectory["action"], dtype=np.float64)
+    commands = np.asarray(trajectory["command_tcp_position"], dtype=np.float64)
+    observations = np.asarray(trajectory["observation_tcp_position"], dtype=np.float64)
+    command_increment = commands - observations
     displacement = np.linalg.norm(
         trajectory["tcp_position"] - trajectory["observation_tcp_position"],
         axis=1,
@@ -150,7 +152,7 @@ def build_rollout_diagnostics(
             "final_progress": float(progress[-1]),
         },
         "control": {
-            "max_action_translation_m": finite_max(np.linalg.norm(action[:, :3], axis=1)),
+            "max_command_increment_m": finite_max(np.linalg.norm(command_increment, axis=1)),
             "max_ik_residual_m": finite_max(trajectory["ik_residual_m"]),
             "max_tcp_speed_m_s": finite_max(displacement * config.timing.policy_hz),
             "errors": errors,

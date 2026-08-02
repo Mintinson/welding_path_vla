@@ -103,17 +103,17 @@ policy:
   family: smolvla
   checkpoint: null
   device: cuda
-  # 30 Hz 下覆盖未来 0.5 秒。
-  action_horizon: 15
-  action_steps: 15
+  # 30 Hz 下覆盖未来 1 秒，每执行约 0.27 秒重新预测并共享同一 TCP 锚点。
+  action_horizon: 30
+  action_steps: 8
   action_stride: 1
+  action_representation: relative_action
   action_source: safe_command
-  include_current: false
   parameters: {}
 
 training:
   dataset_repo_id: null
-  dataset_root: datasets/weldpath_lerobot_v2
+  dataset_root: datasets/weldpath_lerobot_relative_v1
   output_dir: outputs/train
   batch_size: 16
   steps: 100000

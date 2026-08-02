@@ -137,7 +137,7 @@ def evaluate_checkpoint(
         samples=samples,
         loss=cast(float, mean("loss")),
         normalized_action_mae=cast(float, mean("action_mae")),
-        dataset=asdict(validate_dataset(config.training)),
+        dataset=asdict(validate_dataset(config.training, policy_config)),
         l1_loss=mean("l1_loss") if "l1_loss" in totals else None,
         kld_loss=mean("kld_loss") if "kld_loss" in totals else None,
     )

@@ -70,7 +70,7 @@ scripts/
 └── deploy_simulation_policy.py # robosuite 闭环部署
 ```
 
-原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_action_chunk` 可在训练期构造相对当前末端坐标系的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
+原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_actions` 可构造相对预测时刻 TCP、共享同一锚点的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
 
 `sim view` 显示 YAML 中的真实 home 关节姿态；`sim collect` 会在录制前进入经过 IK 与碰撞检查的工件上方 staging pose。随机工件位姿不可达或 staging 发生碰撞时，采集器会在 `randomization.max_sampling_attempts` 上限内确定性重采样，而不会降低 IK 精度；实际尝试次数记录为 episode 元数据中的 `scene_sampling_attempts`。home 到 staging 的运动不属于焊接专家 episode，未来应由独立的关节空间规划器负责。
 
@@ -83,7 +83,7 @@ pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
 pixi run -e sim sim-collect --config_path=configs/pipe_top.yaml --collection.episodes=50
 pixi run -e sim sim-replay --episode=PATH
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
-pixi run -e data export-lerobot --dataset=datasets/weldpath_raw_v2 --output=datasets/weldpath_lerobot_v2
+pixi run -e data export-lerobot --dataset=datasets/weldpath_raw_v2 --output=datasets/weldpath_lerobot_relative_v1
 pixi run -e dev evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
 pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2 --config_path=configs/default.yaml
 pixi run -e dev robot-config --config_path=configs/default.yaml

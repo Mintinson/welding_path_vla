@@ -11,7 +11,7 @@ import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import Phase
-from welding_path_vla.core.geometry import apply_tcp_action_to_world
+from welding_path_vla.core.geometry import absolute_ee_action_to_pose
 from welding_path_vla.dataset.video import VideoRecorder
 from welding_path_vla.evaluation import evaluate_trace
 from welding_path_vla.evaluation.adapters import SAFETY_SIGNALS
@@ -120,19 +120,20 @@ def rollout_episode(
             action_increment = False
             step_error = ""
             try:
-                bounded_action = action.copy()
-                translation_norm = float(np.linalg.norm(bounded_action[:3]))
+                command_pose = absolute_ee_action_to_pose(action)
+                translation = command_pose.position - state.tcp.position
+                translation_norm = float(np.linalg.norm(translation))
                 if translation_norm > max_translation:
-                    bounded_action[:3] *= 0.999999 * max_translation / translation_norm
+                    command_pose = type(command_pose)(
+                        state.tcp.position
+                        + translation * (0.999999 * max_translation / translation_norm),
+                        command_pose.quaternion_wxyz,
+                    )
                     action_increment = True
                     step_error = (
-                        f"clipped TCP increment {translation_norm:.6f} to {max_translation:.6f}"
+                        f"clipped absolute target increment {translation_norm:.6f} "
+                        f"to {max_translation:.6f}"
                     )
-                command_pose = apply_tcp_action_to_world(
-                    state.tcp,
-                    bounded_action,
-                    max_translation,
-                )
                 command_position = command_pose.position
                 command_quaternion = command_pose.quaternion_wxyz
                 joint_command, residual = simulation.solve_ik(command_pose)

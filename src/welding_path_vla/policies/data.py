@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,9 @@ import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
+from welding_path_vla.dataset.actions import ABSOLUTE_ACTION_NAMES
+
+MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 
 CAMERA_KEYS = ("observation.images.global", "observation.images.wrist")
 
@@ -26,6 +30,9 @@ class PolicyDataReport:
         action_dimension: 动作维数。
         camera_keys: 策略使用的相机 feature 名称。
         tasks: 数据集包含的任务数。
+        action_representation: 模型实际学习的动作表示。
+        action_horizon: relative action 统计对应的 horizon。
+        action_stride: relative action 统计对应的采样间隔。
     """
 
     episodes: int
@@ -35,6 +42,9 @@ class PolicyDataReport:
     action_dimension: int
     camera_keys: tuple[str, ...]
     tasks: int
+    action_representation: str
+    action_horizon: int
+    action_stride: int
 
 
 def metadata(training: TrainingConfig) -> LeRobotDatasetMetadata:
@@ -51,8 +61,8 @@ def metadata(training: TrainingConfig) -> LeRobotDatasetMetadata:
     return LeRobotDatasetMetadata(training.dataset_repo_id, root=training.dataset_root)
 
 
-def validate_dataset(training: TrainingConfig) -> PolicyDataReport:
-    """确认双相机、13D 状态、9D 动作和语言任务满足策略输入约定。"""
+def validate_dataset(training: TrainingConfig, policy: PolicyConfig) -> PolicyDataReport:
+    """确认数据 schema 与 relative action 训练契约一致。"""
     meta = metadata(training)
     required = (*CAMERA_KEYS, "observation.state", "action")
     missing = [key for key in required if key not in meta.features]
@@ -65,6 +75,23 @@ def validate_dataset(training: TrainingConfig) -> PolicyDataReport:
             f"policies expect state/action dimensions 13/9, got "
             f"{state_dimension}/{action_dimension}"
         )
+    action_names = meta.features["action"].get("names")
+    if action_names != list(ABSOLUTE_ACTION_NAMES):
+        raise ValueError("数据集必须保存 absolute EE targets, 请用新版 export-lerobot 重新导出")
+    manifest_path = Path(training.dataset_root or "") / MANIFEST_PATH
+    if not manifest_path.exists():
+        raise ValueError("数据集缺少 relative_action manifest, 请重新导出")
+    representation = json.loads(manifest_path.read_text(encoding="utf-8")).get(
+        "action_representation", {}
+    )
+    expected = (policy.action_representation, policy.action_horizon, policy.action_stride)
+    actual = (
+        representation.get("type"),
+        representation.get("horizon"),
+        representation.get("stride"),
+    )
+    if actual != expected:
+        raise ValueError(f"动作契约不匹配: policy={expected}, dataset={actual}")
     tasks = len(meta.tasks)
     if tasks < 1:
         raise ValueError("policy dataset must contain at least one task")
@@ -76,6 +103,9 @@ def validate_dataset(training: TrainingConfig) -> PolicyDataReport:
         action_dimension,
         CAMERA_KEYS,
         tasks,
+        representation["type"],
+        representation["horizon"],
+        representation["stride"],
     )
 
 
@@ -137,7 +167,11 @@ def make_dataset(
     repo_id = training.dataset_repo_id
     if repo_id is None:
         raise ValueError("training.dataset_repo_id is required")
-    delta_timestamps = {"action": [index / meta.fps for index in range(policy.action_horizon)]}
+    delta_timestamps = {
+        "action": [
+            index * policy.action_stride / meta.fps for index in range(policy.action_horizon)
+        ]
+    }
     return LeRobotDataset(
         repo_id,
         root=Path(training.dataset_root or ""),

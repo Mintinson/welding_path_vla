@@ -15,8 +15,8 @@ class ExportArguments(AppConfig):
     """LeRobot 导出的路径和仓库标识。"""
 
     dataset: Path = Path("datasets/weldpath_raw_v2")
-    output: Path = Path("datasets/weldpath_lerobot_v2")
-    repo_id: str = "huayan/weldpath_sim_v2"
+    output: Path = Path("datasets/weldpath_lerobot_relative_v1")
+    repo_id: str = "huayan/weldpath_relative_v1"
 
 
 @cli
@@ -27,6 +27,8 @@ def main(config: ExportArguments) -> None:
         config.output,
         config.repo_id,
         config.lerobot_export,
+        config.policy.action_horizon,
+        config.policy.action_stride,
     )
     output_json(report.as_dict())
 

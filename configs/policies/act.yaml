@@ -21,9 +21,9 @@ policy:
     kl_weight: 10.0
 
 training:
-  dataset_repo_id: huayan/weldpath_sim_v2
-  dataset_root: datasets/weldpath_lerobot_v2
-  output_dir: outputs/train/act_weldpath_v2
+  dataset_repo_id: huayan/weldpath_relative_v1
+  dataset_root: datasets/weldpath_lerobot_relative_v1
+  output_dir: outputs/train/act_weldpath_relative_v1
   batch_size: 2
   steps: 100000
   num_workers: 4
@@ -48,7 +48,7 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/act_weldpath_v2
+  log_dir: outputs/deploy/act_weldpath_relative_v1
   episodes: 5
   max_steps: 1000
   seed: 20260724

@@ -74,14 +74,14 @@ def test_video_export_can_resume_and_skip_completed_episodes(tmp_path: Path) -> 
         encoding="utf-8",
     )
     options = LeRobotExportConfig(start_episode=2, end_episode=2)
-    first = export_lerobot(source, output, "test/welding", options)
+    first = export_lerobot(source, output, "test/welding", options, action_horizon=2)
     assert first.exported_episodes == 1
     assert not (output / "images").exists()
 
     options.incremental = True
     options.end_episode = 4
-    second = export_lerobot(source, output, "test/welding", options)
-    third = export_lerobot(source, output, "test/welding", options)
+    second = export_lerobot(source, output, "test/welding", options, action_horizon=2)
+    third = export_lerobot(source, output, "test/welding", options, action_horizon=2)
     info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     manifest = json.loads(
         (output / "meta/welding_path_vla_export.json").read_text(encoding="utf-8")
@@ -92,10 +92,15 @@ def test_video_export_can_resume_and_skip_completed_episodes(tmp_path: Path) -> 
     assert third.skipped_episodes == 2
     assert info["total_episodes"] == 2
     assert info["features"]["observation.images.global"]["dtype"] == "video"
+    assert info["features"]["action"]["names"][:3] == ["x", "y", "z"]
+    assert manifest["action_representation"]["type"] == "relative_action"
+    assert manifest["action_representation"]["horizon"] == 2
+    stats = json.loads((output / "meta/stats.json").read_text(encoding="utf-8"))
+    np.testing.assert_allclose(stats["action"]["mean"][:3], [0.015, 0, 0], atol=1e-3)
     assert len(next(iter(manifest["sources"].values()))) == 2
 
     with pytest.raises(FileExistsError):
-        export_lerobot(source, output, "test/welding", LeRobotExportConfig())
+        export_lerobot(source, output, "test/welding", LeRobotExportConfig(), action_horizon=2)
 
 
 def test_image_storage_is_explicit_opt_in(tmp_path: Path) -> None:
@@ -103,7 +108,7 @@ def test_image_storage_is_explicit_opt_in(tmp_path: Path) -> None:
     output = tmp_path / "images"
     write_raw_episode(source, 0)
     options = LeRobotExportConfig(save_images=True)
-    export_lerobot(source, output, "test/welding-images", options)
+    export_lerobot(source, output, "test/welding-images", options, action_horizon=2)
     info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     assert info["features"]["observation.images.global"]["dtype"] == "image"
     assert not (output / "videos").exists()
@@ -114,7 +119,7 @@ def test_nonstreaming_video_export_uses_parallel_camera_encoding(tmp_path: Path)
     output = tmp_path / "videos"
     write_raw_episode(source, 0)
     options = LeRobotExportConfig(streaming_encoding=False)
-    export_lerobot(source, output, "test/welding-parallel", options)
+    export_lerobot(source, output, "test/welding-parallel", options, action_horizon=2)
     videos = list((output / "videos").rglob("*.mp4"))
     assert len(videos) == 2
     assert not (output / "images").exists()

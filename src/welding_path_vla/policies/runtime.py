@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from lerobot.configs import PreTrainedConfig
-from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
+from welding_path_vla.policies.action_processors import make_relative_pre_post_processors
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.spec import LeRobotPolicySpec
@@ -26,6 +27,7 @@ class LeRobotRuntime:
         postprocessor: checkpoint 保存的动作反归一化处理器。
         device: 实际推理设备。
         spec: 当前策略的输入和加载差异。
+        action_queue: 同一 TCP 锚点解码后的待执行世界系目标。
     """
 
     policy: Any
@@ -33,6 +35,7 @@ class LeRobotRuntime:
     postprocessor: Any
     device: str
     spec: LeRobotPolicySpec
+    action_queue: deque[np.ndarray] = field(default_factory=deque, init=False)
 
     @classmethod
     def from_pretrained(
@@ -62,16 +65,20 @@ class LeRobotRuntime:
         else:
             policy = policy_class.from_pretrained(path, config=config)
         policy = policy.to(selected).eval()
-        preprocessor, postprocessor = make_pre_post_processors(
+        preprocessor, postprocessor = make_relative_pre_post_processors(
             config,
             pretrained_path=str(path),
+            require_saved=True,
             preprocessor_overrides={"device_processor": {"device": selected}},
         )
         return cls(policy, preprocessor, postprocessor, selected, spec)
 
     def reset(self) -> None:
-        """清空策略内部尚未执行的动作队列。"""
+        """清空策略和 processor 的跨步状态。"""
         self.policy.reset()
+        self.preprocessor.reset()
+        self.postprocessor.reset()
+        self.action_queue.clear()
 
     def observation_sample(self, observation: Observation) -> dict[str, Any]:
         """构造 processor 需要的状态、双相机和可选语言输入。"""
@@ -96,13 +103,19 @@ class LeRobotRuntime:
         return batched
 
     def select_action(self, observation: Observation) -> np.ndarray:
-        """返回一个经过反归一化的物理量动作。"""
+        """返回一个世界系绝对 EE 目标，并按 `n_action_steps` 复用动作块。"""
         import torch
 
-        processed = self.preprocessor(self.observation_sample(observation))
-        with torch.inference_mode():
-            action = self.postprocessor(self.policy.select_action(processed))
-        return action.squeeze(0).detach().cpu().numpy()
+        if not self.action_queue:
+            processed = self.preprocessor(self.observation_sample(observation))
+            with torch.inference_mode():
+                relative_chunk = self.policy.predict_action_chunk(processed)
+                absolute_chunk = self.postprocessor(relative_chunk)
+            count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
+            self.action_queue.extend(
+                absolute_chunk[0, :count].detach().cpu().numpy().astype(np.float64)
+            )
+        return self.action_queue.popleft()
 
 
 __all__ = ["LeRobotRuntime"]

@@ -2,9 +2,9 @@ policy:
   family: pi0
   checkpoint: null
   device: cuda
-  # 本机训练使用 0.5 秒动作块，每 0.17 秒闭环重规划。
-  action_horizon: 15
-  action_steps: 5
+  # 与其他策略统一使用 1 秒 relative action chunk。
+  action_horizon: 30
+  action_steps: 8
   action_source: safe_command
   parameters:
     pretrained_model: lerobot/pi0_base
@@ -19,9 +19,9 @@ policy:
     scheduler_decay_steps: 5000
 
 training:
-  dataset_repo_id: huayan/weldpath_smolvla_v1
-  dataset_root: datasets/weldpath_lerobot_smolvla_v1
-  output_dir: outputs/train/pi0_weldpath_v1
+  dataset_repo_id: huayan/weldpath_relative_v1
+  dataset_root: datasets/weldpath_lerobot_relative_v1
+  output_dir: outputs/train/pi0_weldpath_relative_v1
   batch_size: 1
   steps: 5000
   num_workers: 2
@@ -50,7 +50,7 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/pi0_weldpath_v1
+  log_dir: outputs/deploy/pi0_weldpath_relative_v1
   episodes: 3
   max_steps: 3300
   seed: 20260730

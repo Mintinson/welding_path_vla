@@ -20,9 +20,9 @@ policy:
     scheduler_decay_steps: 5000
 
 training:
-  dataset_repo_id: huayan/weldpath_smolvla_v1
-  dataset_root: datasets/weldpath_lerobot_smolvla_v1
-  output_dir: outputs/train/smolvla_weldpath_v1_5
+  dataset_repo_id: huayan/weldpath_relative_v1
+  dataset_root: datasets/weldpath_lerobot_relative_v1
+  output_dir: outputs/train/smolvla_weldpath_relative_v1
   # 实测 batch 16 峰值约 2.6 GiB、吞吐约 83 samples/s；batch 32 反而降至约 78。
   batch_size: 16
   steps: 5000
@@ -47,7 +47,7 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/smolvla_weldpath_v2
+  log_dir: outputs/deploy/smolvla_weldpath_relative_v1
   episodes: 3
   max_steps: 3300
   seed: 20260729

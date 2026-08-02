@@ -2,7 +2,7 @@ includes:
   - ../policies/smolvla.yaml
 
 policy:
-  checkpoint: outputs/train/smolvla_weldpath_v1_5/checkpoints/005000/pretrained_model
+  checkpoint: outputs/train/smolvla_weldpath_relative_v1/checkpoints/last/pretrained_model
 
 training:
   resume: false

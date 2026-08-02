@@ -17,8 +17,8 @@ from welding_path_vla.policies.training import TrainingRequest
 @pytest.mark.parametrize(
     ("path", "family", "batch_size", "horizon"),
     [
-        ("configs/pi0.yaml", "pi0", 1, 15),
-        ("configs/pi0_5.yaml", "pi0_5", 1, 15),
+        ("configs/pi0.yaml", "pi0", 1, 30),
+        ("configs/pi0_5.yaml", "pi0_5", 1, 30),
         ("configs/pi0_a100.yaml", "pi0", 2, 30),
         ("configs/pi0_5_a100.yaml", "pi0_5", 2, 30),
     ],
@@ -88,7 +88,7 @@ def test_pi_configs_reuse_official_pretrained_models(monkeypatch: pytest.MonkeyP
     pi05 = make_policy_config(AppConfig.load("configs/pi0_5.yaml").policy, PI05)
     assert pi0.input_features == {}
     assert pi0.output_features == {}
-    assert pi0.chunk_size == 15
+    assert pi0.chunk_size == 30
     assert pi0.train_expert_only
     assert pi05.type == "pi05"
     assert pi05.normalization_mapping["ACTION"] == NormalizationMode.QUANTILES
@@ -115,12 +115,14 @@ class CaptureProcessor:
 class StaticPIPolicy:
     """返回固定 9D 动作的最小 π0 替身。"""
 
+    config = type("PolicyConfig", (), {"n_action_steps": 1})()
+
     def reset(self) -> None:
         pass
 
-    def select_action(self, batch: dict[str, Any]) -> torch.Tensor:
+    def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
         assert batch["observation.state"].shape == (1, 13)
-        return torch.zeros((1, 9), dtype=torch.float32)
+        return torch.zeros((1, 1, 9), dtype=torch.float32)
 
 
 @pytest.mark.parametrize("family", [PI0, PI05])
