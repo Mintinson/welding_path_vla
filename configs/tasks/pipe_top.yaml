@@ -17,8 +17,16 @@ task:
   orientation_follow_ratio: 0.0
 
 randomization:
-  xy_m: 0.03
-  yaw_deg: 30.0
+  xy_m: 0.015
+  yaw_deg: 10.0
+  # 保持完整一周，仅小幅改变起点和焊枪姿态。
+  arc_start_range_deg: 15.0
+  arc_sweep_range_deg: 0.0
+  work_angle_range_deg: 2.0
+  travel_angle_range_deg: 2.0
+  tool_roll_range_deg: 3.0
+  orientation_follow_range: 0.03
+  speed_range_mps: 0.001
 
 collection:
   dataset_root: datasets/weldpath_pipe_top_raw_v2

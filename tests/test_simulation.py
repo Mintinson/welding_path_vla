@@ -14,7 +14,13 @@ from welding_path_vla.simulation.models import (
     WorkpieceObject,
 )
 from welding_path_vla.simulation.robosuite_compat import MujocoEnv, make
-from welding_path_vla.simulation.task_sampling import sample_collision_free_task, stage_for_task
+from welding_path_vla.simulation.task_sampling import (
+    sample_collision_free_task,
+    sample_episode_task_config,
+    sample_feasible_trajectory,
+    sample_task_config,
+    stage_for_task,
+)
 from welding_path_vla.simulation.tasks import CircularSeamPath
 
 
@@ -350,6 +356,49 @@ def test_numerical_tip_grazing_does_not_fail_welding_episode() -> None:
         simulation.close()
 
 
+def test_shallow_tip_penetration_does_not_trigger_stiff_contact_false_positive() -> None:
+    """焊丝尖端的亚毫米瞬时穿透不应因刚性接触力被误判为碰撞。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingEnv(config, camera_observations=False)
+    try:
+        # 该状态来自一次真实失败 episode：视频中没有可见碰撞，但位置伺服
+        # 对 0.47 mm 的瞬时穿透产生了 200 N 以上的数值接触力。
+        simulation.mj_model.body_pos[simulation.workpiece_id] = [
+            0.503268160,
+            0.053294313,
+            0.2925,
+        ]
+        simulation.mj_model.body_quat[simulation.workpiece_id] = [
+            0.999350242,
+            0.0,
+            0.0,
+            0.036042949,
+        ]
+        simulation.set_joint_position(
+            np.array(
+                [
+                    1.120044391,
+                    -1.912930020,
+                    -0.644004063,
+                    1.211661987,
+                    2.457059563,
+                    -0.450719372,
+                ]
+            )
+        )
+        contacts = [
+            contact
+            for contact in simulation.mj_data.contact
+            if simulation.torch_tip_id in (contact.geom1, contact.geom2)
+        ]
+
+        assert len(contacts) == 1
+        assert -0.0005 < contacts[0].dist < 0
+        assert not simulation.collision
+    finally:
+        simulation.close()
+
+
 def test_reference_welding_pose_clears_workpiece() -> None:
     config = AppConfig.load("configs/default.yaml")
     simulation = WeldingEnv(config)
@@ -391,6 +440,92 @@ def test_randomized_task_rejects_unreachable_staging_pose() -> None:
         assert attempts > 1
         assert residual < 0.005
         assert not simulation.collision
+    finally:
+        simulation.close()
+
+
+def test_pipe_task_randomization_is_bounded_and_reproducible() -> None:
+    """圆管 episode 应改变姿态、起点、圆弧长度和方向，但不修改基准配置。"""
+    config = AppConfig.load("configs/pipe_bottom.yaml")
+    first = sample_task_config(config, np.random.default_rng(7))
+    repeated = sample_task_config(config, np.random.default_rng(7))
+    assert first.as_dict() == repeated.as_dict()
+    assert config.task.direction == "forward"
+    assert config.task.arc_start_deg == -90
+    assert config.task.arc_sweep_deg == 90
+    assert first.task.instruction == config.task.instruction
+
+    samples = [sample_task_config(config, np.random.default_rng(seed)) for seed in range(32)]
+    directions = {sample.task.direction for sample in samples}
+    geometric_starts = [
+        sample.task.arc_start_deg
+        - (sample.task.arc_sweep_deg if sample.task.direction == "reverse" else 0)
+        for sample in samples
+    ]
+    assert directions == {"forward", "reverse"}
+    assert all(80 <= sample.task.arc_sweep_deg <= 100 for sample in samples)
+    assert all(-100 <= start <= -80 for start in geometric_starts)
+    assert all(42 <= sample.task.work_angle_deg <= 48 for sample in samples)
+    assert all(7 <= sample.task.travel_angle_deg <= 13 for sample in samples)
+    assert all(-25 <= sample.task.tool_roll_deg <= -15 for sample in samples)
+    assert all(isinstance(sample.task.work_angle_deg, int) for sample in samples)
+    assert all(isinstance(sample.task.travel_angle_deg, int) for sample in samples)
+    assert all(isinstance(sample.task.tool_roll_deg, int) for sample in samples)
+    assert all(isinstance(sample.task.arc_start_deg, int) for sample in samples)
+    assert all(isinstance(sample.task.arc_sweep_deg, int) for sample in samples)
+    assert all(0.003 <= sample.task.speed_mps <= 0.005 for sample in samples)
+    assert all(round(sample.task.speed_mps, 3) == sample.task.speed_mps for sample in samples)
+
+
+def test_task_parameters_change_once_per_ten_episode_indices() -> None:
+    """同组任务参数应完全相同，跨组则重新确定性采样。"""
+    config = AppConfig.load("configs/pipe_bottom.yaml")
+    first_group = [sample_episode_task_config(config, index) for index in range(10)]
+    second_group = sample_episode_task_config(config, 10)
+    first_parameters = first_group[0].task
+
+    assert all(sample.task == first_parameters for sample in first_group)
+    assert second_group.task != first_parameters
+    assert all(sample.task.instruction == config.task.instruction for sample in first_group)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    ["configs/default.yaml", "configs/pipe_bottom.yaml", "configs/pipe_top.yaml"],
+)
+def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
+    config_path: str,
+) -> None:
+    """每类任务都应能在采样上限内获得无碰撞 staging 姿态。"""
+    config = sample_episode_task_config(AppConfig.load(config_path), 0)
+    rng = np.random.default_rng(config.collection.seed)
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        _, residual, attempts = sample_collision_free_task(simulation, config, rng)
+        assert attempts <= config.randomization.max_sampling_attempts
+        assert residual < 0.005
+        assert not simulation.collision
+    finally:
+        simulation.close()
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    ["configs/default.yaml", "configs/pipe_bottom.yaml", "configs/pipe_top.yaml"],
+)
+def test_randomized_episode_has_continuous_collision_free_joint_plan(config_path: str) -> None:
+    """三个任务都应在录制前获得连续、无碰撞且可达的完整关节轨迹。"""
+    config = sample_episode_task_config(AppConfig.load(config_path), 0)
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        sample = sample_feasible_trajectory(
+            simulation,
+            config,
+            np.random.default_rng(config.collection.seed),
+        )
+        assert sample.planning_max_ik_residual_m <= 0.005
+        assert sample.motion_sampling_attempts <= config.randomization.max_sampling_attempts
+        assert len(sample.expert.frames) == len(sample.joint_trajectory)
     finally:
         simulation.close()
 

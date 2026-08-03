@@ -21,7 +21,7 @@
 圆管由 32 个环向碰撞/外观分段构成，因此内部保持空心，不会像实心 cylinder 一样错误阻挡
 内壁空间。`pipe_bottom` 默认走 90° 前侧圆弧；`pipe_top` 默认走完整 360° 管口圆周。
 可通过 `task.arc_start_deg`、`task.arc_sweep_deg` 和 `task.direction` 修改范围与方向。
-扩大范围后应重新运行整条轨迹的 IK 和碰撞检查，不能只确认起点可达。
+采集器会在录制前逐帧运行连续 IK、关节限位、速度连续性和碰撞预检，不能只确认起点可达。圆弧姿态使用相邻帧旋转增量累积，避免跨过 180° 时 SLERP 最短路径翻转。
 
 ```bash
 pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml

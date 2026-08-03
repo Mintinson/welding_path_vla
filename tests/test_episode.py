@@ -12,6 +12,7 @@ from welding_path_vla.dataset.actions import (
 )
 from welding_path_vla.dataset.raw_schema import EpisodeReader
 from welding_path_vla.dataset.recorder import EpisodeRecorder
+from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
 from welding_path_vla.simulation.collector import collect_episode
 
 
@@ -48,7 +49,7 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     config.collection.dataset_root = str(tmp_path)
     config.camera.width = 64
     config.camera.height = 48
-    config.task.speed_mps = 1.0
+    config.task.speed_mps = 0.04
     config.randomization.xy_m = 0
     config.randomization.z_m = 0
     config.randomization.yaw_deg = 0
@@ -68,6 +69,8 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     assert "safe_command_position" in episode.trajectory
     assert episode.trajectory["episode_done"][-1]
     assert episode.metadata["initial_joint_offset_deg"] != [0.0] * 6
+    assert episode.metadata["planning_max_ik_residual"] <= 0.005
+    assert episode.metadata["quality"]["failure_reasons"] == []
     expected_base = frame_delta(
         episode.trajectory["command_delta_pose_world"][0],
         yaw_degrees_to_matrix(config.scene.robot_base_yaw_deg),
@@ -75,6 +78,11 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     np.testing.assert_allclose(episode.trajectory["command_delta_pose_base"][0], expected_base)
     assert episode.metadata["coordinate_frames"]["command_delta_pose_base"] == "robot_base"
     assert episode.metadata["episode_start"] == "collision_checked_staging_pose"
+    assert episode.metadata["instruction"] == config.task.instruction
+    task_parameters = episode.metadata["task_parameters"]
+    assert task_parameters["group_index"] == 0
+    assert task_parameters["group_size"] == 10
+    assert task_parameters["speed_mps"] == round(task_parameters["speed_mps"], 3)
     absolute = build_absolute_actions(episode)
     assert absolute.shape == (episode.action_count, 9)
     relative = build_relative_actions(episode, 0, horizon=4)
@@ -87,3 +95,31 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     for index in (0, episode.action_count // 2, episode.action_count - 1):
         expected = build_relative_actions(episode, index, horizon=1).values[0]
         np.testing.assert_allclose(delta[index], expected, atol=1e-6)
+
+
+def test_quality_report_explains_every_failed_condition() -> None:
+    """质量报告应给出具体失败条件、碰撞帧数和几何对。"""
+    trajectory = {
+        "phase": np.array(["track", "track"]),
+        "seam_progress": np.array([0.0, 0.5]),
+        "cross_track_error": np.array([0.0, 0.02]),
+        "orientation_error_deg": np.array([0.0, 8.0]),
+        "ik_residual": np.array([0.0, 0.01]),
+        "collision": np.array([False, True]),
+        "collision_pairs": np.array(["", "torch_nozzle:plate_vertical"]),
+    }
+
+    report = report_from_arrays(trajectory, AppConfig().quality, recovery=False)
+
+    assert set(report.failure_reasons) == {
+        "incomplete_seam",
+        "cross_track_mean",
+        "cross_track_p95",
+        "cross_track_max",
+        "orientation_p95",
+        "orientation_max",
+        "collision",
+        "ik_residual",
+    }
+    assert report.collision_frames == 1
+    assert report.collision_pairs == ("torch_nozzle:plate_vertical",)

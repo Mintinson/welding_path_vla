@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.domain import Phase, Pose
-from welding_path_vla.core.geometry import matrix_to_quaternion
+from welding_path_vla.core.geometry import matrix_to_quaternion, quaternion_to_matrix
 from welding_path_vla.simulation.tasks import SeamFrame, SeamPath
 
 
@@ -92,24 +92,32 @@ class ExpertTrajectory:
         ).as_matrix()
         return matrix_to_quaternion(seam_rotation @ roll)
 
-    def welding_orientation(self, frame: SeamFrame) -> np.ndarray:
-        """按配置比例跟随焊缝局部姿态。
+    def follow_orientation(
+        self,
+        previous_output: np.ndarray,
+        previous_geometric: np.ndarray,
+        current_geometric: np.ndarray,
+    ) -> np.ndarray:
+        """按比例累积相邻焊缝帧之间的小旋转。
 
-        ``orientation_follow_ratio=0`` 时整段保持起点姿态，取 ``1`` 时
-        完全跟随局部切向和法向，中间值用于限制圆弧任务的姿态变化。
+        逐点从起始姿态做 SLERP 会在圆周超过 180° 时切换最短旋转方向，
+        产生不连续姿态。相邻帧增量始终很小，累积后可稳定覆盖完整圆周。
 
         Args:
-            frame: 当前焊缝局部标架。
+            previous_output: 上一帧实际输出的 wxyz 姿态。
+            previous_geometric: 上一帧完整几何跟随姿态。
+            current_geometric: 当前帧完整几何跟随姿态。
 
         Returns:
-            wxyz 顺序的 TCP 姿态四元数。
+            连续且按配置比例跟随的 wxyz 姿态。
         """
-        dynamic_quaternion = self.geometric_welding_orientation(frame)
-        return interpolate_quaternion(
-            self.fixed_welding_quaternion,
-            dynamic_quaternion,
-            self.config.task.orientation_follow_ratio,
-        )
+        previous_matrix = quaternion_to_matrix(previous_geometric)
+        current_matrix = quaternion_to_matrix(current_geometric)
+        rotation_vector = Rotation.from_matrix(previous_matrix.T @ current_matrix).as_rotvec()
+        scaled_delta = Rotation.from_rotvec(
+            self.config.task.orientation_follow_ratio * rotation_vector
+        ).as_matrix()
+        return matrix_to_quaternion(quaternion_to_matrix(previous_output) @ scaled_delta)
 
     def segment(
         self,
@@ -157,7 +165,7 @@ class ExpertTrajectory:
         ]
 
     def track_frames(self) -> list[ReferenceFrame]:
-        """按焊接速度离散焊缝，并按配置连续插值圆弧姿态。"""
+        """按焊接速度离散焊缝，并连续累积圆弧姿态增量。"""
         count = max(
             1,
             int(
@@ -167,26 +175,36 @@ class ExpertTrajectory:
             ),
         )
         frames: list[ReferenceFrame] = []
+        previous_geometric = self.fixed_welding_quaternion
+        output_orientation = self.fixed_welding_quaternion
         for index in range(1, count + 1):
             progress = index / count
             seam_frame = self.seam.sample(progress)
+            current_geometric = self.geometric_welding_orientation(seam_frame)
+            output_orientation = self.follow_orientation(
+                output_orientation,
+                previous_geometric,
+                current_geometric,
+            )
             frames.append(
                 ReferenceFrame(
                     Pose(
                         seam_frame.position,
-                        self.welding_orientation(seam_frame),
+                        output_orientation,
                     ),
                     Phase.TRACK,
                     progress,
                 )
             )
+            previous_geometric = current_geometric
         return frames
 
     def build_frames(self) -> list[ReferenceFrame]:
         """按安全接近、焊缝跟踪和法向退出的顺序拼接完整轨迹。"""
         initial_quaternion = self.initial.quaternion_wxyz
         start_quaternion = self.welding_quaternion
-        end_quaternion = self.welding_orientation(self.end_frame)
+        track = self.track_frames()
+        end_quaternion = track[-1].pose.quaternion_wxyz
         lift = self.segment(
             self.initial.position,
             self.lift,
@@ -232,7 +250,7 @@ class ExpertTrajectory:
             1.0,
             self.config.task.retreat_speed_mps,
         )
-        return lift + transfer + lower + descend + self.track_frames() + retreat
+        return lift + transfer + lower + descend + track + retreat
 
 
 def interpolate_quaternion(

@@ -72,7 +72,7 @@ scripts/
 
 原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_actions` 可构造相对预测时刻 TCP、共享同一锚点的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
 
-`sim view` 显示 YAML 中的真实 home 关节姿态；`sim collect` 会在录制前进入经过 IK 与碰撞检查的工件上方 staging pose。随机工件位姿不可达或 staging 发生碰撞时，采集器会在 `randomization.max_sampling_attempts` 上限内确定性重采样，而不会降低 IK 精度；实际尝试次数记录为 episode 元数据中的 `scene_sampling_attempts`。home 到 staging 的运动不属于焊接专家 episode，未来应由独立的关节空间规划器负责。
+`sim view` 显示 YAML 中的真实 home 关节姿态；`sim collect` 默认每 10 个 episode 编号采样一组焊枪姿态、执行方向、速度以及圆管起点和扫掠角，工件位姿和机器人初始状态仍逐条变化。录制前会对接近、跟踪和退出的完整轨迹执行连续 IK、关节限位、速度连续性和碰撞预检；不可行时在 `randomization.max_sampling_attempts` 内重采场景与初态，而不是录制一条已知失败的长视频。实际任务参数仅写入 `task_parameters`，instruction 保持任务 YAML 中的固定文本。
 
 ## 常用命令
 
@@ -90,6 +90,8 @@ pixi run -e dev robot-config --config_path=configs/default.yaml
 pixi run -e dev policy-config --config_path=configs/default.yaml
 pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
 ```
+
+无头采集默认使用 4 个独立进程。可通过 `--collection.workers=2` 调整；单条调试或显存不足时使用 `--collection.workers=1`。
 
 ACT 基线使用 `configs/act.yaml`，提供 LeRobot 原生训练、留出集测试和 robosuite 闭环部署：
 

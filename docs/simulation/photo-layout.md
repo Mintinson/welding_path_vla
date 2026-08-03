@@ -14,7 +14,7 @@
 
 这些数值来自照片比例而非手眼标定。桌面、底座、工件和相机位置由 `configs/default.yaml` 的 `scene` 与 `camera` 控制。开始 sim-to-real 实验前，应使用实测外参、相机内参和桌面坐标替换这些近似值。
 
-工件默认只进行 XY 平移和 yaw 随机化，Z 固定在桌面支撑高度；未经夹具模型约束的正负 Z 随机会让工件嵌入桌面，因此默认关闭。随机到 IK 不可达或 staging 碰撞的位姿属于无效场景样本，采集器会按相同 episode seed 继续重采样，最多尝试 `randomization.max_sampling_attempts` 次。该 rejection sampling 保证被录制的 episode 都有高精度、无碰撞的有效起始姿态。
+工件默认只进行 XY 平移和 yaw 随机化，Z 固定在桌面支撑高度；未经夹具模型约束的正负 Z 随机会让工件嵌入桌面，因此默认关闭。采集器不仅检查 staging，还会预检完整参考轨迹；IK 跳解、关节限位、不可达或碰撞都会触发确定性重采样，最多尝试 `randomization.max_sampling_attempts` 次。
 
 腕部相机安装架与 link6 负 Y 侧突出的螺钉对齐；镜头光心从安装点沿光轴前移
 `40 mm`，局部位置为 `[0.008607, -0.071891, 0.172212] m`，避免支架进入自身视野。

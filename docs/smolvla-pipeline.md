@@ -7,7 +7,9 @@ processor、数据集和训练器。项目代码只负责把统一 YAML、焊接
 ## 1. 采集三个任务
 
 每条命令中的 `collection.episodes=100` 表示本次必须新增 100 条通过质量门槛的
-episode；规划、碰撞或跟踪失败的尝试会保留用于诊断，但不会计入 100 条。
+episode；完整轨迹预检失败只计入采集错误并立即重采，已经执行后未通过质量门的
+episode 会保留用于诊断，但不会计入 100 条。
+默认使用 `collection.workers=4` 并行采集；显存不足时可在命令末尾覆盖为 1 或 2。
 
 ```bash
 pixi run -e sim sim-collect \

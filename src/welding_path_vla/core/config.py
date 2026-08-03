@@ -146,15 +146,51 @@ class TaskConfig:
 
 @dataclass(slots=True)
 class RandomizationConfig:
-    xy_m: float = 0.1
+    """场景、机器人状态和焊接任务的随机化范围。
+
+    Attributes:
+        xy_m: 工件在桌面 XY 方向的最大平移。
+        z_m: 工件沿 Z 方向的最大平移。
+        yaw_deg: 工件偏航角的最大变化。
+        joint_degs: 六个关节相对 staging 构型的最大变化。
+        max_sampling_attempts: 不可达或碰撞时的最大重采样次数。
+        initial_tcp_m: 初始 TCP 各轴最大平移扰动。
+        recovery_probability: episode 中插入恢复扰动的概率。
+        recovery_position_m: 恢复扰动的最大位置幅度。
+        recovery_rotation_deg: 恢复扰动的最大姿态幅度。
+        work_angle_range_deg: 工作角相对任务标称值的采样半径。
+        travel_angle_range_deg: 行走角相对任务标称值的采样半径。
+        tool_roll_range_deg: 工具滚转角相对任务标称值的采样半径。
+        orientation_follow_range: 姿态跟随比例相对标称值的采样半径。
+        arc_start_range_deg: 圆弧几何起点相对标称值的采样半径。
+        arc_sweep_range_deg: 圆弧扫掠角相对标称值的采样半径。
+        approach_speed_range_mps: 接近速度相对标称值的采样半径。
+        speed_range_mps: 焊接速度相对标称值的采样半径。
+        retreat_speed_range_mps: 退出速度相对标称值的采样半径。
+        reverse_probability: 将任务采样为反向执行的概率。
+        task_group_size: 连续多少个 episode 编号共享一组任务参数。
+    """
+
+    xy_m: float = 0.05
     z_m: float = 0.0
-    yaw_deg: float = 30.0
-    joint_degs: list[float] = field(default_factory=lambda: [60.0, 20.0, 20.0, 30.0, 60.0, 60.0])
+    yaw_deg: float = 15.0
+    joint_degs: list[float] = field(default_factory=lambda: [30.0, 10.0, 10.0, 15.0, 25.0, 25.0])
     max_sampling_attempts: int = 10
-    initial_tcp_m: float = 0.1
+    initial_tcp_m: float = 0.03
     recovery_probability: float = 0.25
-    recovery_position_m: float = 0.005
-    recovery_rotation_deg: float = 3.0
+    recovery_position_m: float = 0.003
+    recovery_rotation_deg: float = 2.0
+    work_angle_range_deg: float = 3.0
+    travel_angle_range_deg: float = 3.0
+    tool_roll_range_deg: float = 5.0
+    orientation_follow_range: float = 0.05
+    arc_start_range_deg: float = 0.0
+    arc_sweep_range_deg: float = 0.0
+    approach_speed_range_mps: float = 0.005
+    speed_range_mps: float = 0.002
+    retreat_speed_range_mps: float = 0.005
+    reverse_probability: float = 0.5
+    task_group_size: int = 10
 
 
 @dataclass(slots=True)
@@ -164,6 +200,7 @@ class CollectionConfig:
     max_attempt_multiplier: int = 3
     seed: int = 20260721
     headless: bool = True
+    workers: int = 1
 
 
 @dataclass(slots=True)
@@ -213,6 +250,8 @@ class SafetyConfig:
         joint_velocity_limit_rad_s: 允许的最大关节速度。
         tcp_speed_limit_m_s: 允许的最大 TCP 平移速度。
         command_timeout_s: 实机控制命令的超时时间。
+        tip_contact_penetration_limit_m: 焊丝尖端与目标工件之间允许的瞬时
+            数值穿透深度；位置伺服产生的接触力不用于判断这种浅接触。
         tip_contact_force_limit_n: 焊丝尖端接触工件时允许的合力上限；超过
             该值仍按碰撞处理，其他几何体之间的接触不使用此容差。
     """
@@ -222,6 +261,7 @@ class SafetyConfig:
     joint_velocity_limit_rad_s: float = 1.57
     tcp_speed_limit_m_s: float = 0.20
     command_timeout_s: float = 0.10
+    tip_contact_penetration_limit_m: float = 0.0005
     tip_contact_force_limit_n: float = 3.0
 
 
@@ -390,13 +430,32 @@ class AppConfig:
             raise ValueError("scene vectors must contain three values")
         if not 0 <= self.randomization.recovery_probability <= 1:
             raise ValueError("recovery_probability must be in [0, 1]")
+        if not 0 <= self.randomization.reverse_probability <= 1:
+            raise ValueError("reverse_probability must be in [0, 1]")
+        task_randomization_ranges = (
+            self.randomization.work_angle_range_deg,
+            self.randomization.travel_angle_range_deg,
+            self.randomization.tool_roll_range_deg,
+            self.randomization.orientation_follow_range,
+            self.randomization.arc_start_range_deg,
+            self.randomization.arc_sweep_range_deg,
+            self.randomization.approach_speed_range_mps,
+            self.randomization.speed_range_mps,
+            self.randomization.retreat_speed_range_mps,
+        )
+        if any(value < 0 for value in task_randomization_ranges):
+            raise ValueError("task randomization ranges must be non-negative")
         if len(self.randomization.joint_degs) != 6 or any(
             value < 0 for value in self.randomization.joint_degs
         ):
             raise ValueError("randomization.joint_degs must contain six non-negative values")
-        if self.randomization.max_sampling_attempts < 1:
-            raise ValueError("randomization.max_sampling_attempts must be positive")
-        if self.collection.episodes < 1 or self.collection.max_attempt_multiplier < 1:
+        if self.randomization.max_sampling_attempts < 1 or self.randomization.task_group_size < 1:
+            raise ValueError("randomization sampling counts must be positive")
+        if (
+            self.collection.episodes < 1
+            or self.collection.max_attempt_multiplier < 1
+            or self.collection.workers < 1
+        ):
             raise ValueError("collection counts must be positive")
         if not 0 <= self.evaluation.pcr_min <= 1:
             raise ValueError("evaluation.pcr_min must be in [0, 1]")
@@ -411,8 +470,14 @@ class AppConfig:
             raise ValueError("evaluation jerk sampling rate/floor is invalid")
         if self.real_robot.enabled and not self.real_robot.host:
             raise ValueError("real_robot.host is required when real_robot.enabled is true")
-        if self.safety.tip_contact_force_limit_n < 0:
-            raise ValueError("safety.tip_contact_force_limit_n must be non-negative")
+        if (
+            min(
+                self.safety.tip_contact_penetration_limit_m,
+                self.safety.tip_contact_force_limit_n,
+            )
+            < 0
+        ):
+            raise ValueError("tip contact tolerances must be non-negative")
         if (
             self.policy.action_horizon < 1
             or self.policy.action_steps < 1

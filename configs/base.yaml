@@ -52,21 +52,36 @@ safety:
   joint_velocity_limit_rad_s: 1.57
   tcp_speed_limit_m_s: 0.40
   command_timeout_s: 0.10
-  # 焊丝尖端轻触工件属于焊接接触；超过该合力才判为碰撞。
+  # 亚毫米穿透属于离散仿真的数值擦碰；更深接触再依据接触力判断。
+  tip_contact_penetration_limit_m: 0.0005
   tip_contact_force_limit_n: 3.0
 
 randomization:
-  xy_m: 0.1
+  xy_m: 0.05
   z_m: 0.0
-  yaw_deg: 30.0
+  yaw_deg: 15.0
   # staging 构型附近六个关节的最大独立偏移（度）。
-  joint_degs: [60, 20, 20, 30, 60, 60]
+  joint_degs: [30, 10, 10, 15, 25, 25]
   # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
   max_sampling_attempts: 10
-  initial_tcp_m: 0.1
+  initial_tcp_m: 0.03
   recovery_probability: 0.25
-  recovery_position_m: 0.005
-  recovery_rotation_deg: 3.0
+  recovery_position_m: 0.003
+  recovery_rotation_deg: 2.0
+  # 每组 episode 采样一次焊枪姿态和执行方向；不可达或碰撞 staging 会被拒绝。
+  work_angle_range_deg: 3.0
+  travel_angle_range_deg: 3.0
+  tool_roll_range_deg: 5.0
+  orientation_follow_range: 0.05
+  arc_start_range_deg: 0.0
+  arc_sweep_range_deg: 0.0
+  # 速度以 m/s 采样并保留三位小数。
+  approach_speed_range_mps: 0.005
+  speed_range_mps: 0.002
+  retreat_speed_range_mps: 0.005
+  reverse_probability: 0.5
+  # 每 10 个 episode 编号共享方向、姿态、圆弧和速度参数。
+  task_group_size: 10
 
 collection:
   dataset_root: datasets/weldpath_raw_v2
@@ -75,6 +90,8 @@ collection:
   seed: 20260721
   # 原始数据和 rollout 统一由 LeRobot / PyAV 写入可直接预览的 H.264 MP4。
   headless: true
+  # 每个 worker 独立持有 MuJoCo / EGL 环境；显存不足时改为 1 或 2。
+  workers: 4
 
 quality:
   minimum_progress: 0.98

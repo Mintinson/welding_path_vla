@@ -35,30 +35,48 @@ dictionary 更新。当前尚未单独落盘 `control.npz`；需要研究底层�
 
 每个 episode 按如下顺序初始化：
 
-1. 在 `xy_m / z_m / yaw_deg` 范围内随机化工件；
-2. 求解工件上方的 staging 位姿，并拒绝不可达或碰撞场景；
-3. 以 staging 关节构型为中心，按 `joint_degs` 对六个关节独立均匀采样；
-4. 应用关节限位余量并拒绝碰撞构型；
-5. 在 `initial_tcp_m` 范围内额外采样 TCP 平移，失败时确定性重试；
-6. 按概率插入轨迹中途恢复扰动；
-7. 执行专家轨迹，保存成功、恢复成功和失败 episode，训练导出时只选有效数据。
+1. 每 10 个 episode 编号围绕标称值采样一组工作角、行走角、工具滚转角和姿态跟随比例；
+2. 同组共享接近、焊接和退出速度，以及正反方向；圆管任务还共享几何起点和扫掠角；
+3. 在 `xy_m / z_m / yaw_deg` 范围内随机化工件；
+4. 求解工件上方的 staging 位姿，并拒绝不可达或碰撞场景；
+5. 以 staging 关节构型为中心，按 `joint_degs` 对六个关节独立均匀采样；
+6. 在 `initial_tcp_m` 范围内额外采样 TCP 平移；
+7. 对完整参考轨迹逐帧执行连续 IK，拒绝跳解、限位、不可达和碰撞路径；
+8. 预检失败时重新采样工件和初态，不创建无意义的视频文件；
+9. 按概率插入轨迹中途恢复扰动；
+10. 执行专家轨迹并保存质量结果，训练导出时只选择有效数据。
 
 默认配置：
 
 ```yaml
 randomization:
-  xy_m: 0.1
+  xy_m: 0.05
   z_m: 0.0
-  yaw_deg: 30.0
-  joint_degs: [60, 20, 20, 30, 60, 60]
+  yaw_deg: 15.0
+  joint_degs: [30, 10, 10, 15, 25, 25]
   max_sampling_attempts: 10
-  initial_tcp_m: 0.1
+  initial_tcp_m: 0.03
   recovery_probability: 0.25
-  recovery_position_m: 0.005
-  recovery_rotation_deg: 3.0
+  recovery_position_m: 0.003
+  recovery_rotation_deg: 2.0
+  work_angle_range_deg: 3.0
+  travel_angle_range_deg: 3.0
+  tool_roll_range_deg: 5.0
+  orientation_follow_range: 0.05
+  arc_start_range_deg: 0.0
+  arc_sweep_range_deg: 0.0
+  approach_speed_range_mps: 0.005
+  speed_range_mps: 0.002
+  retreat_speed_range_mps: 0.005
+  reverse_probability: 0.5
+  task_group_size: 10
 ```
 
-`joint_degs` 是六轴最大独立偏移，不是固定偏移。每条数据的实际偏移、采样次数和 TCP 偏移均写入 `metadata.json`，因此可以检查数据覆盖范围并复现实验。提高范围后无效 episode 会增加，这是合理现象；`--collection.episodes=N` 表示目标有效 episode 数，失败数据保留用于诊断但不会被 LeRobot 导出器用于行为克隆。
+`joint_degs` 是六轴最大独立偏移，不是固定偏移。每条数据的实际偏移、完整运动重采样次数、轨迹预检最大 IK 残差和 TCP 偏移均写入 `metadata.json`。`quality.failure_reasons` 会明确列出进度、横向误差、姿态、碰撞或 IK 中未通过的条件；碰撞还记录持续帧数和具体几何对，避免只看到笼统的失败状态。
+
+角度字段均表示相对任务 YAML 标称值的均匀采样半径，并取整到 1°；速度以 m/s 表示并保留三位小数；姿态跟随比例保留两位小数。`pipe_bottom` 当前将几何起点和扫掠角各改变 ±10°，焊接速度在 0.003–0.005 m/s 之间；`pipe_top` 始终执行完整 360°，起点改变 ±15°，姿态仅小幅变化。反向任务会交换同一几何圆弧的起终点，不会因为改变方向而换到另一段焊缝。
+
+任务参数按全局 episode 编号分组，默认编号 0–9、10–19 分别共享一组参数。这种定义在多进程、增量采集和失败重试时仍然确定可复现。instruction 始终保持任务 YAML 中的固定文本；实际方向、姿态、圆弧和速度仅保存在 `task_parameters` 与 `resolved_config`。工件位姿、关节初始状态、TCP 偏移和恢复扰动仍逐条独立变化。发生轨迹碰撞的随机组合不能通过 episode 质量门，因此不会进入训练导出。
 
 ## 3. 如何采集仿真数据
 
@@ -112,8 +130,11 @@ pixi run -e sim sim-replay \
 ```bash
 pixi run -e sim sim-collect \
   --config_path=configs/default.yaml \
-  --collection.episodes=500
+  --collection.episodes=500 \
+  --collection.workers=4
 ```
+
+`collection.workers` 为 1 时保持顺序采集，适合断点调试；大于 1 时使用 `spawn` 多进程，每个进程独立持有 MuJoCo、EGL 和视频编码器。父进程分配唯一 episode 编号并汇总质量，只有当“已通过数量 + 正在执行数量”低于目标时才继续提交，因此不会因并发而额外多采有效 episode。消费级 GPU 建议从 2 开始，根据显存和 GPU 利用率逐步增加到 4；worker 过多会争用渲染 GPU、内存和视频编码 CPU，未必继续加速。交互式非 headless 模式会自动退回单进程。
 
 建议为每组消融实验复制一份 YAML，并使用不同的 `collection.dataset_root`，不要在同一个目录混入相机参数、动作语义或机器人模型版本不同的数据。
 

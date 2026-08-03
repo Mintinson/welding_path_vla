@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import shutil
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -23,10 +25,10 @@ from welding_path_vla.core.geometry import frame_delta, pose_delta, rotation_err
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
 from welding_path_vla.dataset.recorder import EpisodeRecorder
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
-from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
+from welding_path_vla.simulation import WeldingEnv
 from welding_path_vla.simulation.task_sampling import (
-    sample_collision_free_task,
-    sample_initial_tcp_offset,
+    sample_episode_task_config,
+    sample_feasible_trajectory,
 )
 
 
@@ -54,35 +56,23 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
         RuntimeError: 采样无碰撞任务失败。
     """
     rng = np.random.default_rng(seed)
+    config = sample_episode_task_config(config, episode_index)
     simulation = WeldingEnv(config, seed, ignore_done=True)
 
-    # --- 阶段 1: 采样无碰撞任务 (工件位姿随机化 + 预置 IK) ---
-    seam, staging_residual, scene_sampling_attempts = sample_collision_free_task(
-        simulation,
-        config,
-        rng,
-    )
+    try:
+        # --- 阶段 1–4: 重采样场景和初态，直到完整轨迹通过连续 IK 预检 ---
+        sample = sample_feasible_trajectory(simulation, config, rng)
+    except Exception:
+        simulation.close()
+        raise
 
-    # --- 阶段 2: 在初始构型附近随机化关节位置, 增加轨迹多样性 ---
-    initial_joint_offset_deg, joint_sampling_attempts = simulation.randomize_joint_position(
-        rng,
-        config.randomization.joint_degs,
-        config.randomization.max_sampling_attempts,
-    )
-
-    # --- 阶段 3: 采样可行的 TCP 初始偏移, 模拟标定误差 ---
-    initial_offset, tcp_sampling_attempts, initial_tcp_offset_applied = sample_initial_tcp_offset(
-        simulation, config, rng
-    )
-
-    # --- 阶段 4: 初始化录制器和专家轨迹 ---
+    seam = sample.seam
+    expert = sample.expert
     root = Path(config.collection.dataset_root)
     recorder = EpisodeRecorder(root, episode_index, config)
     recovery = bool(rng.random() < config.randomization.recovery_probability)
 
     try:
-        initial = simulation.tcp_pose()
-        expert = ExpertTrajectory(config, initial, seam)
         state = simulation.state()
         observation = simulation.observe()
 
@@ -206,15 +196,24 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             "direction": config.task.direction,
             "episode_start": "collision_checked_staging_pose",
             # 采样过程元数据
-            "staging_ik_residual": staging_residual,
-            "scene_sampling_attempts": scene_sampling_attempts,
-            "initial_joint_offset_deg": initial_joint_offset_deg.tolist(),
-            "initial_joint_sampling_attempts": joint_sampling_attempts,
-            "initial_tcp_offset_m": initial_offset.tolist(),
-            "initial_tcp_sampling_attempts": tcp_sampling_attempts,
-            "initial_tcp_offset_applied": initial_tcp_offset_applied,
+            "staging_ik_residual": sample.staging_residual_m,
+            "planning_max_ik_residual": sample.planning_max_ik_residual_m,
+            "scene_sampling_attempts": sample.scene_sampling_attempts,
+            "motion_sampling_attempts": sample.motion_sampling_attempts,
+            "initial_joint_offset_deg": sample.initial_joint_offset_deg.tolist(),
+            "initial_joint_sampling_attempts": sample.joint_sampling_attempts,
+            "initial_tcp_offset_m": sample.initial_tcp_offset_m.tolist(),
+            "initial_tcp_sampling_attempts": sample.tcp_sampling_attempts,
+            "initial_tcp_offset_applied": sample.initial_tcp_offset_applied,
             # 任务参数 (供训练时恢复参考)
             "task_parameters": {
+                "group_index": episode_index // config.randomization.task_group_size,
+                "group_size": config.randomization.task_group_size,
+                "seed": config.collection.seed
+                + episode_index // config.randomization.task_group_size,
+                "direction": config.task.direction,
+                "arc_start_deg": config.task.arc_start_deg,
+                "arc_sweep_deg": config.task.arc_sweep_deg,
                 "approach_speed_mps": config.task.approach_speed_mps,
                 "speed_mps": config.task.speed_mps,
                 "retreat_speed_mps": config.task.retreat_speed_mps,
@@ -273,12 +272,22 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
 
     # 从已有 episode 推断下一个起始序号, 支持增量采集
     existing = sorted((root / "episodes").glob("episode_*"))
-    next_index = max((int(path.name.rsplit("_", 1)[1]) for path in existing), default=-1) + 1
+    next_from_episodes = (
+        max((int(path.name.rsplit("_", 1)[1]) for path in existing), default=-1) + 1
+    )
+    summary_path = root / "dataset.json"
+    previous_summary = (
+        json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+    )
+    next_index = max(next_from_episodes, int(previous_summary.get("next_episode_index", 0)))
+    previous_collection_errors = int(previous_summary.get("collection_errors", 0))
 
     paths: list[Path] = []
     valid = 0
     attempts = 0
+    collection_errors = 0
     max_attempts = target * config.collection.max_attempt_multiplier
+    workers = min(config.collection.workers, target) if config.collection.headless else 1
 
     def right_align(text: str) -> str:
         """根据当前终端宽度将文本右对齐。"""
@@ -302,59 +311,114 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
             dynamic_ncols=False,
         ) as stats_bar,
     ):
-        while valid < target and attempts < max_attempts:
-            episode_index = next_index + attempts
 
-            path = collect_episode(
-                config,
-                episode_index,
-                config.collection.seed + episode_index,
-            )
+        def register_episode(episode_index: int, path: Path) -> None:
+            """在主进程读取质量结果并更新采集进度。"""
+            nonlocal attempts, valid
             paths.append(path)
-
             quality = json.loads((path / "metadata.json").read_text(encoding="utf-8"))["quality"]
-
             is_valid = int(quality["valid"])
             status_emoji = "✅" if is_valid else "❌"
-
             tqdm.write(f"Episode {episode_index:04d}: {status_emoji} {quality['status']}")
-
             if is_valid:
                 valid += 1
                 pbar.update(1)
-
             attempts += 1
-
             stats = (
                 f"attempts={attempts}/{max_attempts}, "
                 f"success_rate={valid / attempts:.1%}, "
-                f"valid={valid}"
+                f"valid={valid}, workers={workers}"
             )
-
             stats_bar.set_description_str(right_align(stats), refresh=True)
             pbar.refresh()
-            # pbar.refresh()
+
+        def register_error(episode_index: int, error: RuntimeError) -> None:
+            """记录一次没有生成 episode 目录的预采样失败。"""
+            nonlocal attempts, collection_errors
+            attempts += 1
+            collection_errors += 1
+            tqdm.write(f"Episode {episode_index:04d}: ⚠️ collection_error: {error}")
+            stats = (
+                f"attempts={attempts}/{max_attempts}, "
+                f"success_rate={valid / attempts:.1%}, "
+                f"valid={valid}, errors={collection_errors}, workers={workers}"
+            )
+            stats_bar.set_description_str(right_align(stats), refresh=True)
+            pbar.refresh()
+
+        if workers == 1:
+            while valid < target and attempts < max_attempts:
+                episode_index = next_index + attempts
+                try:
+                    path = collect_episode(
+                        config,
+                        episode_index,
+                        config.collection.seed + episode_index,
+                    )
+                except RuntimeError as error:
+                    register_error(episode_index, error)
+                else:
+                    register_episode(episode_index, path)
+        else:
+            context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=workers, mp_context=context) as executor:
+                futures = {}
+                submitted = 0
+                while valid < target:
+                    while (
+                        submitted < max_attempts
+                        and len(futures) < workers
+                        and valid + len(futures) < target
+                    ):
+                        episode_index = next_index + submitted
+                        future = executor.submit(
+                            collect_episode,
+                            config,
+                            episode_index,
+                            config.collection.seed + episode_index,
+                        )
+                        futures[future] = episode_index
+                        submitted += 1
+                    if not futures:
+                        break
+                    future = next(as_completed(futures))
+                    episode_index = futures.pop(future)
+                    try:
+                        path = future.result()
+                    except RuntimeError as error:
+                        register_error(episode_index, error)
+                    else:
+                        register_episode(episode_index, path)
     # 汇总全部 episode (含之前已有的) 的质量分布
     all_episodes = sorted((root / "episodes").glob("episode_*"))
     quality = [
         json.loads((path / "metadata.json").read_text(encoding="utf-8"))["quality"]
         for path in all_episodes
     ]
+    status = Counter(item["status"] for item in quality)
+    total_collection_errors = previous_collection_errors + collection_errors
+    if total_collection_errors:
+        status["collection_error"] = total_collection_errors
     summary = {
         "dataset": root.name,
         "last_request_valid_episodes": target,
         "last_request_collected_valid_episodes": valid,
+        "last_request_attempts": attempts,
+        "last_request_collection_errors": collection_errors,
+        "collection_errors": total_collection_errors,
+        "collection_workers": workers,
+        "next_episode_index": next_index + attempts,
         "valid_episodes": sum(item["valid"] for item in quality),
         "attempted_episodes": len(all_episodes),
-        "status": dict(Counter(item["status"] for item in quality)),
+        "status": dict(status),
         "seed": config.collection.seed,
         "format": RAW_DATASET_FORMAT,
     }
-    (root / "dataset.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     if valid < target:
         raise RuntimeError(
             f"collected only {valid}/{target} valid episodes after {attempts} attempts; "
             "failed episodes were retained"
         )
-    return paths
+    return sorted(paths)

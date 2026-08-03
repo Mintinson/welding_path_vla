@@ -270,8 +270,10 @@ class WeldingEnv(MujocoEnv):
                 current.position + fraction * (target.position - current.position),
                 target.quaternion_wxyz,
             )
-            command, residual = self.solve_ik(intermediate)
             current_joint = self.mj_data.qpos[self.qpos_ids]
+            # 上一控制目标比带有执行器滞后的实际状态更适合作为连续 IK 初值，
+            # 可避免圆弧经过奇异邻域时在关节解分支之间跳转。
+            command, residual = self.solve_ik(intermediate, self.last_joint_command)
             max_delta = self.config.robot.joint_velocity_limit / self.config.timing.control_hz
             command = current_joint + np.clip(command - current_joint, -max_delta, max_delta)
             self.last_joint_command = command.copy()
@@ -479,7 +481,11 @@ class WeldingEnv(MujocoEnv):
         self.set_joint_position(center)
         raise RuntimeError(f"cannot sample collision-free initial joints after {attempts} attempts")
 
-    def solve_ik(self, target: Pose) -> tuple[np.ndarray, float]:
+    def solve_ik(
+        self,
+        target: Pose,
+        seed_joint_position: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, float]:
         """在独立 ``MjData`` 上使用阻尼最小二乘法求解 IK。
 
         独立数据避免在 robosuite 的 ``mj_step1`` / ``mj_step2`` 之间改写主
@@ -487,6 +493,8 @@ class WeldingEnv(MujocoEnv):
 
         Args:
             target: 世界坐标系下的目标 TCP 位姿。
+            seed_joint_position: 可选的六轴初值；连续轨迹规划使用上一帧解，
+                单步控制默认从当前实际关节位置开始。
 
         Returns:
             六关节解和最终六维位姿误差范数。
@@ -494,6 +502,8 @@ class WeldingEnv(MujocoEnv):
         robot = self.config.robot
         data = self.ik_data
         data.qpos[:] = self.mj_data.qpos
+        if seed_joint_position is not None:
+            data.qpos[self.qpos_ids] = seed_joint_position
         data.qvel[:] = self.mj_data.qvel
         mujoco.mj_forward(self.mj_model, data)
         residual = float("inf")
@@ -542,6 +552,17 @@ class WeldingEnv(MujocoEnv):
             )
             mujoco.mj_forward(self.mj_model, data)
             remaining_iterations -= 1
+        matrix = data.site_xmat[self.tcp_id].reshape(3, 3)
+        final_error = np.concatenate(
+            [
+                target.position - data.site_xpos[self.tcp_id],
+                rotation_error(
+                    target.quaternion_wxyz,
+                    matrix_to_quaternion(matrix),
+                ),
+            ]
+        )
+        residual = float(np.linalg.norm(final_error))
         return data.qpos[self.qpos_ids].copy(), residual
 
     def perturb_tcp(
@@ -585,15 +606,30 @@ class WeldingEnv(MujocoEnv):
 
     @property
     def collision_pairs(self) -> tuple[tuple[str, str], ...]:
-        """返回有效碰撞对，忽略焊丝尖端对工件的低力正常接触。"""
+        """返回有效碰撞对，忽略焊丝尖端对工件的浅层正常接触。"""
+        return self.collision_pairs_for(self.mj_data)
+
+    def collision_pairs_for(self, data: mujoco.MjData) -> tuple[tuple[str, str], ...]:
+        """读取指定仿真状态中的有效碰撞对。
+
+        Args:
+            data: 主仿真状态或轨迹预检使用的独立 MuJoCo 状态。
+
+        Returns:
+            去除焊丝尖端正常擦碰后的几何体名称对。
+        """
         pairs: list[tuple[str, str]] = []
-        for index, contact in enumerate(self.mj_data.contact):
+        for index, contact in enumerate(data.contact):
             geom_ids = (contact.geom1, contact.geom2)
             if self.torch_tip_id in geom_ids:
                 other_id = contact.geom2 if contact.geom1 == self.torch_tip_id else contact.geom1
                 if other_id in self.workpiece_geom_ids:
+                    # 刚性位置伺服会把亚毫米穿透放大为数百牛的瞬时接触力，
+                    # 因此先用几何深度识别焊丝尖端在焊缝上的正常擦碰。
+                    if contact.dist >= -self.config.safety.tip_contact_penetration_limit_m:
+                        continue
                     force = np.zeros(6)
-                    mujoco.mj_contactForce(self.mj_model, self.mj_data, index, force)
+                    mujoco.mj_contactForce(self.mj_model, data, index, force)
                     if np.linalg.norm(force[:3]) < self.config.safety.tip_contact_force_limit_n:
                         continue
             names = tuple(

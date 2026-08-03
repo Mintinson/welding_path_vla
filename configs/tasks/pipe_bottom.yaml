@@ -13,8 +13,12 @@ task:
   tcp_clearance_m: 0.002
 
 randomization:
-  xy_m: 0.03
-  yaw_deg: 30.0
+  xy_m: 0.02
+  yaw_deg: 15.0
+  # 前侧圆弧的几何起点和最大扫掠角均随 episode 改变。
+  arc_start_range_deg: 10.0
+  arc_sweep_range_deg: 10.0
+  speed_range_mps: 0.001
 
 collection:
   dataset_root: datasets/weldpath_pipe_bottom_raw_v2
