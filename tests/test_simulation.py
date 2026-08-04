@@ -21,7 +21,7 @@ from welding_path_vla.simulation.task_sampling import (
     sample_task_config,
     stage_for_task,
 )
-from welding_path_vla.simulation.tasks import CircularSeamPath
+from welding_path_vla.simulation.tasks import CircularSeamPath, SinusoidalSeamPath
 
 
 def test_robosuite_reset_step_and_observations() -> None:
@@ -491,7 +491,12 @@ def test_task_parameters_change_once_per_ten_episode_indices() -> None:
 
 @pytest.mark.parametrize(
     "config_path",
-    ["configs/default.yaml", "configs/pipe_bottom.yaml", "configs/pipe_top.yaml"],
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+    ],
 )
 def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
     config_path: str,
@@ -511,10 +516,15 @@ def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
 
 @pytest.mark.parametrize(
     "config_path",
-    ["configs/default.yaml", "configs/pipe_bottom.yaml", "configs/pipe_top.yaml"],
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+    ],
 )
 def test_randomized_episode_has_continuous_collision_free_joint_plan(config_path: str) -> None:
-    """三个任务都应在录制前获得连续、无碰撞且可达的完整关节轨迹。"""
+    """四种任务都应在录制前获得连续、无碰撞且可达的完整关节轨迹。"""
     config = sample_episode_task_config(AppConfig.load(config_path), 0)
     simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
     try:
@@ -566,6 +576,52 @@ def test_pipe_workpiece_exposes_reachable_circular_seam(config_path: str) -> Non
         assert np.min(radii) > config.workpiece.pipe_wall_thickness_m
     finally:
         simulation.close()
+
+
+def test_curve_plate_exposes_arc_length_parameterized_fixed_orientation_seam() -> None:
+    """曲线焊缝应按弧长采样，且专家跟踪阶段姿态保持不变。"""
+    config = sample_episode_task_config(AppConfig.load("configs/curve_plate.yaml"), 0)
+    simulation = WeldingEnv(config, camera_observations=False)
+    try:
+        seam = simulation.active_seam()
+        assert isinstance(seam, SinusoidalSeamPath)
+        plate_visual = simulation.mj_model.geom("curve_plate_visual")
+        assert simulation.mj_model.geom_contype[plate_visual.id] == 0
+        curve_geom = simulation.mj_model.geom("curve_seam_visual_00")
+        assert simulation.mj_model.geom_contype[curve_geom.id] == 0
+        assert curve_geom.rgba[3] == 1
+        frames = [seam.sample(progress) for progress in np.linspace(0, 1, 21)]
+        distances = [
+            np.linalg.norm(second.position - first.position) for first, second in pairwise(frames)
+        ]
+        assert max(distances) / min(distances) < 1.05
+        assert all(frame.normal[2] > 0.98 for frame in frames)
+        assert seam.project(frames[8].position).progress == pytest.approx(0.4, abs=0.002)
+
+        expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
+        track = [frame for frame in expert.frames if frame.phase.value == "track"]
+        quaternions = np.asarray([frame.pose.quaternion_wxyz for frame in track])
+        np.testing.assert_allclose(quaternions, np.tile(quaternions[0], (len(track), 1)), atol=1e-7)
+    finally:
+        simulation.close()
+
+
+def test_curve_task_randomizes_function_amplitude_and_frequency_by_group() -> None:
+    """平板曲线类型、振幅和频率应按任务组变化并保持量化。"""
+    config = AppConfig.load("configs/curve_plate.yaml")
+    samples = [sample_episode_task_config(config, index * 10) for index in range(20)]
+
+    assert {sample.task.curve_kind for sample in samples} == {"sine", "cosine"}
+    assert all(0.010 <= sample.task.curve_amplitude_m <= 0.030 for sample in samples)
+    assert all(1.0 <= sample.task.curve_frequency <= 2.0 for sample in samples)
+    assert all(
+        round(sample.task.curve_amplitude_m, 3) == sample.task.curve_amplitude_m
+        for sample in samples
+    )
+    assert all(
+        round(sample.task.curve_frequency, 2) == sample.task.curve_frequency for sample in samples
+    )
+    assert all(sample.task.instruction == config.task.instruction for sample in samples)
 
 
 def test_expert_uses_independent_phase_speeds() -> None:

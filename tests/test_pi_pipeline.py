@@ -43,9 +43,11 @@ def test_pi_training_configs_compose_hardware_profiles(
         ("configs/deploy/pi0_l_joint.yaml", "pi0", "straight_fillet"),
         ("configs/deploy/pi0_pipe_bottom.yaml", "pi0", "pipe_bottom"),
         ("configs/deploy/pi0_pipe_top.yaml", "pi0", "pipe_top"),
+        ("configs/deploy/pi0_curve_plate.yaml", "pi0", "curve_seam"),
         ("configs/deploy/pi0_5_l_joint.yaml", "pi0_5", "straight_fillet"),
         ("configs/deploy/pi0_5_pipe_bottom.yaml", "pi0_5", "pipe_bottom"),
         ("configs/deploy/pi0_5_pipe_top.yaml", "pi0_5", "pipe_top"),
+        ("configs/deploy/pi0_5_curve_plate.yaml", "pi0_5", "curve_seam"),
     ],
 )
 def test_pi_deployment_configs_switch_complete_tasks(path: str, family: str, seam: str) -> None:

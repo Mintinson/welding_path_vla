@@ -221,7 +221,16 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
                 "work_angle_deg": config.task.work_angle_deg,
                 "travel_angle_deg": config.task.travel_angle_deg,
                 "tool_roll_deg": config.task.tool_roll_deg,
-            },
+            }
+            | (
+                {
+                    "curve_kind": config.task.curve_kind,
+                    "curve_amplitude_m": config.task.curve_amplitude_m,
+                    "curve_frequency": config.task.curve_frequency,
+                }
+                if config.workpiece.kind == "curve_plate"
+                else {}
+            ),
             # 各坐标系定义说明
             "coordinate_frames": {
                 "tcp_and_reference": "world",

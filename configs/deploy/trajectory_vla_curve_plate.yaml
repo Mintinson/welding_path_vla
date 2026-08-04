@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - trajectory_vla.yaml
+  - ../tasks/curve_plate.yaml
+
+deployment:
+  log_dir: outputs/deploy/trajectory_vla_curve_plate

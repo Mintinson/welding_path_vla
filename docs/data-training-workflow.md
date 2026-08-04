@@ -100,9 +100,13 @@ pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
 pixi run -e sim sim-collect \
   --config_path=configs/pipe_top.yaml \
   --collection.episodes=5
+
+pixi run -e sim sim-collect \
+  --config_path=configs/curve_plate.yaml \
+  --collection.episodes=5
 ```
 
-两个配置使用独立的数据集目录，不会与默认 L 形直线任务混写。
+各任务配置使用独立的数据集目录，不会相互混写。
 专家轨迹通过 `task.approach_speed_mps`、`task.speed_mps` 和
 `task.retreat_speed_mps` 分别控制接近、焊接和退出速度。圆管配置默认使用
 `60 / 4 / 40 mm/s`，使空中接近更快、沿焊缝跟踪更慢。

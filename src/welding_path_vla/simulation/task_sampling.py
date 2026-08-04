@@ -142,6 +142,22 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
         task.arc_start_deg = round(
             geometric_start + task.arc_sweep_deg if task.direction == "reverse" else geometric_start
         )
+    if sampled.workpiece.kind == "curve_plate":
+        task.curve_amplitude_m = sample_value(
+            config.task.curve_amplitude_m,
+            randomization.curve_amplitude_range_m,
+            3,
+            0.005,
+            0.4 * config.workpiece.curve_plate_size_m[0],
+        )
+        task.curve_frequency = sample_value(
+            config.task.curve_frequency,
+            randomization.curve_frequency_range,
+            2,
+            0.5,
+            3.0,
+        )
+        task.curve_kind = "cosine" if rng.random() < randomization.cosine_probability else "sine"
     return sampled
 
 

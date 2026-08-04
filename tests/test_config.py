@@ -43,12 +43,23 @@ def test_pipe_configs_select_matching_workpiece_and_seam(path: str, seam_id: str
         assert config.task.orientation_follow_ratio == 0
 
 
+def test_curve_plate_config_selects_fixed_orientation_curve_task() -> None:
+    """曲线平板入口应同时选定工件、焊缝和固定姿态约束。"""
+    config = AppConfig.load("configs/curve_plate.yaml")
+    assert config.workpiece.kind == "curve_plate"
+    assert config.task.seam_id == "curve_seam"
+    assert config.task.curve_kind == "sine"
+    assert config.task.orientation_follow_ratio == 0
+    assert config.collection.dataset_root.endswith("weldpath_curve_plate_raw_v2")
+
+
 @pytest.mark.parametrize(
     ("path", "seam_id", "max_steps"),
     [
         ("configs/deploy/smolvla_l_joint.yaml", "straight_fillet", 1000),
         ("configs/deploy/smolvla_pipe_bottom.yaml", "pipe_bottom", 1200),
         ("configs/deploy/smolvla_pipe_top.yaml", "pipe_top", 3300),
+        ("configs/deploy/smolvla_curve_plate.yaml", "curve_seam", 1500),
     ],
 )
 def test_deployment_profiles_select_complete_task(

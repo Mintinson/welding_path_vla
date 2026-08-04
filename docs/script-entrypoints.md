@@ -29,10 +29,10 @@
 ```text
 configs/
 ├── base.yaml
-├── tasks/{l_joint,pipe_bottom,pipe_top}.yaml
+├── tasks/{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
 ├── policies/{act,smolvla,pi0,pi0_5}.yaml
 ├── policies/{pi0,pi0_5}_a100.yaml
-└── deploy/{smolvla,pi0,pi0_5}_{l_joint,pipe_bottom,pipe_top}.yaml
+└── deploy/{smolvla,pi0,pi0_5,trajectory_vla}_{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
 ```
 
 入口 YAML 使用 `includes` 按顺序组合模块，后面的模块覆盖前面的同名字段，入口自身
@@ -44,7 +44,7 @@ pixi run -e policy-sim policy-sim-deploy \
   --deployment.episodes=10
 ```
 
-`configs/default.yaml`、`pipe_bottom.yaml`、`pipe_top.yaml`、`act.yaml` 和
+`configs/default.yaml`、`pipe_bottom.yaml`、`pipe_top.yaml`、`curve_plate.yaml`、`act.yaml` 和
 `smolvla.yaml` 是兼容旧命令的组合入口。参数名称仍与 dataclass/YAML 完全一致，
 布尔值使用 `--field=true/false`。
 
@@ -69,7 +69,7 @@ python scripts/collect_simulation_data.py \
 
 - `core/`：类型化配置、领域对象和坐标几何函数；
 - `simulation/models/`：Elfin5-Pro、Arena 和可替换工件模型；
-- `simulation/tasks/`：直线/圆弧焊缝的采样、投影和局部标架；
+- `simulation/tasks/`：直线、圆弧和周期曲线焊缝的采样、投影和局部标架；
 - `simulation/`：robosuite 环境、专家轨迹和采集业务逻辑；
 - `dataset/`：原始 episode、录制、动作构造和数据导出；
 - `evaluation/`：轨迹指标、聚合规则和日志适配器；

@@ -81,6 +81,8 @@ pixi run -e sim sim-view --config_path=configs/default.yaml
 pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=50
 pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
 pixi run -e sim sim-collect --config_path=configs/pipe_top.yaml --collection.episodes=50
+pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
+pixi run -e sim sim-collect --config_path=configs/curve_plate.yaml --collection.episodes=50
 pixi run -e sim sim-replay --episode=PATH
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
 pixi run -e data export-lerobot --dataset=datasets/weldpath_raw_v2 --output=datasets/weldpath_lerobot_relative_v1
@@ -103,7 +105,7 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/act.yaml --policy
 
 完整的数据约定、checkpoint、日志和评估说明见 [ACT pipeline](docs/act-pipeline.md)。
 
-SmolVLA 基线使用统一的三任务 LeRobot 数据集和相同入口：
+SmolVLA 基线可使用统一的多任务 LeRobot 数据集和相同入口：
 
 ```bash
 pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
@@ -112,6 +114,7 @@ pixi run -e train policy-evaluate --config_path=configs/smolvla.yaml --policy.ch
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_l_joint.yaml
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_bottom.yaml
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_top.yaml
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_curve_plate.yaml
 ```
 
 配置由 `base.yaml`、`tasks/`、`policies/` 和 `deploy/` 分层组合；部署时更换一个入口

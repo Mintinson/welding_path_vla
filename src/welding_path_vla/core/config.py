@@ -79,7 +79,8 @@ class WorkpieceConfig:
     """可替换工件的几何参数。
 
     Attributes:
-        kind: 工件类型，当前支持 ``l_joint`` 和 ``pipe_on_plate``。
+        kind: 工件类型，支持 ``l_joint``、``pipe_on_plate`` 和
+            ``curve_plate``。
         l_joint_length_m: L 形工件沿焊缝方向的总长度。
         l_joint_width_m: L 形工件水平板宽度及竖板高度。
         l_joint_thickness_m: L 形工件两块钢板的厚度。
@@ -88,6 +89,8 @@ class WorkpieceConfig:
         pipe_wall_thickness_m: 圆管壁厚。
         pipe_height_m: 圆管从底板上表面起算的高度。
         pipe_segments: 用于近似空心圆管的环向分段数。
+        curve_plate_size_m: 曲线平板的长、宽、厚。
+        curve_visual_segments: 用于显示曲线焊缝的分段数量。
     """
 
     kind: str = "l_joint"
@@ -99,6 +102,8 @@ class WorkpieceConfig:
     pipe_wall_thickness_m: float = 0.004
     pipe_height_m: float = 0.12
     pipe_segments: int = 32
+    curve_plate_size_m: list[float] = field(default_factory=lambda: [0.30, 0.30, 0.005])
+    curve_visual_segments: int = 80
 
 
 @dataclass(slots=True)
@@ -123,6 +128,9 @@ class TaskConfig:
         staging_clearance_m: 空中转移点高于焊缝的最小距离。
         tcp_clearance_m: TCP 相对理论焊缝中心的安全净空。
         seam_length_m: 直线焊缝长度。
+        curve_kind: 平板曲线类型，取 ``sine`` 或 ``cosine``。
+        curve_amplitude_m: 曲线横向振幅，单位为米。
+        curve_frequency: 曲线在整段焊缝中的周期数量。
     """
 
     instruction: str = "沿 L 形工件的直线角焊缝完成焊接轨迹。"
@@ -142,6 +150,9 @@ class TaskConfig:
     retreat_distance_m: float = 0.04
     seam_length_m: float = 0.20
     tcp_clearance_m: float = 0.0015
+    curve_kind: str = "sine"
+    curve_amplitude_m: float = 0.02
+    curve_frequency: float = 1.5
 
 
 @dataclass(slots=True)
@@ -167,6 +178,9 @@ class RandomizationConfig:
         approach_speed_range_mps: 接近速度相对标称值的采样半径。
         speed_range_mps: 焊接速度相对标称值的采样半径。
         retreat_speed_range_mps: 退出速度相对标称值的采样半径。
+        curve_amplitude_range_m: 曲线振幅相对标称值的采样半径。
+        curve_frequency_range: 曲线周期数相对标称值的采样半径。
+        cosine_probability: 将平板焊缝采样为余弦曲线的概率。
         reverse_probability: 将任务采样为反向执行的概率。
         task_group_size: 连续多少个 episode 编号共享一组任务参数。
     """
@@ -189,6 +203,9 @@ class RandomizationConfig:
     approach_speed_range_mps: float = 0.005
     speed_range_mps: float = 0.002
     retreat_speed_range_mps: float = 0.005
+    curve_amplitude_range_m: float = 0.01
+    curve_frequency_range: float = 0.5
+    cosine_probability: float = 0.5
     reverse_probability: float = 0.5
     task_group_size: int = 10
 
@@ -386,12 +403,16 @@ class AppConfig:
         self.timing.validate()
         if len(self.robot.initial_joint_deg) != 6:
             raise ValueError("robot.initial_joint_deg must contain six values")
-        if self.workpiece.kind not in {"l_joint", "pipe_on_plate"}:
-            raise ValueError("workpiece.kind must be l_joint or pipe_on_plate")
+        if self.workpiece.kind not in {"l_joint", "pipe_on_plate", "curve_plate"}:
+            raise ValueError("unsupported workpiece.kind")
         if len(self.workpiece.pipe_plate_size_m) != 3:
             raise ValueError("workpiece.pipe_plate_size_m must contain three values")
+        if len(self.workpiece.curve_plate_size_m) != 3:
+            raise ValueError("workpiece.curve_plate_size_m must contain three values")
         if self.workpiece.pipe_segments < 12:
             raise ValueError("workpiece.pipe_segments must be at least 12")
+        if self.workpiece.curve_visual_segments < 8:
+            raise ValueError("workpiece.curve_visual_segments must be at least 8")
         if not 0 < self.workpiece.pipe_wall_thickness_m < self.workpiece.pipe_outer_radius_m:
             raise ValueError("pipe wall thickness must be smaller than the outer radius")
         if (
@@ -399,9 +420,15 @@ class AppConfig:
             and self.task.seam_length_m > self.workpiece.l_joint_length_m
         ):
             raise ValueError("task.seam_length_m cannot exceed the L-joint length")
+        if (
+            self.workpiece.kind == "curve_plate"
+            and self.task.seam_length_m > self.workpiece.curve_plate_size_m[1]
+        ):
+            raise ValueError("task.seam_length_m cannot exceed the curve plate length")
         allowed_seams = {
             "l_joint": {"straight_fillet"},
             "pipe_on_plate": {"pipe_bottom", "pipe_top"},
+            "curve_plate": {"curve_seam"},
         }
         if self.task.seam_id not in allowed_seams[self.workpiece.kind]:
             raise ValueError(
@@ -422,6 +449,15 @@ class AppConfig:
             raise ValueError("task phase speeds must be positive")
         if not 0 <= self.task.orientation_follow_ratio <= 1:
             raise ValueError("task.orientation_follow_ratio must be in [0, 1]")
+        if self.task.curve_kind not in {"sine", "cosine"}:
+            raise ValueError("task.curve_kind must be sine or cosine")
+        if self.task.curve_amplitude_m <= 0 or self.task.curve_frequency <= 0:
+            raise ValueError("curve amplitude and frequency must be positive")
+        if (
+            self.workpiece.kind == "curve_plate"
+            and self.task.curve_amplitude_m >= self.workpiece.curve_plate_size_m[0] / 2
+        ):
+            raise ValueError("curve amplitude must remain inside the plate")
         if not 0 < self.camera.global_fovy_deg < 180 or not 0 < self.camera.wrist_fovy_deg < 180:
             raise ValueError("camera field of view must be in (0, 180)")
         if self.camera.offscreen_backend not in {"egl", "glfw", "osmesa"}:
@@ -432,6 +468,8 @@ class AppConfig:
             raise ValueError("recovery_probability must be in [0, 1]")
         if not 0 <= self.randomization.reverse_probability <= 1:
             raise ValueError("reverse_probability must be in [0, 1]")
+        if not 0 <= self.randomization.cosine_probability <= 1:
+            raise ValueError("cosine_probability must be in [0, 1]")
         task_randomization_ranges = (
             self.randomization.work_angle_range_deg,
             self.randomization.travel_angle_range_deg,
@@ -442,6 +480,8 @@ class AppConfig:
             self.randomization.approach_speed_range_mps,
             self.randomization.speed_range_mps,
             self.randomization.retreat_speed_range_mps,
+            self.randomization.curve_amplitude_range_m,
+            self.randomization.curve_frequency_range,
         )
         if any(value < 0 for value in task_randomization_ranges):
             raise ValueError("task randomization ranges must be non-negative")

@@ -17,6 +17,7 @@
 | `configs/tasks/l_joint.yaml` | L 形双板 | `straight_fillet` 直线角焊缝 |
 | `configs/tasks/pipe_bottom.yaml` | 空心圆管 + 方形底板 | `pipe_bottom` 管底圆弧 |
 | `configs/tasks/pipe_top.yaml` | 空心圆管 + 方形底板 | `pipe_top` 管口圆弧 |
+| `configs/tasks/curve_plate.yaml` | 带可见周期曲线的平板 | `curve_seam` 正弦/余弦焊缝 |
 
 圆管由 32 个环向碰撞/外观分段构成，因此内部保持空心，不会像实心 cylinder 一样错误阻挡
 内壁空间。`pipe_bottom` 默认走 90° 前侧圆弧；`pipe_top` 默认走完整 360° 管口圆周。
@@ -35,6 +36,17 @@ pixi run -e sim sim-collect \
 旋转一整圈；`task.work_angle_deg`、`task.travel_angle_deg` 和 `task.tool_roll_deg` 分别控制
 工作角、行走角和滚转角。
 
+曲线平板使用 `configs/curve_plate.yaml`。焊缝按照真实弧长均匀采样，振幅、周期数、
+正弦/余弦类型和执行方向记录在 `task_parameters`；`orientation_follow_ratio=0` 保证单个
+episode 的跟踪姿态固定，只考察策略的平面曲线执行能力。
+
+```bash
+pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
+pixi run -e sim sim-collect \
+  --config_path=configs/curve_plate.yaml \
+  --collection.episodes=50
+```
+
 ## 新增工件
 
 只在确有新工件时扩展以下四个位置：
@@ -44,5 +56,5 @@ pixi run -e sim sim-collect \
 3. 在 `configs/tasks/` 增加任务模块，并使用独立 `collection.dataset_root`；
 4. 在 `configs/deploy/` 增加引用该任务的部署入口。
 
-机器人模型、Arena、控制器、录制器和策略接口不应随工件变化。新增焊缝若仍是直线或圆弧，
-直接复用现有路径类；只有真实几何无法表达时才新增新的 `SeamPath` 实现。
+机器人模型、Arena、控制器、录制器和策略接口不应随工件变化。新增焊缝若仍是直线、圆弧
+或周期曲线，直接复用现有路径类；只有真实几何无法表达时才新增 `SeamPath` 实现。

@@ -8,10 +8,6 @@ import numpy as np
 
 from welding_path_vla.core.geometry import normalize
 
-# def unit(vector: np.ndarray) -> np.ndarray:
-#     """返回三维向量的单位方向。"""
-#     return vector / np.linalg.norm(vector)
-
 
 @dataclass(slots=True)
 class SeamFrame:
@@ -126,6 +122,120 @@ class StraightSeamPath(SeamPath):
         progress = float(np.clip(raw, 0, 1))
         closest = self.sample(progress).position
         return SeamProjection(progress, raw, closest, float(np.linalg.norm(position - closest)))
+
+
+class SinusoidalSeamPath(SeamPath):
+    """平板上的正弦或余弦焊缝，以真实弧长均匀采样。"""
+
+    def __init__(
+        self,
+        seam_id: str,
+        center: np.ndarray,
+        rotation: np.ndarray,
+        length_m: float,
+        height_m: float,
+        amplitude_m: float,
+        frequency: float,
+        curve_kind: str,
+        reverse: bool,
+    ) -> None:
+        """创建平面周期曲线焊缝。
+
+        Args:
+            seam_id: 稳定的焊缝标识。
+            center: 工件局部原点的世界坐标。
+            rotation: 工件局部坐标到世界坐标的旋转矩阵。
+            length_m: 曲线在局部 Y 方向覆盖的长度。
+            height_m: TCP 曲线相对工件原点的高度。
+            amplitude_m: 局部 X 方向振幅。
+            frequency: 整段曲线包含的周期数量。
+            curve_kind: ``sine`` 或 ``cosine``。
+            reverse: 是否从几何终点向起点执行。
+        """
+        self.seam_id = seam_id
+        self.center = np.asarray(center, dtype=np.float64)
+        self.workpiece_rotation = np.asarray(rotation, dtype=np.float64)
+        self.span_m = length_m
+        self.height_m = height_m
+        self.amplitude_m = amplitude_m
+        self.frequency = frequency
+        self.curve_kind = curve_kind
+        self.reverse = reverse
+
+        self.u_lookup = np.linspace(0.0, 1.0, 1001)
+        self.local_lookup = self.local_points(self.u_lookup)
+        segment_lengths = np.linalg.norm(np.diff(self.local_lookup, axis=0), axis=1)
+        cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
+        self.length_m = float(cumulative[-1])
+        self.progress_lookup = cumulative / self.length_m
+
+    def curve_values(self, u: np.ndarray) -> np.ndarray:
+        """返回参数位置对应的局部 X 坐标。"""
+        phase = 2 * np.pi * self.frequency * u
+        function = np.cos if self.curve_kind == "cosine" else np.sin
+        return self.amplitude_m * function(phase)
+
+    def curve_derivatives(self, u: float) -> float:
+        """返回局部 X 坐标对归一化参数的导数。"""
+        phase = 2 * np.pi * self.frequency * u
+        scale = 2 * np.pi * self.frequency * self.amplitude_m
+        return float(
+            -scale * np.sin(phase) if self.curve_kind == "cosine" else scale * np.cos(phase)
+        )
+
+    def local_points(self, u: np.ndarray) -> np.ndarray:
+        """批量生成曲线的工件局部坐标。"""
+        return np.column_stack(
+            [
+                self.curve_values(u),
+                self.span_m * (u - 0.5),
+                np.full_like(u, self.height_m),
+            ]
+        )
+
+    def sample(self, progress: float) -> SeamFrame:
+        """按弧长进度返回曲线位置、切向和固定平板法向。"""
+        alpha = float(np.clip(progress, 0, 1))
+        geometric_progress = 1.0 - alpha if self.reverse else alpha
+        u = float(np.interp(geometric_progress, self.progress_lookup, self.u_lookup))
+        local_position = self.local_points(np.array([u]))[0]
+        direction = -1.0 if self.reverse else 1.0
+        local_tangent = direction * np.array([self.curve_derivatives(u), self.span_m, 0.0])
+        return SeamFrame(
+            self.center + self.workpiece_rotation @ local_position,
+            normalize(self.workpiece_rotation @ local_tangent),
+            normalize(self.workpiece_rotation @ np.array([0.0, 0.0, 1.0])),
+        )
+
+    def project(
+        self,
+        position: np.ndarray,
+        hint_progress: float | None = None,
+    ) -> SeamProjection:
+        """投影到稠密折线，并返回与执行方向一致的弧长进度。"""
+        del hint_progress
+        local = self.workpiece_rotation.T @ (position - self.center)
+        nearest = int(np.argmin(np.linalg.norm(self.local_lookup - local, axis=1)))
+        candidates = range(max(0, nearest - 1), min(len(self.local_lookup) - 1, nearest + 1))
+        best_distance = float("inf")
+        best_progress = 0.0
+        best_point = self.local_lookup[nearest]
+        for index in candidates:
+            start = self.local_lookup[index]
+            vector = self.local_lookup[index + 1] - start
+            alpha = float(np.clip(np.dot(local - start, vector) / np.dot(vector, vector), 0, 1))
+            closest = start + alpha * vector
+            distance = float(np.linalg.norm(local - closest))
+            if distance < best_distance:
+                best_distance = distance
+                best_progress = float(
+                    self.progress_lookup[index]
+                    + alpha * (self.progress_lookup[index + 1] - self.progress_lookup[index])
+                )
+                best_point = closest
+        progress = 1.0 - best_progress if self.reverse else best_progress
+        world_point = self.center + self.workpiece_rotation @ best_point
+        return SeamProjection(progress, progress, world_point, best_distance)
 
 
 class CircularSeamPath(SeamPath):

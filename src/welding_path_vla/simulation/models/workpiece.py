@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from copy import deepcopy
+from itertools import pairwise
 
 import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.simulation.robosuite_compat import MujocoObject, array_to_string
-from welding_path_vla.simulation.tasks import CircularSeamPath, SeamPath, StraightSeamPath
+from welding_path_vla.simulation.tasks import (
+    CircularSeamPath,
+    SeamPath,
+    SinusoidalSeamPath,
+    StraightSeamPath,
+)
 
 STEEL_RGBA = "0.34 0.27 0.22 1"
 PLATE_RGBA = "0.46 0.45 0.42 1"
@@ -39,7 +45,7 @@ def append_geom_pair(body: ET.Element, attributes: dict[str, str]) -> None:
 class WorkpieceObject(MujocoObject):
     """由 YAML 选择几何，并提供对应的有向焊缝。
 
-    当前类只包含两种确有需求的工件，避免为尚未出现的模型建立额外层级。
+    当前类只包含已经用于实验的工件，避免为尚未出现的模型建立额外层级。
     后续新增工件时，只需增加一个几何构造函数和一个 ``seam`` 分支。
     """
 
@@ -52,11 +58,12 @@ class WorkpieceObject(MujocoObject):
         super().__init__(obj_type="all", duplicate_collision_geoms=False)
         self.config = config
         self._name = "workpiece"
-        self._obj = (
-            self.build_l_joint()
-            if config.workpiece.kind == "l_joint"
-            else self.build_pipe_on_plate()
-        )
+        builders = {
+            "l_joint": self.build_l_joint,
+            "pipe_on_plate": self.build_pipe_on_plate,
+            "curve_plate": self.build_curve_plate,
+        }
+        self._obj = builders[config.workpiece.kind]()
         self._get_object_properties()
 
     @property
@@ -148,6 +155,44 @@ class WorkpieceObject(MujocoObject):
         self.append_seam_sites(body)
         return body
 
+    def build_curve_plate(self) -> ET.Element:
+        """创建带有可见正弦或余弦焊缝的水平平板。"""
+        body = self.build_root()
+        plate = np.asarray(self.config.workpiece.curve_plate_size_m) / 2
+        append_geom_pair(
+            body,
+            {
+                "name": "curve_plate",
+                "type": "box",
+                "size": array_to_string(plate),
+                "rgba": "0.48 0.51 0.54 1",
+            },
+        )
+        seam = self.seam(np.zeros(3), np.eye(3))
+        count = self.config.workpiece.curve_visual_segments
+        points = []
+        for index in range(count + 1):
+            frame = seam.sample(index / count)
+            points.append(frame.position - self.config.task.tcp_clearance_m * frame.normal)
+        for index, (start, end) in enumerate(pairwise(points)):
+            ET.SubElement(
+                body,
+                "geom",
+                {
+                    "name": f"curve_seam_visual_{index:02d}",
+                    "type": "capsule",
+                    "fromto": array_to_string([*start, *end]),
+                    "size": "0.0015",
+                    "rgba": "0.12 0.06 0.025 1",
+                    "group": "1",
+                    "contype": "0",
+                    "conaffinity": "0",
+                    "mass": "1e-8",
+                },
+            )
+        self.append_seam_sites(body)
+        return body
+
     def append_seam_sites(self, body: ET.Element) -> None:
         """添加不可见起终点 site，兼容检查工具并辅助调试。"""
         seam = self.seam(np.zeros(3), np.eye(3))
@@ -187,7 +232,7 @@ class WorkpieceObject(MujocoObject):
             rotation: 工件局部坐标到世界坐标的旋转矩阵。
 
         Returns:
-            直线或圆弧焊缝对象。
+            与当前工件匹配的焊缝路径对象。
         """
         task = self.config.task
         workpiece = self.config.workpiece
@@ -207,6 +252,20 @@ class WorkpieceObject(MujocoObject):
                 position + rotation @ start_local,
                 position + rotation @ end_local,
                 rotation @ normal_local,
+            )
+
+        if workpiece.kind == "curve_plate":
+            height = workpiece.curve_plate_size_m[2] / 2 + task.tcp_clearance_m
+            return SinusoidalSeamPath(
+                task.seam_id,
+                position,
+                rotation,
+                task.seam_length_m,
+                height,
+                task.curve_amplitude_m,
+                task.curve_frequency,
+                task.curve_kind,
+                task.direction == "reverse",
             )
 
         plate_half_height = workpiece.pipe_plate_size_m[2] / 2
@@ -241,6 +300,11 @@ class WorkpieceObject(MujocoObject):
                 workpiece.l_joint_thickness_m,
             )
             return "l_joint_" + "x".join(str(round(value * 1000)) for value in dimensions)
+        if workpiece.kind == "curve_plate":
+            dimensions = "x".join(
+                str(round(value * 1000)) for value in workpiece.curve_plate_size_m
+            )
+            return f"curve_plate_{dimensions}"
         diameter = round(2 * workpiece.pipe_outer_radius_m * 1000)
         height = round(workpiece.pipe_height_m * 1000)
         plate = "x".join(str(round(value * 1000)) for value in workpiece.pipe_plate_size_m)
@@ -249,11 +313,11 @@ class WorkpieceObject(MujocoObject):
     @property
     def bottom_offset(self) -> np.ndarray:
         """返回根原点到工件最低点的偏移。"""
-        thickness = (
-            self.config.workpiece.l_joint_thickness_m
-            if self.config.workpiece.kind == "l_joint"
-            else self.config.workpiece.pipe_plate_size_m[2]
-        )
+        thickness = {
+            "l_joint": self.config.workpiece.l_joint_thickness_m,
+            "pipe_on_plate": self.config.workpiece.pipe_plate_size_m[2],
+            "curve_plate": self.config.workpiece.curve_plate_size_m[2],
+        }[self.config.workpiece.kind]
         return np.array([0.0, 0.0, -thickness / 2])
 
     @property
@@ -261,10 +325,12 @@ class WorkpieceObject(MujocoObject):
         """返回根原点到工件最高点的偏移。"""
         if self.config.workpiece.kind == "l_joint":
             height = self.config.workpiece.l_joint_width_m
-        else:
+        elif self.config.workpiece.kind == "pipe_on_plate":
             height = (
                 self.config.workpiece.pipe_plate_size_m[2] / 2 + self.config.workpiece.pipe_height_m
             )
+        else:
+            height = self.config.workpiece.curve_plate_size_m[2] / 2
         return np.array([0.0, 0.0, height])
 
     @property
@@ -277,8 +343,10 @@ class WorkpieceObject(MujocoObject):
                     self.config.workpiece.l_joint_length_m,
                 ]
             )
-        else:
+        elif self.config.workpiece.kind == "pipe_on_plate":
             size = np.asarray(self.config.workpiece.pipe_plate_size_m[:2])
+        else:
+            size = np.asarray(self.config.workpiece.curve_plate_size_m[:2])
         return float(np.linalg.norm(size) / 2)
 
     @property

@@ -29,6 +29,7 @@ from welding_path_vla.policies.trajectory_vla.flow_matching import (
         ("configs/deploy/trajectory_vla_l_joint.yaml", "straight_fillet"),
         ("configs/deploy/trajectory_vla_pipe_bottom.yaml", "pipe_bottom"),
         ("configs/deploy/trajectory_vla_pipe_top.yaml", "pipe_top"),
+        ("configs/deploy/trajectory_vla_curve_plate.yaml", "curve_seam"),
     ],
 )
 def test_trajectory_vla_configs_switch_complete_tasks(path: str, seam: str) -> None:
@@ -37,7 +38,7 @@ def test_trajectory_vla_configs_switch_complete_tasks(path: str, seam: str) -> N
     assert config.policy.family == "trajectory_vla"
     assert config.task.seam_id == seam
     assert config.policy.checkpoint is not None
-    task_name = "l_joint" if seam == "straight_fillet" else seam
+    task_name = {"straight_fillet": "l_joint", "curve_seam": "curve_plate"}.get(seam, seam)
     assert task_name in config.deployment.log_dir
 
 

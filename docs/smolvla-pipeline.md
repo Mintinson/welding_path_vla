@@ -1,10 +1,10 @@
-# SmolVLA 三任务基线
+# SmolVLA 多任务基线
 
 本项目直接复用 LeRobot 0.6 的 `SmolVLAPolicy`、`lerobot/smolvla_base`、
 processor、数据集和训练器。项目代码只负责把统一 YAML、焊接 observation/action
 语义和 robosuite rollout 接到官方接口上。
 
-## 1. 采集三个任务
+## 1. 采集任务数据
 
 每条命令中的 `collection.episodes=100` 表示本次必须新增 100 条通过质量门槛的
 episode；完整轨迹预检失败只计入采集错误并立即重采，已经执行后未通过质量门的
@@ -22,6 +22,10 @@ pixi run -e sim sim-collect \
 
 pixi run -e sim sim-collect \
   --config_path=configs/pipe_top.yaml \
+  --collection.episodes=100
+
+pixi run -e sim sim-collect \
+  --config_path=configs/curve_plate.yaml \
   --collection.episodes=100
 ```
 
@@ -49,6 +53,13 @@ pixi run -e data export-lerobot \
 pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_pipe_top_raw_v2 \
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=huayan/weldpath_relative_v1 \
+  --lerobot_export.incremental=true
+
+pixi run -e data export-lerobot \
+  --config_path=configs/smolvla.yaml \
+  --dataset=datasets/weldpath_curve_plate_raw_v2 \
   --output=datasets/weldpath_lerobot_relative_v1 \
   --repo_id=huayan/weldpath_relative_v1 \
   --lerobot_export.incremental=true

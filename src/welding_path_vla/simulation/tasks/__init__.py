@@ -5,6 +5,7 @@ from welding_path_vla.simulation.tasks.seams import (
     SeamFrame,
     SeamPath,
     SeamProjection,
+    SinusoidalSeamPath,
     StraightSeamPath,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "SeamFrame",
     "SeamPath",
     "SeamProjection",
+    "SinusoidalSeamPath",
     "StraightSeamPath",
 ]
