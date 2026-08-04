@@ -184,11 +184,25 @@ pixi run -e data export-lerobot \
   --repo_id=YOUR_NAME/weldpath_relative_v1
 ```
 
-默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程；这样省去了整段视频驻留内存和临时 PNG I/O。最终数据使用 LeRobot 官方的
+默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。新建目标时，转换器默认用 4 个进程分片处理 episode；每个进程逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程。分片完成后使用 LeRobot 官方聚合器无重编码合并，省去整段视频驻留内存和临时 PNG I/O。最终数据使用 LeRobot 官方的
 `libsvtav1 / CRF 30 / preset 12` 默认配置，在焊缝细节、文件体积和训练解码之间取得平衡。
 需要快速人工预览时查看原始 H.264 即可，不必为了播放器兼容性改变训练数据编码。需要图片
 feature 时显式添加 `--lerobot_export.save_images=true`，同一目标数据集不能混用视频和图片
 schema。
+
+一次合并 `datasets/` 下的所有 raw 数据集：
+
+```bash
+pixi run -e data export-lerobot \
+  --dataset_glob='datasets/*_raw_v2' \
+  --output=datasets/weldpath_lerobot_relative_v1 \
+  --repo_id=YOUR_NAME/weldpath_relative_v1 \
+  --lerobot_export.workers=4
+```
+
+`--datasets='[datasets/raw_a,datasets/raw_b]'` 可显式指定多个源。对新目标，
+`workers` 同时分割单个大数据集；对已有目标的增量转换，为避免多个
+writer 竞争 episode 索引和 metadata，会自动回退到单 writer。并行新建期间需要临时保存分片，运行全量转换前应为目标数据和临时分片预留足够空间；可用 `--lerobot_export.temporary_dir=/mnt/fast_disk/tmp` 把分片放到另一块磁盘。
 
 源 episode 编号筛选采用闭区间，且仍会自动排除无效 episode：
 
@@ -214,10 +228,10 @@ pixi run -e data export-lerobot \
 
 转换器在目标的 `meta/welding_path_vla_export.json` 中记录已完成的源 episode 和动作契约；重叠区间会自动跳过，不会重复写入。旧数据缺少该契约时会要求重新导出。恢复视频目标时沿用其原编码格式，避免在同一视频 chunk 中混入不同 codec。
 
-如果不使用流式编码，可用
+如果需要对比 LeRobot 的临时图片路径，可用
 `--lerobot_export.streaming_encoding=false --lerobot_export.image_writer_processes=2`
 `--lerobot_export.image_writer_threads=4` 启用 LeRobot 的临时图片与多进程相机编码路径。
-通常默认流式模式 I/O 更少，更适合本项目的双相机长 episode。
+本机实测默认流式模式 I/O 更少，因此 episode 多进程仍保留流式编码。
 
 LeRobot parquet 中保存 9D 世界系 absolute EE targets。加载 future chunk 后，项目 processor 在归一化前把整段目标统一转换到预测时刻 TCP 坐标系；`meta/stats.json` 中的 action 统计量也在相同 relative action 空间计算。这样所有 policy 共享完全一致的动作语义。
 

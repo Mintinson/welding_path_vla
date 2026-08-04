@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 
 from welding_path_vla.core.config import LeRobotExportConfig
-from welding_path_vla.dataset.export_lerobot import export_lerobot, valid_episode_paths
+from welding_path_vla.dataset.export_lerobot import (
+    export_lerobot,
+    export_lerobot_many,
+    valid_episode_paths,
+)
 
 
 def write_video(path: Path, frame_count: int, value: int) -> None:
@@ -123,3 +127,53 @@ def test_nonstreaming_video_export_uses_parallel_camera_encoding(tmp_path: Path)
     videos = list((output / "videos").rglob("*.mp4"))
     assert len(videos) == 2
     assert not (output / "images").exists()
+
+
+def test_parallel_export_combines_multiple_raw_datasets(tmp_path: Path) -> None:
+    """多进程应分别转换源数据集，再聚合为一个 LeRobot 数据集。"""
+    sources = [tmp_path / "raw_a", tmp_path / "raw_b"]
+    for index, source in enumerate(sources):
+        write_raw_episode(source, index)
+        (source / "dataset.json").write_text(
+            json.dumps({"dataset": source.name, "format": "raw_v1", "seed": index}),
+            encoding="utf-8",
+        )
+
+    output = tmp_path / "combined"
+    options = LeRobotExportConfig(workers=2)
+    report = export_lerobot_many(
+        sources,
+        output,
+        "test/welding-combined",
+        options,
+        action_horizon=2,
+    )
+
+    info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (output / "meta/welding_path_vla_export.json").read_text(encoding="utf-8")
+    )
+    assert report.workers == 2
+    assert report.exported_episodes == 2
+    assert info["total_episodes"] == 2
+    assert len(manifest["sources"]) == 2
+
+    write_raw_episode(sources[0], 10)
+    write_raw_episode(sources[1], 11)
+    incremental = LeRobotExportConfig(
+        incremental=True,
+        start_episode=10,
+        end_episode=11,
+        workers=2,
+    )
+    resumed = export_lerobot_many(
+        sources,
+        output,
+        "test/welding-combined",
+        incremental,
+        action_horizon=2,
+    )
+    info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
+    assert resumed.workers == 1
+    assert resumed.exported_episodes == 2
+    assert info["total_episodes"] == 4

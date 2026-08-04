@@ -340,11 +340,13 @@ class PolicyEvaluationConfig:
 
 @dataclass(slots=True)
 class LeRobotExportConfig:
-    """LeRobot 转换的选择、增量与编码参数。"""
+    """LeRobot 转换的选择、并行、增量与编码参数。"""
 
     incremental: bool = False
     start_episode: int | None = None
     end_episode: int | None = None
+    workers: int = 4
+    temporary_dir: str | None = None
     save_images: bool = False
     streaming_encoding: bool = True
     parallel_video_encoding: bool = True
@@ -558,6 +560,8 @@ class AppConfig:
             and export.start_episode > export.end_episode
         ):
             raise ValueError("lerobot_export episode range is invalid")
+        if export.workers < 1:
+            raise ValueError("lerobot_export.workers must be positive")
         if (
             min(
                 export.image_writer_processes,

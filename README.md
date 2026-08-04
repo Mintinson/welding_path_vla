@@ -85,7 +85,7 @@ pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
 pixi run -e sim sim-collect --config_path=configs/curve_plate.yaml --collection.episodes=50
 pixi run -e sim sim-replay --episode=PATH
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
-pixi run -e data export-lerobot --dataset=datasets/weldpath_raw_v2 --output=datasets/weldpath_lerobot_relative_v1
+pixi run -e data export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
 pixi run -e dev evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
 pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2 --config_path=configs/default.yaml
 pixi run -e dev robot-config --config_path=configs/default.yaml

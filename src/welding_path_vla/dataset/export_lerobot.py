@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
-from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+import multiprocessing
+from collections.abc import Iterator, Sequence
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import cv2
@@ -42,6 +45,31 @@ class ExportReport:
     last_episode: int | None
 
     def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchExportReport:
+    """一次单源或多源转换的汇总统计。
+
+    Attributes:
+        output: 目标 LeRobot 数据集路径。
+        sources: 本次请求的原始数据集路径。
+        selected_episodes: 通过编号和质量筛选的 episode 数。
+        exported_episodes: 本次新写入的 episode 数。
+        skipped_episodes: 因增量清单已存在而跳过的 episode 数。
+        workers: 实际用于转换的进程数。
+    """
+
+    output: str
+    sources: list[str]
+    selected_episodes: int
+    exported_episodes: int
+    skipped_episodes: int
+    workers: int
+
+    def as_dict(self) -> dict[str, object]:
+        """转换为可直接输出的 JSON 字典。"""
         return asdict(self)
 
 
@@ -360,6 +388,9 @@ def export_lerobot(
     options: LeRobotExportConfig | None = None,
     action_horizon: int = 30,
     action_stride: int = 1,
+    *,
+    recompute_stats: bool = True,
+    show_progress: bool = True,
 ) -> ExportReport:
     """导出绝对目标，并写入 relative action 训练所需的统计与契约。"""
     options = options or LeRobotExportConfig()
@@ -403,14 +434,20 @@ def export_lerobot(
     dataset = open_lerobot_dataset(repo_id, destination, fps, schema, options, existing_info)
     saved: list[str] = []
     try:
-        for path in tqdm(pending, desc="Exporting episodes", unit="episode"):
+        for path in tqdm(
+            pending,
+            desc="Exporting episodes",
+            unit="episode",
+            disable=not show_progress,
+        ):
             add_episode(dataset, EpisodeReader(path), options)
             saved.append(path.name)
     finally:
         dataset.finalize()
         if saved:
             manifest["sources"].setdefault(source, []).extend(saved)
-            recompute_relative_action_stats(destination, action_horizon, action_stride)
+            if recompute_stats:
+                recompute_relative_action_stats(destination, action_horizon, action_stride)
             write_manifest(destination, manifest)
         if not options.save_images:
             remove_empty_image_tree(destination)
@@ -425,8 +462,251 @@ def export_lerobot(
     )
 
 
+def split_source_ranges(
+    roots: list[Path],
+    options: LeRobotExportConfig,
+) -> list[tuple[Path, int, int]]:
+    """按有效 episode 数量把各源分配到近似等大的连续区间。
+
+    Args:
+        roots: 原始数据集根目录。
+        options: 包含 episode 区间和进程数的导出配置。
+
+    Returns:
+        每个分片的源路径、起始编号和结束编号。
+    """
+    selected = {
+        root: valid_episode_paths(root, options.start_episode, options.end_episode)
+        for root in roots
+    }
+    empty = [str(root) for root, paths in selected.items() if not paths]
+    if empty:
+        raise ValueError(f"no valid episodes found in selected range: {empty}")
+
+    parts = {root: 1 for root in roots}
+    target = min(sum(map(len, selected.values())), max(options.workers, len(roots)))
+    while sum(parts.values()) < target:
+        root = max(roots, key=lambda item: len(selected[item]) / parts[item])
+        if parts[root] == len(selected[root]):
+            break
+        parts[root] += 1
+
+    ranges = []
+    for root in roots:
+        paths = selected[root]
+        for index in range(parts[root]):
+            start = len(paths) * index // parts[root]
+            end = len(paths) * (index + 1) // parts[root]
+            chunk = paths[start:end]
+            ranges.append((root, episode_number(chunk[0]), episode_number(chunk[-1])))
+    return ranges
+
+
+def export_shard(
+    root: Path,
+    destination: Path,
+    repo_id: str,
+    options: LeRobotExportConfig,
+    action_horizon: int,
+    action_stride: int,
+) -> ExportReport:
+    """在子进程中转换一个独立分片。
+
+    Args:
+        root: 分片所属的原始数据集。
+        destination: 分片 LeRobot 数据集的临时路径。
+        repo_id: 分片使用的临时仓库标识。
+        options: 已绑定连续 episode 区间的导出配置。
+        action_horizon: 训练动作块长度。
+        action_stride: 动作块相邻目标的帧间隔。
+
+    Returns:
+        该分片的转换统计。
+    """
+    return export_lerobot(
+        root,
+        destination,
+        repo_id,
+        options,
+        action_horizon,
+        action_stride,
+        recompute_stats=False,
+        show_progress=False,
+    )
+
+
+def combine_manifests(shards: list[Path]) -> dict[str, Any]:
+    """合并分片清单，保留原始数据集和 episode 的对应关系。
+
+    Args:
+        shards: 已完成转换的临时 LeRobot 分片。
+
+    Returns:
+        可写入最终目标的统一增量清单。
+    """
+    manifests = [
+        json.loads((shard / MANIFEST_PATH).read_text(encoding="utf-8")) for shard in shards
+    ]
+    combined = manifests[0] | {"sources": {}}
+    for manifest in manifests:
+        if manifest["action_representation"] != combined["action_representation"]:
+            raise ValueError("parallel shards use incompatible action representations")
+        for source, episodes in manifest["sources"].items():
+            combined["sources"].setdefault(source, []).extend(episodes)
+    return combined
+
+
+def export_sequentially(
+    roots: list[Path],
+    destination: Path,
+    repo_id: str,
+    options: LeRobotExportConfig,
+    action_horizon: int,
+    action_stride: int,
+) -> BatchExportReport:
+    """使用单 writer 安全创建或增量写入多个源。
+
+    Args:
+        roots: 按写入顺序排列的原始数据集。
+        destination: 新建或已有的 LeRobot 目标。
+        repo_id: 目标数据集仓库标识。
+        options: 选择、增量和编码配置。
+        action_horizon: 训练动作块长度。
+        action_stride: 动作块相邻目标的帧间隔。
+
+    Returns:
+        所有源的汇总转换统计。
+    """
+    reports = []
+    try:
+        for index, root in enumerate(roots):
+            step_options = replace(
+                options,
+                incremental=options.incremental or index > 0,
+                workers=1,
+            )
+            reports.append(
+                export_lerobot(
+                    root,
+                    destination,
+                    repo_id,
+                    step_options,
+                    action_horizon,
+                    action_stride,
+                    recompute_stats=False,
+                )
+            )
+    finally:
+        if (destination / "meta/stats.json").exists():
+            recompute_relative_action_stats(destination, action_horizon, action_stride)
+    return BatchExportReport(
+        str(destination),
+        [str(root) for root in roots],
+        sum(report.selected_episodes for report in reports),
+        sum(report.exported_episodes for report in reports),
+        sum(report.skipped_episodes for report in reports),
+        1,
+    )
+
+
+def export_lerobot_many(
+    dataset_roots: Sequence[str | Path],
+    output: str | Path,
+    repo_id: str,
+    options: LeRobotExportConfig | None = None,
+    action_horizon: int = 30,
+    action_stride: int = 1,
+) -> BatchExportReport:
+    """并行转换一个或多个原始数据集，再用 LeRobot 聚合器合并。
+
+    已有目标必须由唯一 writer 增量追加，因此自动使用单进程。新建
+    目标则把 episode 分片到多进程，合并时不重新编码视频。
+
+    Args:
+        dataset_roots: 一个或多个原始数据集根目录。
+        output: 目标 LeRobot 数据集路径。
+        repo_id: 目标数据集仓库标识。
+        options: 选择、并行、增量和编码配置。
+        action_horizon: 训练动作块长度。
+        action_stride: 动作块相邻目标的帧间隔。
+
+    Returns:
+        包含实际进程数的汇总转换统计。
+    """
+    options = options or LeRobotExportConfig()
+    roots = list(dict.fromkeys(Path(root) for root in dataset_roots))
+    if not roots:
+        raise ValueError("at least one raw dataset is required")
+    destination = Path(output)
+    if destination.exists() or options.workers == 1:
+        return export_sequentially(
+            roots, destination, repo_id, options, action_horizon, action_stride
+        )
+
+    ranges = split_source_ranges(roots, options)
+    worker_count = min(options.workers, len(ranges))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shard_parent = Path(options.temporary_dir or destination.parent)
+    shard_parent.mkdir(parents=True, exist_ok=True)
+    with (
+        TemporaryDirectory(prefix=f".{destination.name}-shards-", dir=shard_parent) as directory,
+        TemporaryDirectory(prefix=f".{destination.name}-final-", dir=destination.parent) as final,
+    ):
+        temporary = Path(directory)
+        shards = [temporary / f"shard_{index:03d}" for index in range(len(ranges))]
+        repo_ids = [f"{repo_id}_shard_{index:03d}" for index in range(len(ranges))]
+        jobs = []
+        for index, (root, start, end) in enumerate(ranges):
+            shard_options = replace(
+                options,
+                incremental=False,
+                start_episode=start,
+                end_episode=end,
+                workers=1,
+            )
+            jobs.append(
+                (root, shards[index], repo_ids[index], shard_options, action_horizon, action_stride)
+            )
+
+        context = multiprocessing.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=context,
+        ) as executor:
+            futures = [executor.submit(export_shard, *job) for job in jobs]
+            reports = [future.result() for future in futures]
+
+        from lerobot.datasets.aggregate import aggregate_datasets
+
+        merged = Path(final) / "dataset"
+        aggregate_datasets(
+            repo_ids,
+            repo_id,
+            roots=shards,
+            aggr_root=merged,
+            concatenate_videos=False,
+            concatenate_data=False,
+        )
+        write_manifest(merged, combine_manifests(shards))
+        recompute_relative_action_stats(merged, action_horizon, action_stride)
+        if not options.save_images:
+            remove_empty_image_tree(merged)
+        merged.replace(destination)
+
+    return BatchExportReport(
+        str(destination),
+        [str(root) for root in roots],
+        sum(report.selected_episodes for report in reports),
+        sum(report.exported_episodes for report in reports),
+        sum(report.skipped_episodes for report in reports),
+        worker_count,
+    )
+
+
 __all__ = [
+    "BatchExportReport",
     "ExportReport",
     "export_lerobot",
+    "export_lerobot_many",
     "valid_episode_paths",
 ]

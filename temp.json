@@ -1,0 +1,159 @@
+{
+
+"C_Cpp.autocompleteAddParentheses": true,
+
+"C_Cpp.default.cStandard": "gnu11",
+
+"C_Cpp.default.cppStandard": "c++23",
+
+"C_Cpp.doxygen.generatedStyle": "/**",
+
+"C_Cpp.doxygen.sectionTags": [
+
+"attention",
+
+"tparam",
+
+"param",
+
+"result",
+
+"returns",
+
+"retval",
+
+"exception",
+
+"deprecated",
+
+"warning",
+
+"note",
+
+"pre"
+
+],
+
+"C_Cpp.intelliSenseEngine": "disabled",
+
+"[cpp]": {
+
+"editor.semanticHighlighting.enabled": true,
+
+"editor.stickyScroll.defaultModel": "foldingProviderModel",
+
+"editor.suggest.insertMode": "replace",
+
+"editor.wordBasedSuggestions": "off"
+
+},
+
+"clice-client.trace.server": "verbose",
+
+"clice.executable": "/home/mintinson/clice/clice",
+
+"cmake.automaticReconfigure": false,
+
+"cmake.clearOutputBeforeBuild": false,
+
+"cmake.configureOnEdit": false,
+
+"cmake.configureOnOpen": false,
+
+"cmake.options.statusBarVisibility": "compact",
+
+"cmake.allowCommentsInPresetsFile": true,
+
+"debugpy.debugJustMyCode": false,
+
+"editor.cursorSmoothCaretAnimation": "on",
+
+"editor.fontFamily": "'Cascadia Code NF', 'Droid Sans Mono', 'monospace', monospace",
+
+"editor.smoothScrolling": true,
+
+"explorer.autoReveal": "focusNoScroll",
+
+"github.copilot.nextEditSuggestions.enabled": true,
+
+"python.analysis.completeFunctionParens": true,
+
+"python.analysis.typeCheckingMode": "off",
+
+"ruff.configurationPreference": "filesystemFirst",
+
+"ruff.lineLength": 100,
+
+"terminal.integrated.defaultProfile.linux": "zsh",
+
+"terminal.integrated.fontFamily": "Cascadia Code NF",
+
+"terminal.integrated.fontLigatures.enabled": true,
+
+"terminal.integrated.fontSize": 15,
+
+"terminal.integrated.smoothScrolling": true,
+
+"workbench.list.smoothScrolling": true,
+
+"xmake.compileCommandsDirectory": "${workspaceRoot}",
+
+"chat.viewSessions.orientation": "stacked",
+
+"claudeCode.preferredLocation": "panel",
+
+"claudeCode.selectedModel": "opus[1m]",
+
+"markdown-preview-enhanced.previewColorScheme": "editorColorScheme",
+
+"markdown-preview-enhanced.mermaidTheme": "dark",
+
+"markdown-preview-enhanced.revealjsTheme": "vscode.css",
+
+"window.autoDetectColorScheme": true,
+
+"workbench.colorTheme": "Monokai Pro Light (Filter Sun)",
+
+"editor.inlineSuggest.enabled": true,
+
+"editor.quickSuggestions": {
+
+
+
+"other": "on",
+
+"comments": "off",
+
+"strings": "off"
+
+},
+
+"python.terminal.activateEnvironment": false,
+
+"github.copilot.enable": {
+
+"*": true,
+
+"plaintext": false,
+
+"scminput": false
+
+},
+
+"workbench.preferredLightColorTheme": "One Dark Pro Night Flat",
+
+"[csv]": {
+
+"editor.inlayHints.maximumLength": 0
+
+},
+
+"workbench.experimental.modernUI": true,
+
+"editor.cursorBlinking": "smooth",
+
+"workbench.iconTheme": "vscode-icons"
+
+}
+
+
