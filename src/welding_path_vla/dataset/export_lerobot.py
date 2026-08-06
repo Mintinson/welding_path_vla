@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
-import multiprocessing
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from time import sleep
 from typing import Any
 
 import cv2
+import httpx
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from tqdm import tqdm
@@ -27,10 +27,26 @@ from welding_path_vla.dataset.raw_schema import METADATA_FILE, EpisodeReader
 
 GLOBAL_IMAGE = "observation.images.global"
 WRIST_IMAGE = "observation.images.wrist"
+OBSERVATION_STATE_NAMES = (
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6",
+    "tcp_x",
+    "tcp_y",
+    "tcp_z",
+    "tcp_qw",
+    "tcp_qx",
+    "tcp_qy",
+    "tcp_qz",
+)
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 VALID_STATUSES = {EpisodeStatus.VALID_SUCCESS.value, EpisodeStatus.VALID_RECOVERY.value}
 ACTION_REPRESENTATION = "relative_action"
 ACTION_STORAGE = "absolute_ee_world"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +74,7 @@ class BatchExportReport:
         selected_episodes: 通过编号和质量筛选的 episode 数。
         exported_episodes: 本次新写入的 episode 数。
         skipped_episodes: 因增量清单已存在而跳过的 episode 数。
-        workers: 实际用于转换的进程数。
+        hub_url: 上传成功后的 Hugging Face Dataset 地址。
     """
 
     output: str
@@ -66,7 +82,7 @@ class BatchExportReport:
     selected_episodes: int
     exported_episodes: int
     skipped_episodes: int
-    workers: int
+    hub_url: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         """转换为可直接输出的 JSON 字典。"""
@@ -185,7 +201,7 @@ def features(camera: dict[str, Any], save_images: bool) -> dict[str, dict[str, o
         "observation.state": {
             "dtype": "float32",
             "shape": (13,),
-            "names": [f"state_{index}" for index in range(13)],
+            "names": list(OBSERVATION_STATE_NAMES),
         },
         "action": {
             "dtype": "float32",
@@ -462,100 +478,6 @@ def export_lerobot(
     )
 
 
-def split_source_ranges(
-    roots: list[Path],
-    options: LeRobotExportConfig,
-) -> list[tuple[Path, int, int]]:
-    """按有效 episode 数量把各源分配到近似等大的连续区间。
-
-    Args:
-        roots: 原始数据集根目录。
-        options: 包含 episode 区间和进程数的导出配置。
-
-    Returns:
-        每个分片的源路径、起始编号和结束编号。
-    """
-    selected = {
-        root: valid_episode_paths(root, options.start_episode, options.end_episode)
-        for root in roots
-    }
-    empty = [str(root) for root, paths in selected.items() if not paths]
-    if empty:
-        raise ValueError(f"no valid episodes found in selected range: {empty}")
-
-    parts = {root: 1 for root in roots}
-    target = min(sum(map(len, selected.values())), max(options.workers, len(roots)))
-    while sum(parts.values()) < target:
-        root = max(roots, key=lambda item: len(selected[item]) / parts[item])
-        if parts[root] == len(selected[root]):
-            break
-        parts[root] += 1
-
-    ranges = []
-    for root in roots:
-        paths = selected[root]
-        for index in range(parts[root]):
-            start = len(paths) * index // parts[root]
-            end = len(paths) * (index + 1) // parts[root]
-            chunk = paths[start:end]
-            ranges.append((root, episode_number(chunk[0]), episode_number(chunk[-1])))
-    return ranges
-
-
-def export_shard(
-    root: Path,
-    destination: Path,
-    repo_id: str,
-    options: LeRobotExportConfig,
-    action_horizon: int,
-    action_stride: int,
-) -> ExportReport:
-    """在子进程中转换一个独立分片。
-
-    Args:
-        root: 分片所属的原始数据集。
-        destination: 分片 LeRobot 数据集的临时路径。
-        repo_id: 分片使用的临时仓库标识。
-        options: 已绑定连续 episode 区间的导出配置。
-        action_horizon: 训练动作块长度。
-        action_stride: 动作块相邻目标的帧间隔。
-
-    Returns:
-        该分片的转换统计。
-    """
-    return export_lerobot(
-        root,
-        destination,
-        repo_id,
-        options,
-        action_horizon,
-        action_stride,
-        recompute_stats=False,
-        show_progress=False,
-    )
-
-
-def combine_manifests(shards: list[Path]) -> dict[str, Any]:
-    """合并分片清单，保留原始数据集和 episode 的对应关系。
-
-    Args:
-        shards: 已完成转换的临时 LeRobot 分片。
-
-    Returns:
-        可写入最终目标的统一增量清单。
-    """
-    manifests = [
-        json.loads((shard / MANIFEST_PATH).read_text(encoding="utf-8")) for shard in shards
-    ]
-    combined = manifests[0] | {"sources": {}}
-    for manifest in manifests:
-        if manifest["action_representation"] != combined["action_representation"]:
-            raise ValueError("parallel shards use incompatible action representations")
-        for source, episodes in manifest["sources"].items():
-            combined["sources"].setdefault(source, []).extend(episodes)
-    return combined
-
-
 def export_sequentially(
     roots: list[Path],
     destination: Path,
@@ -583,7 +505,6 @@ def export_sequentially(
             step_options = replace(
                 options,
                 incremental=options.incremental or index > 0,
-                workers=1,
             )
             reports.append(
                 export_lerobot(
@@ -605,7 +526,6 @@ def export_sequentially(
         sum(report.selected_episodes for report in reports),
         sum(report.exported_episodes for report in reports),
         sum(report.skipped_episodes for report in reports),
-        1,
     )
 
 
@@ -617,96 +537,120 @@ def export_lerobot_many(
     action_horizon: int = 30,
     action_stride: int = 1,
 ) -> BatchExportReport:
-    """并行转换一个或多个原始数据集，再用 LeRobot 聚合器合并。
+    """用单 writer 转换一个或多个原始数据集。
 
-    已有目标必须由唯一 writer 增量追加，因此自动使用单进程。新建
-    目标则把 episode 分片到多进程，合并时不重新编码视频。
+    episode 按顺序写入，避免多个数据集 writer 和视频编码器同时占用内存；
+    双相机视频仍由 LeRobot 在每个 episode 内并行编码。
 
     Args:
         dataset_roots: 一个或多个原始数据集根目录。
         output: 目标 LeRobot 数据集路径。
         repo_id: 目标数据集仓库标识。
-        options: 选择、并行、增量和编码配置。
+        options: 选择、增量和编码配置。
         action_horizon: 训练动作块长度。
         action_stride: 动作块相邻目标的帧间隔。
 
     Returns:
-        包含实际进程数的汇总转换统计。
+        多个原始数据源的汇总转换统计。
     """
     options = options or LeRobotExportConfig()
     roots = list(dict.fromkeys(Path(root) for root in dataset_roots))
     if not roots:
         raise ValueError("at least one raw dataset is required")
     destination = Path(output)
-    if destination.exists() or options.workers == 1:
-        return export_sequentially(
-            roots, destination, repo_id, options, action_horizon, action_stride
-        )
-
-    ranges = split_source_ranges(roots, options)
-    worker_count = min(options.workers, len(ranges))
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shard_parent = Path(options.temporary_dir or destination.parent)
-    shard_parent.mkdir(parents=True, exist_ok=True)
-    with (
-        TemporaryDirectory(prefix=f".{destination.name}-shards-", dir=shard_parent) as directory,
-        TemporaryDirectory(prefix=f".{destination.name}-final-", dir=destination.parent) as final,
-    ):
-        temporary = Path(directory)
-        shards = [temporary / f"shard_{index:03d}" for index in range(len(ranges))]
-        repo_ids = [f"{repo_id}_shard_{index:03d}" for index in range(len(ranges))]
-        jobs = []
-        for index, (root, start, end) in enumerate(ranges):
-            shard_options = replace(
-                options,
-                incremental=False,
-                start_episode=start,
-                end_episode=end,
-                workers=1,
-            )
-            jobs.append(
-                (root, shards[index], repo_ids[index], shard_options, action_horizon, action_stride)
-            )
-
-        context = multiprocessing.get_context("spawn")
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=worker_count,
-            mp_context=context,
-        ) as executor:
-            futures = [executor.submit(export_shard, *job) for job in jobs]
-            reports = [future.result() for future in futures]
-
-        from lerobot.datasets.aggregate import aggregate_datasets
-
-        merged = Path(final) / "dataset"
-        aggregate_datasets(
-            repo_ids,
-            repo_id,
-            roots=shards,
-            aggr_root=merged,
-            concatenate_videos=False,
-            concatenate_data=False,
-        )
-        write_manifest(merged, combine_manifests(shards))
-        recompute_relative_action_stats(merged, action_horizon, action_stride)
-        if not options.save_images:
-            remove_empty_image_tree(merged)
-        merged.replace(destination)
-
-    return BatchExportReport(
-        str(destination),
-        [str(root) for root in roots],
-        sum(report.selected_episodes for report in reports),
-        sum(report.exported_episodes for report in reports),
-        sum(report.skipped_episodes for report in reports),
-        worker_count,
+    report = export_sequentially(
+        roots,
+        destination,
+        repo_id,
+        options,
+        action_horizon,
+        action_stride,
     )
+    return push_export_to_hub(report, destination, repo_id, options)
+
+
+def push_export_to_hub(
+    report: BatchExportReport,
+    destination: Path,
+    repo_id: str,
+    options: LeRobotExportConfig,
+) -> BatchExportReport:
+    """将已 finalize 的 LeRobot 数据集上传到 Dataset Hub。
+
+    Args:
+        report: 本次转换统计。
+        destination: 完整的本地 LeRobot 数据集。
+        repo_id: Hugging Face Dataset 仓库标识。
+        options: Hub 开关和可见性配置。
+
+    Returns:
+        未启用上传时返回原报告，否则附加 Dataset Hub 地址。
+    """
+    if not options.push_to_hub:
+        return report
+    hub_url = upload_lerobot_dataset(
+        destination,
+        repo_id,
+        private=options.hub_private,
+        attempts=options.hub_upload_attempts,
+        retry_wait_s=options.hub_retry_wait_s,
+    )
+    return replace(report, hub_url=hub_url)
+
+
+def upload_lerobot_dataset(
+    root: str | Path,
+    repo_id: str,
+    *,
+    private: bool = True,
+    attempts: int = 5,
+    retry_wait_s: float = 30.0,
+) -> str:
+    """上传已经完成的本地 LeRobot 数据集，并重试临时网络错误。
+
+    Hugging Face 的文件上传会复用本地缓存；命令中断后可再次调用本函数，
+    不会重新转换原始 episode。
+
+    Args:
+        root: 已完成 `finalize()` 的本地 LeRobot 数据集目录。
+        repo_id: Hugging Face Dataset 仓库标识。
+        private: 新建仓库时是否设为私有。
+        attempts: 包含首次请求在内的总尝试次数。
+        retry_wait_s: 两次尝试之间的等待秒数。
+
+    Returns:
+        上传目标的 Dataset Hub 地址。
+    """
+    if attempts < 1:
+        raise ValueError("upload attempts must be positive")
+    dataset = LeRobotDataset(repo_id=repo_id, root=Path(root))
+    for attempt in range(1, attempts + 1):
+        try:
+            dataset.push_to_hub(
+                tags=["lerobot", "robotics", "welding"],
+                private=private,
+            )
+            break
+        except httpx.TransportError:
+            if attempt == attempts:
+                raise
+            logger.warning(
+                "Hub connection failed (%d/%d); retrying in %.0f seconds",
+                attempt,
+                attempts,
+                retry_wait_s,
+            )
+            sleep(retry_wait_s)
+    return f"https://huggingface.co/datasets/{repo_id}"
 
 
 __all__ = [
+    "OBSERVATION_STATE_NAMES",
     "BatchExportReport",
     "ExportReport",
     "export_lerobot",
     "export_lerobot_many",
+    "push_export_to_hub",
+    "upload_lerobot_dataset",
     "valid_episode_paths",
 ]

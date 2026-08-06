@@ -2,7 +2,7 @@ workpiece:
   kind: pipe_on_plate
 
 task:
-  instruction: 沿圆管与底板连接处的下圆弧完成角焊轨迹。
+  instruction: Weld along the lower circular fillet seam where the pipe meets the base plate.
   seam_id: pipe_bottom
   direction: forward
   # 真实可达工作区内的前侧四分之一圆弧；可按实验需要覆盖修改。

@@ -2,7 +2,7 @@ workpiece:
   kind: pipe_on_plate
 
 task:
-  instruction: 沿圆管上沿的圆弧完成焊接轨迹。
+  instruction: Weld along the circular seam around the top rim of the pipe.
   seam_id: pipe_top
   direction: forward
   # 上圆完整执行一周；进度提示负责消除首尾同点造成的投影歧义。

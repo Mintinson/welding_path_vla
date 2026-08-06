@@ -117,7 +117,7 @@ def test_smolvla_runtime_keeps_language_instruction() -> None:
             "wrist": np.zeros((8, 8, 3), dtype=np.uint8),
         },
         np.zeros(13, dtype=np.float32),
-        "沿圆管上沿完成整圆焊接。",
+        "Weld around the top rim of the pipe.",
     )
     action = runtime.select_action(observation)
     assert action.shape == (9,)

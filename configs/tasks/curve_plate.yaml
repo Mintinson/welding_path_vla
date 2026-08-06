@@ -4,7 +4,7 @@ workpiece:
   curve_visual_segments: 80
 
 task:
-  instruction: 沿平板上的周期曲线焊缝完成焊接轨迹。
+  instruction: Weld along the periodic curved seam on the flat plate.
   seam_id: curve_seam
   direction: forward
   curve_kind: sine

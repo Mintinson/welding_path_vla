@@ -37,6 +37,7 @@ from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
     SmolVLMForConditionalGeneration,
+    SmolVLMModel,
 )
 
 
@@ -185,7 +186,7 @@ class SmolVLMActionExpert(nn.Module):
         # 按配置冻结相应模块（见 set_requires_grad）
         self.set_requires_grad()
 
-    def vlm_model(self) -> Any:
+    def vlm_model(self) -> SmolVLMModel:
         """返回 Transformers 中实际承载视觉与文本层的模型。
 
         SmolVLM 自动类结构为 ``vlm → model``：视觉塔、connector 与

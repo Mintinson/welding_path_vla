@@ -133,7 +133,7 @@ class TaskConfig:
         curve_frequency: 曲线在整段焊缝中的周期数量。
     """
 
-    instruction: str = "沿 L 形工件的直线角焊缝完成焊接轨迹。"
+    instruction: str = "Weld along the straight fillet seam of the L-shaped workpiece."
     seam_id: str = "straight_fillet"
     direction: str = "forward"
     arc_start_deg: float = -175.0
@@ -340,15 +340,25 @@ class PolicyEvaluationConfig:
 
 @dataclass(slots=True)
 class LeRobotExportConfig:
-    """LeRobot 转换的选择、并行、增量与编码参数。"""
+    """LeRobot 转换、增量写入与视频编码参数。
+
+    Attributes:
+        streaming_encoding: 是否边解码边编码。SVT-AV1 的长生命周期线程可能
+            持续保留内存，因此默认使用内存有界的临时帧路径。
+        parallel_video_encoding: 是否由 LeRobot 并行编码同一 episode 的多路相机。
+        hub_upload_attempts: Hub 网络连接失败时的总尝试次数。
+        hub_retry_wait_s: Hub 网络连接失败后的重试等待时间。
+    """
 
     incremental: bool = False
     start_episode: int | None = None
     end_episode: int | None = None
-    workers: int = 4
-    temporary_dir: str | None = None
+    push_to_hub: bool = False
+    hub_private: bool = True
+    hub_upload_attempts: int = 5
+    hub_retry_wait_s: float = 30.0
     save_images: bool = False
-    streaming_encoding: bool = True
+    streaming_encoding: bool = False
     parallel_video_encoding: bool = True
     image_writer_processes: int = 0
     image_writer_threads: int = 8
@@ -560,8 +570,6 @@ class AppConfig:
             and export.start_episode > export.end_episode
         ):
             raise ValueError("lerobot_export episode range is invalid")
-        if export.workers < 1:
-            raise ValueError("lerobot_export.workers must be positive")
         if (
             min(
                 export.image_writer_processes,
@@ -573,6 +581,8 @@ class AppConfig:
             raise ValueError("lerobot_export worker counts must be non-negative")
         if export.encoder_threads is not None and export.encoder_threads < 1:
             raise ValueError("lerobot_export.encoder_threads must be positive")
+        if export.hub_upload_attempts < 1 or export.hub_retry_wait_s < 0:
+            raise ValueError("lerobot_export Hub retry settings are invalid")
         minimum_clearance = 0.00025 + self.robot.ik_tolerance
         if self.task.tcp_clearance_m < minimum_clearance:
             raise ValueError("task.tcp_clearance_m must cover the wire radius and IK tolerance")

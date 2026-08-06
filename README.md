@@ -86,6 +86,8 @@ pixi run -e sim sim-collect --config_path=configs/curve_plate.yaml --collection.
 pixi run -e sim sim-replay --episode=PATH
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
 pixi run -e data export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
+# 在上述命令后添加 --repo_id=USER/REPO --lerobot_export.push_to_hub=true 可自动上传
+pixi run -e data upload-lerobot --dataset=datasets/weldpath_lerobot_relative_v1 --repo_id=USER/REPO
 pixi run -e dev evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
 pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2 --config_path=configs/default.yaml
 pixi run -e dev robot-config --config_path=configs/default.yaml

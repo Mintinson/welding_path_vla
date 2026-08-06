@@ -12,6 +12,7 @@
 | `sim-replay` | `scripts/replay_episode.py` | 回放双相机视频 |
 | `data-validate` | `scripts/validate_dataset.py` | 校验原始数据质量 |
 | `export-lerobot` | `scripts/export_lerobot.py` | 导出 LeRobot 数据集 |
+| `upload-lerobot` | `scripts/upload_lerobot_dataset.py` | 上传已完成的 LeRobot 数据集 |
 | `policy-data-check` | `scripts/check_policy_data.py` | 检查策略训练数据契约 |
 | `policy-evaluate` | `scripts/evaluate_policy.py` | 离线评估策略 checkpoint |
 | `policy-sim-deploy` | `scripts/deploy_simulation_policy.py` | 策略 robosuite 闭环部署 |

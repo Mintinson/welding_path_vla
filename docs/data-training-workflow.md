@@ -184,7 +184,10 @@ pixi run -e data export-lerobot \
   --repo_id=YOUR_NAME/weldpath_relative_v1
 ```
 
-默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。新建目标时，转换器默认用 4 个进程分片处理 episode；每个进程逐帧读取原始 MP4，批量计算数值 action，并将两个相机直接送入独立编码线程。分片完成后使用 LeRobot 官方聚合器无重编码合并，省去整段视频驻留内存和临时 PNG I/O。最终数据使用 LeRobot 官方的
+默认配置只生成 LeRobot 视频 feature，不保留逐帧图片。转换器使用唯一的
+LeRobot writer 顺序处理 episode，并由 LeRobot 在每个 episode 内并行编码两路相机。
+这种方式会生成并及时删除临时图片，但编码进程结束后内存能够被系统完整回收，
+适合数千条 episode 的长时间转换。最终数据使用 LeRobot 官方的
 `libsvtav1 / CRF 30 / preset 12` 默认配置，在焊缝细节、文件体积和训练解码之间取得平衡。
 需要快速人工预览时查看原始 H.264 即可，不必为了播放器兼容性改变训练数据编码。需要图片
 feature 时显式添加 `--lerobot_export.save_images=true`，同一目标数据集不能混用视频和图片
@@ -196,13 +199,62 @@ schema。
 pixi run -e data export-lerobot \
   --dataset_glob='datasets/*_raw_v2' \
   --output=datasets/weldpath_lerobot_relative_v1 \
-  --repo_id=YOUR_NAME/weldpath_relative_v1 \
-  --lerobot_export.workers=4
+  --repo_id=YOUR_NAME/weldpath_relative_v1
 ```
 
-`--datasets='[datasets/raw_a,datasets/raw_b]'` 可显式指定多个源。对新目标，
-`workers` 同时分割单个大数据集；对已有目标的增量转换，为避免多个
-writer 竞争 episode 索引和 metadata，会自动回退到单 writer。并行新建期间需要临时保存分片，运行全量转换前应为目标数据和临时分片预留足够空间；可用 `--lerobot_export.temporary_dir=/mnt/fast_disk/tmp` 把分片放到另一块磁盘。
+`--datasets='[datasets/raw_a,datasets/raw_b]'` 可显式指定多个源。所有源按路径顺序
+追加到同一目标，避免多个 writer 竞争 episode 索引、metadata 和系统内存。
+
+### 上传到 Hugging Face Dataset Hub
+
+先确认 data 环境已登录；令牌只保存在 Hugging Face 凭据库，不要写入 YAML：
+
+```bash
+pixi run -e data hf auth whoami
+pixi run -e data hf auth login
+```
+
+在转换命令中打开 Hub 开关即可创建并上传 Dataset 仓库。默认创建私有数据集：
+
+```bash
+# 这是当前笔记本上已挂载、当前用户可写的数据盘；服务器上需替换为实际路径。
+export WELDING_DATA_ROOT=/run/media/mintinson/DataDiskD/welding_path_vla
+export WELDING_HF_REPO=mintinson/weldpath_relative_v1
+mkdir -p "$WELDING_DATA_ROOT/lerobot"
+
+HF_XET_HIGH_PERFORMANCE=1 pixi run -e data export-lerobot \
+  --dataset_glob='datasets/*_raw_v2' \
+  --output="$WELDING_DATA_ROOT/lerobot/weldpath_relative_v1" \
+  --repo_id="$WELDING_HF_REPO" \
+  --lerobot_export.push_to_hub=true
+```
+
+如果转换已经完成、仅 Hub 上传因网络中断失败，不要重新执行导出。直接上传现有
+LeRobot 目录即可；该命令默认最多尝试 10 次，每次间隔 60 秒：
+
+```bash
+HF_XET_HIGH_PERFORMANCE=1 pixi run -e data upload-lerobot \
+  --dataset="$WELDING_DATA_ROOT/lerobot/weldpath_relative_v1" \
+  --repo_id="$WELDING_HF_REPO"
+```
+
+再次运行同一命令会复用 Hugging Face 的上传状态和仓库中已经存在的文件，不会
+读取 raw episode，也不会重新编码视频。可通过 `--attempts` 和 `--retry_wait_s`
+调整弱网重试策略。
+
+不要对整条命令使用 `sudo`。`sudo` 会切换到 root 的 PATH 和凭据环境，
+因此找不到安装在用户目录中的 Pixi，也不会沿用当前 Hugging Face
+登录。如果其他磁盘的目录不可写，只在初始化该专用目录时调整所有者，
+后续仍使用普通用户运行 Pixi。
+
+公开数据集需要显式添加 `--lerobot_export.hub_private=false`。转换器会先
+`finalize()` Parquet、视频索引和 metadata，再调用 LeRobot 的
+`push_to_hub()`。Hugging Face Xet 上传本身会边读文件边上传，支持并行、去重和中断后重试。
+
+转换和 Hub 上传不同时进行。LeRobot v3 在 `finalize()` 前的 Parquet footer
+和元数据尚不完整，此时发布会得到无法稳定加载的中间数据集。因此
+Hub 选项不会降低转换阶段的峰值磁盘占用；本地空间不足时，仍需把
+`output` 放到容量足够的磁盘。
 
 源 episode 编号筛选采用闭区间，且仍会自动排除无效 episode：
 
@@ -228,10 +280,11 @@ pixi run -e data export-lerobot \
 
 转换器在目标的 `meta/welding_path_vla_export.json` 中记录已完成的源 episode 和动作契约；重叠区间会自动跳过，不会重复写入。旧数据缺少该契约时会要求重新导出。恢复视频目标时沿用其原编码格式，避免在同一视频 chunk 中混入不同 codec。
 
-如果需要对比 LeRobot 的临时图片路径，可用
-`--lerobot_export.streaming_encoding=false --lerobot_export.image_writer_processes=2`
-`--lerobot_export.image_writer_threads=4` 启用 LeRobot 的临时图片与多进程相机编码路径。
-本机实测默认流式模式 I/O 更少，因此 episode 多进程仍保留流式编码。
+不建议对大数据集启用 `--lerobot_export.streaming_encoding=true`。本机使用
+`libsvtav1` 实测时，流式线程编码器在 episode 之间持续保留大块内存：7 个
+episode 的峰值 RSS 约为 4.13 GiB；默认的临时帧路径约为 1.28 GiB，且不随
+episode 数量线性增长。`parallel_video_encoding=true` 仍会让 LeRobot 同时编码
+双相机，不需要项目再建立外层 episode 进程池。
 
 LeRobot parquet 中保存 9D 世界系 absolute EE targets。加载 future chunk 后，项目 processor 在归一化前把整段目标统一转换到预测时刻 TCP 坐标系；`meta/stats.json` 中的 action 统计量也在相同 relative action 空间计算。这样所有 policy 共享完全一致的动作语义。
 

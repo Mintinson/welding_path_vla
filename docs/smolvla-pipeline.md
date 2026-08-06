@@ -40,8 +40,7 @@ pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=datasets/weldpath_lerobot_relative_v1 \
-  --repo_id=huayan/weldpath_relative_v1 \
-  --lerobot_export.workers=4
+  --repo_id=huayan/weldpath_relative_v1
 
 pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
 ```
