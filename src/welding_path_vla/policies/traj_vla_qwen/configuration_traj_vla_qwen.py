@@ -1,0 +1,165 @@
+"""Prismatic-Qwen Trajectory-VLA 的模型与训练配置。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
+from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
+from lerobot.utils.constants import OBS_IMAGES
+
+
+@PreTrainedConfig.register_subclass("traj_vla_qwen")
+@dataclass
+class TrajVLAQwenConfig(PreTrainedConfig):
+    """逐层交织式 Prismatic-Qwen 策略配置。
+
+    版本相关参数集中在 ``language_model_family`` 与 ``language_model_name``；
+    动作专家只依赖统一 decoder adapter，后续增加 Qwen3 时不需要修改
+    Flow Matching、LeRobot Policy 或数据处理代码。
+    """
+
+    n_obs_steps: int = 1
+    chunk_size: int = 30
+    n_action_steps: int = 8
+    normalization_mapping: dict[str, NormalizationMode] = field(
+        default_factory=lambda: {
+            "VISUAL": NormalizationMode.IDENTITY,
+            "STATE": NormalizationMode.MEAN_STD,
+            "ACTION": NormalizationMode.MEAN_STD,
+        }
+    )
+
+    max_state_dim: int = 32
+    max_action_dim: int = 32
+    resize_imgs_with_padding: tuple[int, int] = (224, 224)
+    empty_cameras: int = 0
+    tokenizer_max_length: int = 96
+    pad_language_to: str = "max_length"
+
+    num_steps: int = 10
+    use_cache: bool = True
+    flow_beta_alpha: float = 1.5
+    flow_beta_beta: float = 1.0
+    flow_time_scale: float = 0.999
+    flow_time_offset: float = 0.001
+    min_period: float = 4e-3
+    max_period: float = 4.0
+
+    language_model_family: str = "qwen2_5"
+    language_model_name: str = "Qwen/Qwen2.5-0.5B"
+    prismatic_repo_id: str = "Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b"
+    prismatic_checkpoint_file: str = "checkpoints/step-020792-epoch-01-loss=0.5268.pt"
+    load_prismatic_weights: bool = True
+    load_base_weights: bool = True
+    num_extra_tokens: int = 256
+
+    dino_model_name: str = "vit_large_patch14_reg4_dinov2.lvd142m"
+    siglip_model_name: str = "vit_so400m_patch14_siglip_224"
+    vision_patch_grid: int = 16
+    token_merge_factor: int = 2
+    add_image_special_tokens: bool = False
+    prefix_length: int = 0
+
+    num_vlm_layers: int = 16
+    num_expert_layers: int = 16
+    expert_width_multiplier: float = 0.75
+
+    train_vision_encoder: bool = False
+    train_token_merger: bool = True
+    train_projector: bool = True
+    train_language_model: bool = False
+    train_language_last_n_layers: int = 0
+    train_expert: bool = True
+    train_state_proj: bool = True
+
+    frozen_vision_dtype: Literal["float32", "bfloat16"] = "float32"
+    lora_target: Literal["expert", "qwen", "all"] = "expert"
+    gradient_checkpointing_qwen: bool = False
+    gradient_checkpointing_expert: bool = False
+
+    optimizer_lr: float = 1e-4
+    optimizer_betas: tuple[float, float] = (0.9, 0.95)
+    optimizer_eps: float = 1e-8
+    optimizer_weight_decay: float = 1e-10
+    optimizer_grad_clip_norm: float = 10.0
+    scheduler_warmup_steps: int = 1_000
+    scheduler_decay_steps: int = 30_000
+    scheduler_decay_lr: float = 2.5e-6
+
+    compile_model: bool = False
+    compile_mode: str = "max-autotune"
+
+    def __post_init__(self) -> None:
+        """验证层配对、视觉网格和训练范围。"""
+        super().__post_init__()
+        if self.n_action_steps > self.chunk_size:
+            raise ValueError("n_action_steps cannot exceed chunk_size")
+        if self.language_model_family != "qwen2_5":
+            raise ValueError(
+                "only qwen2_5 is implemented; Qwen3 uses the reserved adapter interface"
+            )
+        if not 0 < self.expert_width_multiplier <= 1:
+            raise ValueError("expert_width_multiplier must be in (0, 1]")
+        if self.num_vlm_layers < 1 or self.num_expert_layers < 1:
+            raise ValueError("Qwen and expert layer counts must be positive")
+        if self.num_vlm_layers != self.num_expert_layers:
+            raise ValueError("the first paired-layer version requires equal Qwen and expert depths")
+        if self.vision_patch_grid % self.token_merge_factor:
+            raise ValueError("token_merge_factor must divide vision_patch_grid")
+        if not 0 <= self.train_language_last_n_layers <= self.num_vlm_layers:
+            raise ValueError("train_language_last_n_layers is outside the retained Qwen depth")
+        if self.train_vision_encoder and self.frozen_vision_dtype != "float32":
+            raise ValueError("frozen_vision_dtype only applies to a frozen vision encoder")
+
+    def validate_features(self) -> None:
+        """补齐空相机并确认视觉与动作 feature 存在。"""
+        if self.input_features is None:
+            self.input_features = {}
+        for index in range(self.empty_cameras):
+            self.input_features[f"{OBS_IMAGES}.empty_camera_{index}"] = PolicyFeature(
+                type=FeatureType.VISUAL,
+                shape=(3, 480, 640),
+            )
+        if not self.image_features:
+            raise ValueError("TrajVLA-Qwen requires at least one image feature")
+        if self.action_feature is None:
+            raise ValueError("TrajVLA-Qwen requires an action feature")
+
+    def get_optimizer_preset(self) -> AdamWConfig:
+        """返回动作专家训练使用的 AdamW 配置。"""
+        return AdamWConfig(
+            lr=self.optimizer_lr,
+            betas=self.optimizer_betas,
+            eps=self.optimizer_eps,
+            weight_decay=self.optimizer_weight_decay,
+            grad_clip_norm=self.optimizer_grad_clip_norm,
+        )
+
+    def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
+        """返回 warmup 与余弦衰减调度器。"""
+        return CosineDecayWithWarmupSchedulerConfig(
+            peak_lr=self.optimizer_lr,
+            decay_lr=self.scheduler_decay_lr,
+            num_warmup_steps=self.scheduler_warmup_steps,
+            num_decay_steps=self.scheduler_decay_steps,
+        )
+
+    @property
+    def observation_delta_indices(self) -> list[int]:
+        """只读取当前观测。"""
+        return [0]
+
+    @property
+    def action_delta_indices(self) -> list[int]:
+        """读取完整未来动作块。"""
+        return list(range(self.chunk_size))
+
+    @property
+    def reward_delta_indices(self) -> None:
+        """行为克隆策略不读取 reward。"""
+        return None
+
+
+__all__ = ["TrajVLAQwenConfig"]

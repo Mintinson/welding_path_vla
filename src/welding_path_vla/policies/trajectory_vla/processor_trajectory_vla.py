@@ -31,14 +31,11 @@ from lerobot.utils.constants import (
     POLICY_PREPROCESSOR_DEFAULT_NAME,
 )
 
-from welding_path_vla.policies.trajectory_vla.configuration_trajectory_vla import (
-    TrajectoryVLAConfig,
-)
-
 
 def make_trajectory_vla_pre_post_processors(
-    config: TrajectoryVLAConfig,
+    config: Any,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
+    task_processor: Any | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
     PolicyProcessorPipeline[PolicyAction, PolicyAction],
@@ -55,7 +52,7 @@ def make_trajectory_vla_pre_post_processors(
     输入链（按序执行）各步骤职责：
         - RenameObservations：观测键名映射（本项目为空映射，键名不变）；
         - AddBatchDimension：给无 batch 维的样本补上 batch 维（[1, ...]）；
-        - NewLineTask：任务描述末尾追加换行符，与 SmolVLM 预训练文本格式对齐；
+        - TaskProcessor：把任务描述转换为当前语言主干的预训练 prompt 格式；
         - Tokenizer：用 VLM 的 tokenizer 把语言指令编码为 token id，
           右侧补齐到 pad_language_to、截断到 tokenizer_max_length；
         - Device：把张量搬到模型所在设备；
@@ -66,17 +63,22 @@ def make_trajectory_vla_pre_post_processors(
           空间还原回真实物理量纲；
         - Device(cpu)：把动作移回 CPU，供环境步进使用。
     """
+    tokenizer_name = (
+        config.language_model_name
+        if hasattr(config, "language_model_name")
+        else config.vlm_model_name
+    )
     # ---- 输入预处理链：原始 transition → 模型输入 ----
     input_steps = [
         # 观测键名映射（数据键与模型要求的键不一致时在此改名）
         RenameObservationsProcessorStep(rename_map={}),
         # 单条样本补成 batch=1，便于与批量训练共用同一模型调用
         AddBatchDimensionProcessorStep(),
-        # 任务指令末尾加 "\n"，保持与 SmolVLM 预训练文本格式一致
-        NewLineTaskProcessorStep(),
+        # 不同语言主干在这里注入自己的预训练 prompt 格式。
+        task_processor or NewLineTaskProcessorStep(),
         # 语言指令 token 化：右侧补齐、超长截断
         TokenizerProcessorStep(
-            tokenizer_name=config.vlm_model_name,
+            tokenizer_name=tokenizer_name,
             padding=config.pad_language_to,
             padding_side="right",
             max_length=config.tokenizer_max_length,

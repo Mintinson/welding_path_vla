@@ -39,12 +39,13 @@ class TrajectoryVLAPolicy(PreTrainedPolicy):
 
     config_class: Any = TrajectoryVLAConfig
     name: Any = "trajectory_vla"
+    flow_model_class: Any = TrajectoryFlowModel
 
     def __init__(self, config: TrajectoryVLAConfig, **kwargs: Any) -> None:
         super().__init__(config)
         config.validate_features()
         self.config = config
-        self.model = TrajectoryFlowModel(config)
+        self.model = self.flow_model_class(config)
         if config.compile_model:
             torch.set_float32_matmul_precision("high")
             self.model.forward = torch.compile(

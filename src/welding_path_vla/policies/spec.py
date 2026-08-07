@@ -99,6 +99,28 @@ TRAJECTORY_VLA = LeRobotPolicySpec(
     ),
 )
 
+TRAJ_VLA_QWEN = LeRobotPolicySpec(
+    family="traj_vla_qwen",
+    policy_type="traj_vla_qwen",
+    display_name="Trajectory-VLA Qwen",
+    config_class_path=(
+        "welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen.TrajVLAQwenConfig"
+    ),
+    policy_class_path=(
+        "welding_path_vla.policies.traj_vla_qwen.modeling_traj_vla_qwen.TrajVLAQwenPolicy"
+    ),
+    config_mode="scratch",
+    implementation="local",
+    plan_fields=(
+        ("image_resolution", "resize_imgs_with_padding"),
+        ("inference_steps", "num_steps"),
+        ("language_model", "language_model_name"),
+        ("prismatic_backbone", "prismatic_repo_id"),
+        ("language_layers", "num_vlm_layers"),
+        ("expert_layers", "num_expert_layers"),
+    ),
+)
+
 PI0 = LeRobotPolicySpec(
     family="pi0",
     policy_type="pi0",
@@ -128,7 +150,9 @@ PI05 = LeRobotPolicySpec(
     plan_fields=PI0.plan_fields,
 )
 
-POLICY_SPECS = {spec.family: spec for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, PI0, PI05)}
+POLICY_SPECS = {
+    spec.family: spec for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, TRAJ_VLA_QWEN, PI0, PI05)
+}
 
 
 def get_policy_spec(family: str) -> LeRobotPolicySpec:
@@ -146,6 +170,7 @@ __all__ = [
     "POLICY_SPECS",
     "SMOLVLA",
     "TRAJECTORY_VLA",
+    "TRAJ_VLA_QWEN",
     "LeRobotPolicySpec",
     "get_policy_spec",
 ]

@@ -1,0 +1,70 @@
+policy:
+  family: traj_vla_qwen
+  checkpoint: null
+  device: cuda
+  action_horizon: 30
+  action_steps: 8
+  action_source: safe_command
+  parameters:
+    language_model_family: qwen2_5
+    language_model_name: Qwen/Qwen2.5-0.5B
+    prismatic_repo_id: Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b
+    prismatic_checkpoint_file: checkpoints/step-020792-epoch-01-loss=0.5268.pt
+    load_prismatic_weights: true
+    # MiniVLA finetune checkpoint 不保存冻结的 DINOv2/SigLIP，需加载 TIMM 权重。
+    load_base_weights: true
+    num_vlm_layers: 16
+    num_expert_layers: 16
+    expert_width_multiplier: 0.75
+    token_merge_factor: 2
+    train_vision_encoder: false
+    train_token_merger: true
+    train_projector: true
+    train_language_model: false
+    train_language_last_n_layers: 0
+    train_expert: true
+    train_state_proj: true
+    # 以下显存优化接口默认关闭；需要时可独立启用。
+    frozen_vision_dtype: bfloat16  # float32
+    lora_target: expert
+    gradient_checkpointing_qwen: false
+    gradient_checkpointing_expert: false
+    use_amp: true
+    scheduler_warmup_steps: 100
+    scheduler_decay_steps: 5000
+
+training:
+  dataset_repo_id: huayan/weldpath_relative_v1
+  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
+  output_dir: outputs/train/traj_vla_qwen_weldpath_relative_v1
+  lr: 1.0e-4
+  batch_size: 4
+  steps: 5000
+  num_workers: 4
+  video_backend: torchcodec
+  eval_split: 0.1
+  eval_steps: 500
+  max_eval_samples: 100
+  log_freq: 20
+  save_freq: 500
+  seed: 20260806
+  wandb: false
+  amp_dtype: bfloat16
+  resume: false
+
+policy_evaluation:
+  batch_size: 1
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+deployment:
+  dry_run: false
+  log_dir: outputs/deploy/traj_vla_qwen_l_joint
+  episodes: 3
+  max_steps: 3300
+  seed: 20260806
+  record_video: true
+  completion_progress_min: 0.85
+  completion_distance_m: 0.015

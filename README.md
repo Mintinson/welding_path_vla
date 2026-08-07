@@ -151,6 +151,16 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/trajectory
 模块边界、可修改接口、官方权重兼容性和三任务部署见
 [Trajectory-VLA 本地实现](docs/trajectory-vla.md)。
 
+Prismatic-Qwen 变体使用 DINOv2 + SigLIP + Qwen2.5-0.5B，并以 16 个成对层
+逐层交织轻量动作专家：
+
+```bash
+pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
+```
+
+架构、解冻开关与训练/评估/部署命令见
+[Trajectory-VLA Qwen](src/welding_path_vla/policies/traj_vla_qwen/README.md)。
+
 `export-lerobot` 默认采用 LeRobot 官方 AV1 配置，只保存视频 feature。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
 
 Pixi 任务直接调用 `scripts/` 下的单一职责脚本；也可以在对应 Pixi shell 中直接运行，例如 `python scripts/evaluate.py --help`。`src/welding_path_vla` 只提供可复用包代码，不再承载命令行入口。任务与脚本的完整映射见 [脚本入口与模块边界](docs/script-entrypoints.md)。

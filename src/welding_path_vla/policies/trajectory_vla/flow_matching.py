@@ -25,15 +25,12 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from lerobot.utils.device_utils import get_safe_dtype
 from torch import Tensor, nn
-
-from welding_path_vla.policies.trajectory_vla.configuration_trajectory_vla import (
-    TrajectoryVLAConfig,
-)
 
 
 @dataclass(slots=True)
@@ -246,27 +243,35 @@ class TrajectoryFlowModel(nn.Module):
     推理则公开为 ``denoise_step`` 和 ``sample_trajectory``。
     """
 
-    def __init__(self, config: TrajectoryVLAConfig) -> None:
+    def __init__(
+        self,
+        config: Any,
+        vlm_with_expert: Any | None = None,
+    ) -> None:
         super().__init__()
-        from welding_path_vla.policies.trajectory_vla.smolvlm_action_expert import (
-            SmolVLMActionExpert,
-        )
-
-        # ---- 基础组件：VLM + 动作专家（见 smolvlm_action_expert.py）----
-        # 动作专家共享 VLM 的视觉/语言理解，自身维护一套独立宽度的 token 流
         self.config = config
-        self.vlm_with_expert = SmolVLMActionExpert(
-            model_id=config.vlm_model_name,
-            freeze_vision_encoder=config.freeze_vision_encoder,
-            train_expert_only=config.train_expert_only,
-            load_vlm_weights=config.load_vlm_weights,
-            attention_mode=config.attention_mode,
-            num_expert_layers=config.num_expert_layers,
-            num_vlm_layers=config.num_vlm_layers,
-            self_attn_every_n_layers=config.self_attn_every_n_layers,
-            expert_width_multiplier=config.expert_width_multiplier,
-        )
-        vlm_width = self.vlm_with_expert.config.text_config.hidden_size
+        if vlm_with_expert is None:
+            from welding_path_vla.policies.trajectory_vla.smolvlm_action_expert import (
+                SmolVLMActionExpert,
+            )
+
+            # 默认仍构造 SmolVLM；Qwen 变体从外部传入相同接口的双流主干。
+            vlm_with_expert = SmolVLMActionExpert(
+                model_id=config.vlm_model_name,
+                freeze_vision_encoder=config.freeze_vision_encoder,
+                train_expert_only=config.train_expert_only,
+                load_vlm_weights=config.load_vlm_weights,
+                attention_mode=config.attention_mode,
+                num_expert_layers=config.num_expert_layers,
+                num_vlm_layers=config.num_vlm_layers,
+                self_attn_every_n_layers=config.self_attn_every_n_layers,
+                expert_width_multiplier=config.expert_width_multiplier,
+            )
+        self.vlm_with_expert: Any = vlm_with_expert
+        if hasattr(self.vlm_with_expert, "language_hidden_size"):
+            vlm_width = self.vlm_with_expert.language_hidden_size
+        else:
+            vlm_width = self.vlm_with_expert.config.text_config.hidden_size
         expert_width = self.vlm_with_expert.expert_hidden_size
         # ---- 输入输出投影 ----
         # 状态投影：机器人状态 [B, max_state_dim] → VLM 宽度的"状态 token"
@@ -284,16 +289,15 @@ class TrajectoryFlowModel(nn.Module):
         # fake_image_token 标记"图像开始/结束"，global_image_token 标记
         # 全局/局部视角切换；它们作为普通 token 参与 attention，使输入
         # 格式与 SmolVLM 预训练数据一致（add_image_special_tokens 控制开关）
-        tokenizer = self.vlm_with_expert.processor.tokenizer
-        self.fake_image_token = tokenizer.fake_image_token_id
-        self.global_image_token = tokenizer.global_image_token_id
-        # 起始 token 序列：[fake_image, global_image]
-        self.global_image_start_token = torch.tensor(
-            [self.fake_image_token, self.global_image_token],
-            dtype=torch.long,
-        )
-        # 结束 token 序列：[fake_image]
-        self.image_end_token = torch.tensor([self.fake_image_token], dtype=torch.long)
+        if config.add_image_special_tokens:
+            tokenizer = self.vlm_with_expert.processor.tokenizer
+            self.fake_image_token = tokenizer.fake_image_token_id
+            self.global_image_token = tokenizer.global_image_token_id
+            self.global_image_start_token = torch.tensor(
+                [self.fake_image_token, self.global_image_token],
+                dtype=torch.long,
+            )
+            self.image_end_token = torch.tensor([self.fake_image_token], dtype=torch.long)
 
     def set_requires_grad(self) -> None:
         """单独控制 state projection 是否参与训练。
@@ -698,7 +702,14 @@ class TrajectoryFlowModel(nn.Module):
                 dtype=torch.float32,
                 device=state.device,
             )
-            velocity = self.denoise_step(context.padding_mask, cache, actions, time)
+            if cache is None:
+                # 禁用 KV cache 时仍需让每个去噪步骤读取完整上下文。
+                velocity = self.predict_velocity(
+                    context,
+                    self.encode_action_tokens(actions, time),
+                )
+            else:
+                velocity = self.denoise_step(context.padding_mask, cache, actions, time)
             # 显式 Euler 更新：沿速度场方向走一步
             actions = actions + step_size * velocity
             if on_step is not None:

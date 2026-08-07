@@ -14,6 +14,7 @@ simulation_rollout.py   共用 robosuite 闭环 rollout
 checkpoint.py           checkpoint 与 resume 路径解析
 data.py                 LeRobotDataset 查询和数据检查
 trajectory_vla/         项目真正维护的本地模型实现
+traj_vla_qwen/           Prismatic-Qwen 与成对层动作专家
 ```
 
 ACT、SmolVLA、π0 和 π0.5 直接使用 LeRobot 官方模型，因此各目录仅保留实验说明，不再

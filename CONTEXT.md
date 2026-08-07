@@ -40,6 +40,22 @@ _Avoid_: Frame, sample
 把 Observation 映射为一个或多个 Command Action 的可训练决策模型，不直接访问仿真器或真机驱动。
 _Avoid_: Controller, model runner
 
+**Prismatic Backbone**:
+由 DINOv2、SigLIP、视觉投影器和 Qwen 语言模型组成的多模态上下文编码主干。
+_Avoid_: Qwen-VL, vision encoder
+
+**Context Stream**:
+在逐层交织模型中承载多视角视觉、任务语言和机器人状态 token 的隐藏状态流。
+_Avoid_: Prefix model, VLM output
+
+**Action Expert Stream**:
+在逐层交织模型中承载带噪短时动作轨迹和 Flow Matching 时间条件的隐藏状态流。
+_Avoid_: Action head, controller
+
+**Paired-Layer Interleaving**:
+每个保留的语言模型层与一个动作专家层成对，通过同一次联合注意力交换信息，同时保留各自的投影、残差和 MLP 参数。
+_Avoid_: Cross-attention head, alternating layers
+
 **Robot Interface**:
 仿真和 Elfin5-Pro 真机共同遵守的 SI 单位状态读取与命令边界，并负责应用真机基座到项目 world frame 的安装外参。
 _Avoid_: SDK, backend

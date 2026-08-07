@@ -31,7 +31,7 @@
 configs/
 ├── base.yaml
 ├── tasks/{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
-├── policies/{act,smolvla,pi0,pi0_5}.yaml
+├── policies/{act,smolvla,pi0,pi0_5,trajectory_vla,traj_vla_qwen}.yaml
 ├── policies/{pi0,pi0_5}_a100.yaml
 └── deploy/{smolvla,pi0,pi0_5,trajectory_vla}_{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
 ```

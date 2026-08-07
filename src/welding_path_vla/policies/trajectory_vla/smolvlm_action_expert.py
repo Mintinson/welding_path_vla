@@ -40,6 +40,8 @@ from transformers import (
     SmolVLMModel,
 )
 
+from welding_path_vla.policies.transformer import expert_intermediate_size
+
 
 def apply_rope(x: Tensor, positions: Tensor, max_wavelength: int = 10_000) -> Tensor:
     """对 ``[B, L, H, D]`` 的 query/key 应用旋转位置编码。
@@ -85,22 +87,6 @@ def apply_rope(x: Tensor, positions: Tensor, max_wavelength: int = 10_000) -> Te
     result[..., :half] = first * cosine - second * sine
     result[..., half:] = second * cosine + first * sine
     return result.to(dtype)
-
-
-def expert_intermediate_size(
-    hidden_dim: int,
-    multiplier: float = 4,
-    multiple_of: int = 256,
-) -> int:
-    """按 SmolVLM 的 SwiGLU 规则计算动作专家 FFN 宽度。
-
-    SwiGLU 的中间宽度约为 ``2/3 * hidden * 4``（2/3 来自门控激活的形状
-    系数，4 为默认扩展倍数），再向上取整到 256 的倍数以保证张量形状对齐、
-    利用硬件对齐加速。动作专家层数独立设置、宽度按 multiplier 缩放，
-    参数量级与 VLM 单层相当，用于承载轨迹预测的专用容量。
-    """
-    width = int(multiplier * int(2 * hidden_dim / 3))
-    return multiple_of * ((width + multiple_of - 1) // multiple_of)
 
 
 class SmolVLMActionExpert(nn.Module):
