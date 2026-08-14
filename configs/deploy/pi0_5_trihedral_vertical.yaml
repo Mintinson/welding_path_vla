@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - pi0_5.yaml
+  - ../tasks/trihedral_vertical.yaml
+
+deployment:
+  log_dir: outputs/deploy/pi0_5_trihedral_vertical

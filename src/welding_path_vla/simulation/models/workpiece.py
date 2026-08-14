@@ -8,7 +8,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.config import AppConfig, maximum_seam_length
 from welding_path_vla.simulation.robosuite_compat import MujocoObject, array_to_string
 from welding_path_vla.simulation.tasks import (
     CircularSeamPath,
@@ -42,6 +42,37 @@ def append_geom_pair(body: ET.Element, attributes: dict[str, str]) -> None:
     body.append(visual)
 
 
+def append_seam_visual(
+    body: ET.Element,
+    name: str,
+    start: np.ndarray,
+    end: np.ndarray,
+) -> None:
+    """添加仅用于成像的细焊道，不参与碰撞判断。
+
+    Args:
+        body: 接收 geom 的工件 body。
+        name: 焊道 geom 名称。
+        start: 工件局部坐标起点。
+        end: 工件局部坐标终点。
+    """
+    ET.SubElement(
+        body,
+        "geom",
+        {
+            "name": name,
+            "type": "capsule",
+            "fromto": array_to_string([*start, *end]),
+            "size": "0.0015",
+            "rgba": "0.12 0.06 0.025 1",
+            "group": "1",
+            "contype": "0",
+            "conaffinity": "0",
+            "mass": "1e-8",
+        },
+    )
+
+
 class WorkpieceObject(MujocoObject):
     """由 YAML 选择几何，并提供对应的有向焊缝。
 
@@ -62,6 +93,7 @@ class WorkpieceObject(MujocoObject):
             "l_joint": self.build_l_joint,
             "pipe_on_plate": self.build_pipe_on_plate,
             "curve_plate": self.build_curve_plate,
+            "trihedral_corner": self.build_trihedral_corner,
         }
         self._obj = builders[config.workpiece.kind]()
         self._get_object_properties()
@@ -193,6 +225,44 @@ class WorkpieceObject(MujocoObject):
         self.append_seam_sites(body)
         return body
 
+    def build_trihedral_corner(self) -> ET.Element:
+        """创建由底板和两块立板组成的三面内角工件。"""
+        body = self.build_root()
+        workpiece = self.config.workpiece
+        floor = np.asarray(workpiece.trihedral_floor_size_m)
+        wall_x = np.asarray(workpiece.trihedral_wall_x_size_m)
+        wall_y = np.asarray(workpiece.trihedral_wall_y_size_m)
+        plates = (
+            ("trihedral_floor", floor, [floor[0] / 2, floor[1] / 2, 0]),
+            ("trihedral_wall_x", wall_x, [0, wall_x[1] / 2, wall_x[2] / 2]),
+            ("trihedral_wall_y", wall_y, [wall_y[0] / 2, 0, wall_y[2] / 2]),
+        )
+        for name, size, position in plates:
+            append_geom_pair(
+                body,
+                {
+                    "name": name,
+                    "type": "box",
+                    "pos": array_to_string(position),
+                    "size": array_to_string(size / 2),
+                    "rgba": "0.46 0.49 0.52 1",
+                },
+            )
+
+        corner = np.array([wall_x[0] / 2, wall_y[1] / 2, floor[2] / 2])
+        endpoints = {
+            "vertical_corner": corner
+            + np.array([0, 0, maximum_seam_length(workpiece, "vertical_corner")]),
+            "floor_x": corner
+            + np.array([maximum_seam_length(workpiece, "floor_x"), 0, 0]),
+            "floor_y": corner
+            + np.array([0, maximum_seam_length(workpiece, "floor_y"), 0]),
+        }
+        for seam_id, endpoint in endpoints.items():
+            append_seam_visual(body, f"{seam_id}_visual", corner, endpoint)
+        self.append_seam_sites(body)
+        return body
+
     def append_seam_sites(self, body: ET.Element) -> None:
         """添加不可见起终点 site，兼容检查工具并辅助调试。"""
         seam = self.seam(np.zeros(3), np.eye(3))
@@ -268,6 +338,38 @@ class WorkpieceObject(MujocoObject):
                 task.direction == "reverse",
             )
 
+        if workpiece.kind == "trihedral_corner":
+            floor = workpiece.trihedral_floor_size_m
+            wall_x = workpiece.trihedral_wall_x_size_m
+            wall_y = workpiece.trihedral_wall_y_size_m
+            origin = np.array([wall_x[0] / 2, wall_y[1] / 2, floor[2] / 2])
+            directions = {
+                "vertical_corner": np.array([0.0, 0.0, 1.0]),
+                "floor_x": np.array([1.0, 0.0, 0.0]),
+                "floor_y": np.array([0.0, 1.0, 0.0]),
+            }
+            normals = {
+                "vertical_corner": np.array([np.cos(work_angle), np.sin(work_angle), 0.0]),
+                "floor_x": np.array([0.0, np.sin(work_angle), np.cos(work_angle)]),
+                "floor_y": np.array([np.sin(work_angle), 0.0, np.cos(work_angle)]),
+            }
+            direction = directions[task.seam_id]
+            normal_local = normals[task.seam_id]
+            start_local = (
+                origin
+                + workpiece.trihedral_corner_margin_m * direction
+                + task.tcp_clearance_m * normal_local
+            )
+            end_local = start_local + task.seam_length_m * direction
+            if task.direction == "reverse":
+                start_local, end_local = end_local, start_local
+            return StraightSeamPath(
+                task.seam_id,
+                position + rotation @ start_local,
+                position + rotation @ end_local,
+                rotation @ normal_local,
+            )
+
         plate_half_height = workpiece.pipe_plate_size_m[2] / 2
         height = (
             plate_half_height
@@ -305,6 +407,14 @@ class WorkpieceObject(MujocoObject):
                 str(round(value * 1000)) for value in workpiece.curve_plate_size_m
             )
             return f"curve_plate_{dimensions}"
+        if workpiece.kind == "trihedral_corner":
+            dimensions = (
+                *workpiece.trihedral_floor_size_m,
+                *workpiece.trihedral_wall_x_size_m,
+                *workpiece.trihedral_wall_y_size_m,
+            )
+            encoded = "x".join(str(round(value * 1000)) for value in dimensions)
+            return f"trihedral_corner_{encoded}"
         diameter = round(2 * workpiece.pipe_outer_radius_m * 1000)
         height = round(workpiece.pipe_height_m * 1000)
         plate = "x".join(str(round(value * 1000)) for value in workpiece.pipe_plate_size_m)
@@ -317,6 +427,7 @@ class WorkpieceObject(MujocoObject):
             "l_joint": self.config.workpiece.l_joint_thickness_m,
             "pipe_on_plate": self.config.workpiece.pipe_plate_size_m[2],
             "curve_plate": self.config.workpiece.curve_plate_size_m[2],
+            "trihedral_corner": self.config.workpiece.trihedral_floor_size_m[2],
         }[self.config.workpiece.kind]
         return np.array([0.0, 0.0, -thickness / 2])
 
@@ -329,8 +440,13 @@ class WorkpieceObject(MujocoObject):
             height = (
                 self.config.workpiece.pipe_plate_size_m[2] / 2 + self.config.workpiece.pipe_height_m
             )
-        else:
+        elif self.config.workpiece.kind == "curve_plate":
             height = self.config.workpiece.curve_plate_size_m[2] / 2
+        else:
+            height = max(
+                self.config.workpiece.trihedral_wall_x_size_m[2],
+                self.config.workpiece.trihedral_wall_y_size_m[2],
+            )
         return np.array([0.0, 0.0, height])
 
     @property
@@ -345,8 +461,17 @@ class WorkpieceObject(MujocoObject):
             )
         elif self.config.workpiece.kind == "pipe_on_plate":
             size = np.asarray(self.config.workpiece.pipe_plate_size_m[:2])
-        else:
+        elif self.config.workpiece.kind == "curve_plate":
             size = np.asarray(self.config.workpiece.curve_plate_size_m[:2])
+        else:
+            floor = self.config.workpiece.trihedral_floor_size_m
+            size = np.array(
+                [
+                    max(floor[0], self.config.workpiece.trihedral_wall_y_size_m[0]),
+                    max(floor[1], self.config.workpiece.trihedral_wall_x_size_m[1]),
+                ]
+            )
+            return float(np.linalg.norm(size))
         return float(np.linalg.norm(size) / 2)
 
     @property

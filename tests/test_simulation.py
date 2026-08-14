@@ -21,7 +21,11 @@ from welding_path_vla.simulation.task_sampling import (
     sample_task_config,
     stage_for_task,
 )
-from welding_path_vla.simulation.tasks import CircularSeamPath, SinusoidalSeamPath
+from welding_path_vla.simulation.tasks import (
+    CircularSeamPath,
+    SinusoidalSeamPath,
+    StraightSeamPath,
+)
 
 
 def test_robosuite_reset_step_and_observations() -> None:
@@ -496,6 +500,7 @@ def test_task_parameters_change_once_per_ten_episode_indices() -> None:
         "configs/pipe_bottom.yaml",
         "configs/pipe_top.yaml",
         "configs/curve_plate.yaml",
+        "configs/trihedral_vertical.yaml",
     ],
 )
 def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
@@ -521,10 +526,11 @@ def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
         "configs/pipe_bottom.yaml",
         "configs/pipe_top.yaml",
         "configs/curve_plate.yaml",
+        "configs/trihedral_vertical.yaml",
     ],
 )
 def test_randomized_episode_has_continuous_collision_free_joint_plan(config_path: str) -> None:
-    """四种任务都应在录制前获得连续、无碰撞且可达的完整关节轨迹。"""
+    """每种任务都应在录制前获得连续、无碰撞且可达的完整关节轨迹。"""
     config = sample_episode_task_config(AppConfig.load(config_path), 0)
     simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
     try:
@@ -622,6 +628,38 @@ def test_curve_task_randomizes_function_amplitude_and_frequency_by_group() -> No
         round(sample.task.curve_frequency, 2) == sample.task.curve_frequency for sample in samples
     )
     assert all(sample.task.instruction == config.task.instruction for sample in samples)
+
+
+def test_trihedral_workpiece_exposes_three_seams_and_moderate_randomness() -> None:
+    """三面角应显示三条焊道，并以竖直焊缝作为当前可执行任务。"""
+    base = AppConfig.load("configs/trihedral_vertical.yaml")
+    samples = [sample_episode_task_config(base, index * 10) for index in range(8)]
+    for sample in samples:
+        assert abs(sample.task.seam_length_m - base.task.seam_length_m) <= 0.0101
+        assert sample.task.seam_length_m == round(sample.task.seam_length_m, 3)
+        for name in (
+            "trihedral_floor_size_m",
+            "trihedral_wall_x_size_m",
+            "trihedral_wall_y_size_m",
+        ):
+            actual = np.asarray(getattr(sample.workpiece, name))
+            nominal = np.asarray(getattr(base.workpiece, name))
+            assert np.max(np.abs(actual - nominal)) <= 0.0081
+
+    config = samples[0]
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        seam = simulation.active_seam()
+        assert isinstance(seam, StraightSeamPath)
+        assert seam.seam_id == "vertical_corner"
+        assert seam.tangent[2] > 0.999
+        assert abs(seam.normal[2]) < 1e-7
+        assert seam.length_m == pytest.approx(config.task.seam_length_m)
+        for name in ("vertical_corner_visual", "floor_x_visual", "floor_y_visual"):
+            geom = simulation.mj_model.geom(name)
+            assert simulation.mj_model.geom_contype[geom.id] == 0
+    finally:
+        simulation.close()
 
 
 def test_expert_uses_independent_phase_speeds() -> None:

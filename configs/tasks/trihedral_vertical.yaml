@@ -1,0 +1,55 @@
+workpiece:
+  kind: trihedral_corner
+  # 三块板分别使用 XYZ 全尺寸；薄边对应各自法向轴。
+  trihedral_floor_size_m: [0.23, 0.21, 0.005]
+  trihedral_wall_x_size_m: [0.005, 0.19, 0.17]
+  trihedral_wall_y_size_m: [0.22, 0.005, 0.16]
+  # 真实枪嘴无法进入三块板的数学交点，保留 12 mm 工艺起点余量。
+  trihedral_corner_margin_m: 0.012
+
+scene:
+  # 将内角置于机械臂前侧可达区，并给枪身留出立板外侧空间。
+  workpiece_position_m: [0.40, -0.12, 0.2925]
+
+task:
+  instruction: Weld along the vertical inner corner seam of the three-plate workpiece.
+  seam_id: vertical_corner
+  direction: forward
+  approach_speed_mps: 0.06
+  speed_mps: 0.015
+  retreat_speed_mps: 0.04
+  orientation_follow_ratio: 1.0
+  work_angle_deg: 45.0
+  # 枪颈向上避开底板；该竖焊姿态与水平任务的标称滚转角不同。
+  travel_angle_deg: -20.0
+  tool_roll_deg: 180.0
+  approach_distance_m: 0.04
+  staging_clearance_m: 0.18
+  retreat_distance_m: 0.04
+  seam_length_m: 0.11
+  tcp_clearance_m: 0.002
+
+randomization:
+  xy_m: 0.02
+  yaw_deg: 6.0
+  joint_degs: [18, 8, 8, 10, 15, 15]
+  max_sampling_attempts: 15
+  initial_tcp_m: 0.015
+  work_angle_range_deg: 2.0
+  travel_angle_range_deg: 2.0
+  tool_roll_range_deg: 2.0
+  orientation_follow_range: 0.0
+  approach_speed_range_mps: 0.004
+  speed_range_mps: 0.002
+  retreat_speed_range_mps: 0.004
+  # 每个任务组只小幅改变板件尺寸和有效焊缝长度。
+  trihedral_size_range_m: 0.008
+  seam_length_range_m: 0.010
+  # 当前任务固定自下而上，避免方向反转同时改变竖焊枪颈的避碰姿态。
+  reverse_probability: 0.0
+
+collection:
+  dataset_root: datasets/weldpath_trihedral_vertical_raw_v2
+
+deployment:
+  max_steps: 1500

@@ -18,6 +18,7 @@
 | `configs/tasks/pipe_bottom.yaml` | 空心圆管 + 方形底板 | `pipe_bottom` 管底圆弧 |
 | `configs/tasks/pipe_top.yaml` | 空心圆管 + 方形底板 | `pipe_top` 管口圆弧 |
 | `configs/tasks/curve_plate.yaml` | 带可见周期曲线的平板 | `curve_seam` 正弦/余弦焊缝 |
+| `configs/tasks/trihedral_vertical.yaml` | 三块互相垂直的平板 | `vertical_corner`、`floor_x`、`floor_y` 三条内角直线 |
 
 圆管由 32 个环向碰撞/外观分段构成，因此内部保持空心，不会像实心 cylinder 一样错误阻挡
 内壁空间。`pipe_bottom` 默认走 90° 前侧圆弧；`pipe_top` 默认走完整 360° 管口圆周。
@@ -44,6 +45,23 @@ episode 的跟踪姿态固定，只考察策略的平面曲线执行能力。
 pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
 pixi run -e sim sim-collect \
   --config_path=configs/curve_plate.yaml \
+  --collection.episodes=50
+```
+
+三面角工件完整显示两条水平内角焊缝和一条竖直内角焊缝。一个 episode 只执行
+`task.seam_id` 指定的一条焊缝；默认 `configs/trihedral_vertical.yaml` 选择
+`vertical_corner`，用于考察自下而上的竖焊能力。`floor_x` 和 `floor_y` 已由工件接口提供，
+后续只需增加对应任务 YAML，无需改动环境或采集器。
+
+三个板件尺寸分别由 `trihedral_floor_size_m`、`trihedral_wall_x_size_m` 和
+`trihedral_wall_y_size_m` 表示。非厚度方向尺寸、焊缝长度、工件位姿、焊枪姿态和速度均
+采用小范围成组随机化；三板交点附近保留 `trihedral_corner_margin_m` 工艺余量，避免真实枪嘴
+无法进入的数学尖角造成确定性碰撞。
+
+```bash
+pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
+pixi run -e sim sim-collect \
+  --config_path=configs/trihedral_vertical.yaml \
   --collection.episodes=50
 ```
 

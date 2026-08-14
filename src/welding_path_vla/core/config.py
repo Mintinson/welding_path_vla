@@ -79,8 +79,8 @@ class WorkpieceConfig:
     """可替换工件的几何参数。
 
     Attributes:
-        kind: 工件类型，支持 ``l_joint``、``pipe_on_plate`` 和
-            ``curve_plate``。
+        kind: 工件类型，支持 ``l_joint``、``pipe_on_plate``、
+            ``curve_plate`` 和 ``trihedral_corner``。
         l_joint_length_m: L 形工件沿焊缝方向的总长度。
         l_joint_width_m: L 形工件水平板宽度及竖板高度。
         l_joint_thickness_m: L 形工件两块钢板的厚度。
@@ -91,6 +91,10 @@ class WorkpieceConfig:
         pipe_segments: 用于近似空心圆管的环向分段数。
         curve_plate_size_m: 曲线平板的长、宽、厚。
         curve_visual_segments: 用于显示曲线焊缝的分段数量。
+        trihedral_floor_size_m: 三面角工件底板沿 X、Y、Z 的尺寸。
+        trihedral_wall_x_size_m: X 法向立板沿 X、Y、Z 的尺寸。
+        trihedral_wall_y_size_m: Y 法向立板沿 X、Y、Z 的尺寸。
+        trihedral_corner_margin_m: 焊缝避开三板交汇死角的起点距离。
     """
 
     kind: str = "l_joint"
@@ -104,6 +108,39 @@ class WorkpieceConfig:
     pipe_segments: int = 32
     curve_plate_size_m: list[float] = field(default_factory=lambda: [0.30, 0.30, 0.005])
     curve_visual_segments: int = 80
+    trihedral_floor_size_m: list[float] = field(default_factory=lambda: [0.24, 0.22, 0.005])
+    trihedral_wall_x_size_m: list[float] = field(default_factory=lambda: [0.005, 0.20, 0.18])
+    trihedral_wall_y_size_m: list[float] = field(default_factory=lambda: [0.23, 0.005, 0.16])
+    trihedral_corner_margin_m: float = 0.012
+
+
+def maximum_seam_length(workpiece: WorkpieceConfig, seam_id: str) -> float | None:
+    """返回当前工件上指定焊缝的最大有效长度。
+
+    Args:
+        workpiece: 工件几何配置。
+        seam_id: 焊缝标识。
+
+    Returns:
+        最大长度；圆管任务使用扫掠角，因此返回 ``None``。
+    """
+    if workpiece.kind == "l_joint":
+        return workpiece.l_joint_length_m
+    if workpiece.kind == "curve_plate":
+        return workpiece.curve_plate_size_m[1]
+    if workpiece.kind != "trihedral_corner":
+        return None
+
+    floor = workpiece.trihedral_floor_size_m
+    wall_x = workpiece.trihedral_wall_x_size_m
+    wall_y = workpiece.trihedral_wall_y_size_m
+    margin = workpiece.trihedral_corner_margin_m
+    limits = {
+        "vertical_corner": min(wall_x[2], wall_y[2]) - floor[2] / 2 - margin,
+        "floor_x": min(floor[0], wall_y[0]) - wall_x[0] / 2 - margin,
+        "floor_y": min(floor[1], wall_x[1]) - wall_y[1] / 2 - margin,
+    }
+    return limits[seam_id]
 
 
 @dataclass(slots=True)
@@ -180,6 +217,8 @@ class RandomizationConfig:
         retreat_speed_range_mps: 退出速度相对标称值的采样半径。
         curve_amplitude_range_m: 曲线振幅相对标称值的采样半径。
         curve_frequency_range: 曲线周期数相对标称值的采样半径。
+        seam_length_range_m: 直线或曲线焊缝长度相对标称值的采样半径。
+        trihedral_size_range_m: 三面角工件非厚度尺寸的采样半径。
         cosine_probability: 将平板焊缝采样为余弦曲线的概率。
         reverse_probability: 将任务采样为反向执行的概率。
         task_group_size: 连续多少个 episode 编号共享一组任务参数。
@@ -205,6 +244,8 @@ class RandomizationConfig:
     retreat_speed_range_mps: float = 0.005
     curve_amplitude_range_m: float = 0.01
     curve_frequency_range: float = 0.5
+    seam_length_range_m: float = 0.0
+    trihedral_size_range_m: float = 0.0
     cosine_probability: float = 0.5
     reverse_probability: float = 0.5
     task_group_size: int = 10
@@ -415,36 +456,47 @@ class AppConfig:
         self.timing.validate()
         if len(self.robot.initial_joint_deg) != 6:
             raise ValueError("robot.initial_joint_deg must contain six values")
-        if self.workpiece.kind not in {"l_joint", "pipe_on_plate", "curve_plate"}:
+        if self.workpiece.kind not in {
+            "l_joint",
+            "pipe_on_plate",
+            "curve_plate",
+            "trihedral_corner",
+        }:
             raise ValueError("unsupported workpiece.kind")
         if len(self.workpiece.pipe_plate_size_m) != 3:
             raise ValueError("workpiece.pipe_plate_size_m must contain three values")
         if len(self.workpiece.curve_plate_size_m) != 3:
             raise ValueError("workpiece.curve_plate_size_m must contain three values")
+        trihedral_sizes = (
+            self.workpiece.trihedral_floor_size_m,
+            self.workpiece.trihedral_wall_x_size_m,
+            self.workpiece.trihedral_wall_y_size_m,
+        )
+        if any(len(size) != 3 or min(size) <= 0 for size in trihedral_sizes):
+            raise ValueError("trihedral plate sizes must contain three positive values")
+        if self.workpiece.trihedral_corner_margin_m < 0:
+            raise ValueError("workpiece.trihedral_corner_margin_m must be non-negative")
         if self.workpiece.pipe_segments < 12:
             raise ValueError("workpiece.pipe_segments must be at least 12")
         if self.workpiece.curve_visual_segments < 8:
             raise ValueError("workpiece.curve_visual_segments must be at least 8")
         if not 0 < self.workpiece.pipe_wall_thickness_m < self.workpiece.pipe_outer_radius_m:
             raise ValueError("pipe wall thickness must be smaller than the outer radius")
-        if (
-            self.workpiece.kind == "l_joint"
-            and self.task.seam_length_m > self.workpiece.l_joint_length_m
-        ):
-            raise ValueError("task.seam_length_m cannot exceed the L-joint length")
-        if (
-            self.workpiece.kind == "curve_plate"
-            and self.task.seam_length_m > self.workpiece.curve_plate_size_m[1]
-        ):
-            raise ValueError("task.seam_length_m cannot exceed the curve plate length")
         allowed_seams = {
             "l_joint": {"straight_fillet"},
             "pipe_on_plate": {"pipe_bottom", "pipe_top"},
             "curve_plate": {"curve_seam"},
+            "trihedral_corner": {"vertical_corner", "floor_x", "floor_y"},
         }
         if self.task.seam_id not in allowed_seams[self.workpiece.kind]:
             raise ValueError(
                 f"task.seam_id={self.task.seam_id!r} is invalid for {self.workpiece.kind}"
+            )
+        seam_limit = maximum_seam_length(self.workpiece, self.task.seam_id)
+        if seam_limit is not None and not 0 < self.task.seam_length_m <= seam_limit:
+            raise ValueError(
+                f"task.seam_length_m must be in (0, {seam_limit:.4f}] for "
+                f"{self.task.seam_id}"
             )
         if self.task.direction not in {"forward", "reverse"}:
             raise ValueError("task.direction must be forward or reverse")
@@ -494,6 +546,8 @@ class AppConfig:
             self.randomization.retreat_speed_range_mps,
             self.randomization.curve_amplitude_range_m,
             self.randomization.curve_frequency_range,
+            self.randomization.seam_length_range_m,
+            self.randomization.trihedral_size_range_m,
         )
         if any(value < 0 for value in task_randomization_ranges):
             raise ValueError("task randomization ranges must be non-negative")

@@ -30,10 +30,10 @@
 ```text
 configs/
 ├── base.yaml
-├── tasks/{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
+├── tasks/{l_joint,pipe_bottom,pipe_top,curve_plate,trihedral_vertical}.yaml
 ├── policies/{act,smolvla,pi0,pi0_5,trajectory_vla,traj_vla_qwen}.yaml
 ├── policies/{pi0,pi0_5}_a100.yaml
-└── deploy/{smolvla,pi0,pi0_5,trajectory_vla}_{l_joint,pipe_bottom,pipe_top,curve_plate}.yaml
+└── deploy/{smolvla,pi0,pi0_5,trajectory_vla}_{l_joint,pipe_bottom,pipe_top,curve_plate,trihedral_vertical}.yaml
 ```
 
 入口 YAML 使用 `includes` 按顺序组合模块，后面的模块覆盖前面的同名字段，入口自身
@@ -45,7 +45,8 @@ pixi run -e policy-sim policy-sim-deploy \
   --deployment.episodes=10
 ```
 
-`configs/default.yaml`、`pipe_bottom.yaml`、`pipe_top.yaml`、`curve_plate.yaml`、`act.yaml` 和
+`configs/default.yaml`、`pipe_bottom.yaml`、`pipe_top.yaml`、`curve_plate.yaml`、
+`trihedral_vertical.yaml`、`act.yaml` 和
 `smolvla.yaml` 是兼容旧命令的组合入口。参数名称仍与 dataclass/YAML 完全一致，
 布尔值使用 `--field=true/false`。
 

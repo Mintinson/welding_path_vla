@@ -104,6 +104,10 @@ pixi run -e sim sim-collect \
 pixi run -e sim sim-collect \
   --config_path=configs/curve_plate.yaml \
   --collection.episodes=5
+
+pixi run -e sim sim-collect \
+  --config_path=configs/trihedral_vertical.yaml \
+  --collection.episodes=5
 ```
 
 各任务配置使用独立的数据集目录，不会相互混写。

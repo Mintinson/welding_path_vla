@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.config import AppConfig, maximum_seam_length
 from welding_path_vla.core.domain import Pose
 from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
 from welding_path_vla.simulation.tasks import SeamPath
@@ -122,6 +122,32 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
         3,
         0.001,
     )
+
+    if sampled.workpiece.kind == "trihedral_corner":
+        size_fields = (
+            ("trihedral_floor_size_m", 2),
+            ("trihedral_wall_x_size_m", 0),
+            ("trihedral_wall_y_size_m", 1),
+        )
+        for name, thickness_axis in size_fields:
+            nominal = getattr(config.workpiece, name)
+            dimensions = [
+                value
+                if axis == thickness_axis
+                else sample_value(value, randomization.trihedral_size_range_m, 3, 0.08)
+                for axis, value in enumerate(nominal)
+            ]
+            setattr(sampled.workpiece, name, dimensions)
+
+    seam_limit = maximum_seam_length(sampled.workpiece, task.seam_id)
+    if seam_limit is not None and randomization.seam_length_range_m > 0:
+        task.seam_length_m = sample_value(
+            config.task.seam_length_m,
+            randomization.seam_length_range_m,
+            3,
+            0.03,
+            seam_limit,
+        )
 
     if randomization.reverse_probability > 0:
         task.direction = (

@@ -221,6 +221,7 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
                 "work_angle_deg": config.task.work_angle_deg,
                 "travel_angle_deg": config.task.travel_angle_deg,
                 "tool_roll_deg": config.task.tool_roll_deg,
+                "seam_length_m": config.task.seam_length_m,
             }
             | (
                 {
@@ -229,6 +230,15 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
                     "curve_frequency": config.task.curve_frequency,
                 }
                 if config.workpiece.kind == "curve_plate"
+                else {}
+            )
+            | (
+                {
+                    "floor_size_m": config.workpiece.trihedral_floor_size_m,
+                    "wall_x_size_m": config.workpiece.trihedral_wall_x_size_m,
+                    "wall_y_size_m": config.workpiece.trihedral_wall_y_size_m,
+                }
+                if config.workpiece.kind == "trihedral_corner"
                 else {}
             ),
             # 各坐标系定义说明

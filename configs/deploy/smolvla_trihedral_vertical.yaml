@@ -1,0 +1,7 @@
+includes:
+  - ../base.yaml
+  - smolvla.yaml
+  - ../tasks/trihedral_vertical.yaml
+
+deployment:
+  log_dir: outputs/deploy/smolvla_trihedral_vertical

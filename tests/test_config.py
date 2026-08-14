@@ -53,6 +53,16 @@ def test_curve_plate_config_selects_fixed_orientation_curve_task() -> None:
     assert config.collection.dataset_root.endswith("weldpath_curve_plate_raw_v2")
 
 
+def test_trihedral_config_selects_vertical_corner_task() -> None:
+    """三面角入口应默认选择自下而上的竖直内角焊缝。"""
+    config = AppConfig.load("configs/trihedral_vertical.yaml")
+    assert config.workpiece.kind == "trihedral_corner"
+    assert config.task.seam_id == "vertical_corner"
+    assert config.task.direction == "forward"
+    assert config.randomization.trihedral_size_range_m == 0.008
+    assert config.collection.dataset_root.endswith("weldpath_trihedral_vertical_raw_v2")
+
+
 @pytest.mark.parametrize(
     ("path", "seam_id", "max_steps"),
     [
@@ -60,6 +70,7 @@ def test_curve_plate_config_selects_fixed_orientation_curve_task() -> None:
         ("configs/deploy/smolvla_pipe_bottom.yaml", "pipe_bottom", 1200),
         ("configs/deploy/smolvla_pipe_top.yaml", "pipe_top", 3300),
         ("configs/deploy/smolvla_curve_plate.yaml", "curve_seam", 1500),
+        ("configs/deploy/smolvla_trihedral_vertical.yaml", "vertical_corner", 1500),
     ],
 )
 def test_deployment_profiles_select_complete_task(

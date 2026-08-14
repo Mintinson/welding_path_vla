@@ -83,6 +83,8 @@ pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
 pixi run -e sim sim-collect --config_path=configs/pipe_top.yaml --collection.episodes=50
 pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
 pixi run -e sim sim-collect --config_path=configs/curve_plate.yaml --collection.episodes=50
+pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
+pixi run -e sim sim-collect --config_path=configs/trihedral_vertical.yaml --collection.episodes=50
 pixi run -e sim sim-replay --episode=PATH
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
 pixi run -e data export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
@@ -117,6 +119,7 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_l_
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_bottom.yaml
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_top.yaml
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_curve_plate.yaml
+pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
 ```
 
 配置由 `base.yaml`、`tasks/`、`policies/` 和 `deploy/` 分层组合；部署时更换一个入口
