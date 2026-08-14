@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -9,7 +10,11 @@ from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
 from welding_path_vla.policies.data import balanced_frame_indices
-from welding_path_vla.policies.lerobot_training import make_policy_config, make_train_config
+from welding_path_vla.policies.lerobot_training import (
+    apply_training_overrides,
+    make_policy_config,
+    make_train_config,
+)
 from welding_path_vla.policies.process import lerobot_config_argument, lerobot_training_log
 from welding_path_vla.policies.runtime import LeRobotRuntime
 from welding_path_vla.policies.spec import SMOLVLA
@@ -42,6 +47,8 @@ def test_smolvla_uses_lerobot_training_config() -> None:
     assert training.dataset.return_uint8
     assert training.dataset.eval_split == 0.1
     assert training.batch_size == 16
+    assert training.wandb.enable
+    assert training.wandb.mode == "offline"
 
 
 def test_smolvla_command_uses_pretrained_path() -> None:
@@ -51,6 +58,8 @@ def test_smolvla_command_uses_pretrained_path() -> None:
     assert "--policy.path=lerobot/smolvla_base" in command
     assert "--policy.input_features=null" in command
     assert "--policy.chunk_size=30" in command
+    assert "--wandb.enable=true" in command
+    assert "--wandb.mode=offline" in command
 
 
 def test_smolvla_training_can_continue_from_checkpoint() -> None:
@@ -166,7 +175,7 @@ def test_lerobot_resume_receives_checkpoint_config(tmp_path: Path) -> None:
 
 
 def test_lerobot_local_log_uses_official_file_handler(monkeypatch: Any, tmp_path: Path) -> None:
-    """关闭 WandB 时仍应把日志路径交给 LeRobot 自带 logging。"""
+    """本地日志应复用官方 handler，但只保存 INFO 以上的有效信息。"""
     from importlib import import_module
 
     module = import_module("lerobot.scripts.lerobot_train")
@@ -181,3 +190,28 @@ def test_lerobot_local_log_uses_official_file_handler(monkeypatch: Any, tmp_path
         cast(Any, module).init_logging()
 
     assert received["log_file"] == log_path
+    assert received["file_level"] == "INFO"
+
+
+def test_legacy_resume_starts_first_offline_wandb_run() -> None:
+    """旧 checkpoint 没有 W&B ID 时，恢复训练应创建首个离线 run。"""
+    app = AppConfig.load("configs/smolvla.yaml")
+    config = SimpleNamespace(
+        resume=True,
+        wandb=SimpleNamespace(
+            enable=False, mode=None, project="", disable_artifact=False, run_id=None
+        ),
+        dataset=SimpleNamespace(repo_id="", root=None, video_backend="", eval_split=0.0),
+        policy=SimpleNamespace(
+            device="cpu",
+            scheduler_warmup_steps=100,
+            scheduler_decay_steps=5000,
+        ),
+    )
+
+    apply_training_overrides(config, app.policy, replace(app.training, resume=True))
+
+    assert config.wandb.run_id
+    assert config.wandb.mode == "offline"
+    assert config.policy.scheduler_warmup_steps == 5000
+    assert config.policy.scheduler_decay_steps == 229627

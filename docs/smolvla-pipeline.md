@@ -54,7 +54,7 @@ pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
 | 圆管上沿完整圆弧 | 100 | `datasets/weldpath_pipe_top_raw_v2` |
 
 `valid_recovery` 表示成功完成扰动恢复的有效示范，也计入成功数据。统一数据集包含
-313 个 episode、436,928 帧和 3 条任务指令；图像只保存为双视角视频，不重复保存逐帧
+4250 个 episode、4,096,853 帧和 15 条任务指令；图像只保存为双视角视频，不重复保存逐帧
 图片。
 
 ## 3. 训练与离线评估
@@ -83,18 +83,19 @@ pixi run -e train train-policy \
 程序会解析 `training.output_dir/checkpoints/last`，恢复模型、optimizer、scheduler、
 随机数状态、数据采样位置和全局 step。`training.steps` 遵循 LeRobot 语义，表示训练
 结束时的总步数，而不是本次追加步数。例如从 step 3,500 恢复且
-`training.steps=5000`，本次继续训练 1,500 步；如果 checkpoint 已达到 5,000，则应
+`training.steps=229627`，本次继续训练 226,127 步；如果 checkpoint 已达到目标值，则应
 把总目标覆盖为更大的值：
 
 ```bash
 pixi run -e train train-policy \
   --config_path=configs/smolvla.yaml \
   --training.resume=true \
-  --training.steps=10000
+  --training.steps=250000
 ```
 
 每次训练都会把与终端相同的 LeRobot 指标追加到
-`<training.output_dir>/train.log`，此功能不依赖 WandB。
+`<training.output_dir>/train.log`。文件只保留 INFO 以上的信息；W&B 默认同时以 offline
+模式记录到 `<training.output_dir>/wandb`，联网后可用 `wandb sync` 上传。
 
 如需加载权重并在新的输出目录开始另一轮微调，而不恢复 optimizer 和全局 step，则
 使用 `policy.checkpoint`：

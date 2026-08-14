@@ -17,25 +17,25 @@ policy:
     train_state_proj: true
     # 完整 policy checkpoint 会覆盖 VLM 权重，关闭额外的 VLM 重复加载。
     load_vlm_weights: false
-    scheduler_warmup_steps: 100
-    scheduler_decay_steps: 5000
+    scheduler_warmup_steps: 5000
+    scheduler_decay_steps: 229627
 
 training:
   dataset_repo_id: huayan/weldpath_relative_v1
-  dataset_root: datasets/weldpath_lerobot_relative_v1
+  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
   output_dir: outputs/train/trajectory_vla_weldpath_relative_v1
   lr : 1.5e-4
   batch_size: 16
-  steps: 5000
+  # 3,674,023 个训练帧 / batch 16，约为完整遍历一次训练集。
+  steps: 229627
   num_workers: 4
   video_backend: torchcodec
   eval_split: 0.1
-  eval_steps: 500
+  eval_steps: 10000
   max_eval_samples: 100
   log_freq: 20
-  save_freq: 500
+  save_freq: 25000
   seed: 20260730
-  wandb: false
   amp_dtype: bfloat16
   resume: false
 

@@ -25,13 +25,13 @@ policy:
     train_expert: true
     train_state_proj: true
     # 以下显存优化接口默认关闭；需要时可独立启用。
-    frozen_vision_dtype: bfloat16  # float32
+    frozen_vision_dtype: float32
     lora_target: expert
     gradient_checkpointing_qwen: false
     gradient_checkpointing_expert: false
     use_amp: true
-    scheduler_warmup_steps: 100
-    scheduler_decay_steps: 5000
+    scheduler_warmup_steps: 18000
+    scheduler_decay_steps: 918506
 
 training:
   dataset_repo_id: huayan/weldpath_relative_v1
@@ -39,16 +39,16 @@ training:
   output_dir: outputs/train/traj_vla_qwen_weldpath_relative_v1
   lr: 1.0e-4
   batch_size: 4
-  steps: 5000
+  # 3,674,023 个训练帧 / batch 4，约为完整遍历一次训练集。
+  steps: 918506
   num_workers: 4
   video_backend: torchcodec
   eval_split: 0.1
-  eval_steps: 500
+  eval_steps: 50000
   max_eval_samples: 100
   log_freq: 20
-  save_freq: 500
+  save_freq: 100000
   seed: 20260806
-  wandb: false
   amp_dtype: bfloat16
   resume: false
 

@@ -22,20 +22,20 @@ policy:
 
 training:
   dataset_repo_id: huayan/weldpath_relative_v1
-  dataset_root: datasets/weldpath_lerobot_relative_v1
+  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
   output_dir: outputs/train/act_weldpath_relative_v1
   batch_size: 2
-  steps: 100000
+  # 3,674,023 个训练帧 / batch 2，约为完整遍历一次训练集。
+  steps: 1837012
   num_workers: 4
   # TorchCodec 负责训练期随机解码；Pixi 按 PyTorch ABI 固定对应版本。
   video_backend: torchcodec
   eval_split: 0.1
-  eval_steps: 2000
+  eval_steps: 100000
   max_eval_samples: 1000
   log_freq: 100
-  save_freq: 10000
+  save_freq: 250000
   seed: 20260724
-  wandb: false
   # RTX 40 系使用 BF16；FP16 smoke 中 ACT 梯度会溢出并被 GradScaler 跳过。
   amp_dtype: bfloat16
 

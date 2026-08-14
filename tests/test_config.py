@@ -108,3 +108,24 @@ def test_config_includes_merge_nested_sections_in_order(tmp_path: Path) -> None:
 def test_frequency_layers_must_be_integral() -> None:
     with pytest.raises(ValueError, match="frequencies"):
         TimingConfig(physics_hz=500, control_hz=120, policy_hz=20).validate()
+
+
+@pytest.mark.parametrize(
+    ("path", "steps"),
+    [
+        ("configs/act.yaml", 1_837_012),
+        ("configs/smolvla.yaml", 229_627),
+        ("configs/trajectory_vla.yaml", 229_627),
+        ("configs/traj_vla_qwen.yaml", 918_506),
+        ("configs/pi0.yaml", 3_674_023),
+        ("configs/pi0_5.yaml", 3_674_023),
+        ("configs/pi0_a100.yaml", 918_506),
+        ("configs/pi0_5_a100.yaml", 918_506),
+    ],
+)
+def test_training_steps_cover_current_large_dataset_once(path: str, steps: int) -> None:
+    """正式配置应近似覆盖 DataDiskD 当前训练帧一次。"""
+    config = AppConfig.load(path)
+    assert config.training.steps == steps
+    assert config.training.wandb
+    assert config.training.wandb_mode == "offline"

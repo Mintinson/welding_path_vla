@@ -16,25 +16,25 @@ policy:
     freeze_vision_encoder: true
     train_expert_only: true
     train_state_proj: true
-    scheduler_warmup_steps: 100
-    scheduler_decay_steps: 5000
+    scheduler_warmup_steps: 5000
+    scheduler_decay_steps: 229627
 
 training:
   dataset_repo_id: huayan/weldpath_relative_v1
-  dataset_root: datasets/weldpath_lerobot_relative_v1
+  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
   output_dir: outputs/train/smolvla_weldpath_relative_v1
   # 实测 batch 16 峰值约 2.6 GiB、吞吐约 83 samples/s；batch 32 反而降至约 78。
   batch_size: 16
-  steps: 5000
+  # 3,674,023 个训练帧 / batch 16，约为完整遍历一次训练集。
+  steps: 229627
   num_workers: 4
   video_backend: torchcodec
   eval_split: 0.1
-  eval_steps: 500
+  eval_steps: 10000
   max_eval_samples: 100
   log_freq: 20
-  save_freq: 500
+  save_freq: 25000
   seed: 20260729
-  wandb: false
   amp_dtype: bfloat16
   resume: true
 

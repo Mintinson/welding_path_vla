@@ -307,10 +307,12 @@ policy:
 
 training:
   dataset_repo_id: YOUR_NAME/weldpath_relative_v1
-  dataset_root: datasets/weldpath_lerobot_relative_v1
+  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
   output_dir: outputs/train/smolvla_v2
   batch_size: 16
-  steps: 100000
+  steps: 229627
+  wandb: true
+  wandb_mode: offline
 ```
 
 安装训练环境，先打印最终命令：
@@ -329,6 +331,24 @@ pixi run -e train train-policy --config_path=configs/default.yaml
 ```
 
 训练器会从 YAML 生成 LeRobot 0.6 的 `lerobot-train` 参数，包括 policy 类型、设备、chunk 长度、batch size、steps 和输出目录。首次实验建议先设 `steps: 1000` 验证 loss、显存、checkpoint 和视频键，再恢复正式训练步数。服务器端同步源码、`pixi.lock` 和数据集，执行同一命令即可复现环境；不要同步 `.pixi/`。
+
+DataDiskD 当前数据集包含 4250 个 episode、4,096,853 帧和 15 个任务。LeRobot 按任务
+留出最后 10% episode 后，训练集实际为 3,674,023 帧。配置中的最大 step 以约一次完整
+训练集遍历为目标：ACT 为 1,837,012，SmolVLA / Trajectory VLA 为 229,627，
+Traj-VLA-Qwen 为 918,506，单卡 π0 / π0.5 为 3,674,023，双 A100 有效 batch 4 时为
+918,506。数据继续增加后，应重新使用“训练帧数 ÷ 有效 batch size”计算，而不是沿用固定
+的 5000 step。
+
+W&B 默认以 offline 模式写入 `<training.output_dir>/wandb`，不会访问网络，也不会重复复制
+大型 checkpoint。网络可用后执行：
+
+```bash
+pixi run -e train wandb sync outputs/train/NAME/wandb/offline-run-*
+```
+
+如需训练时直接在线显示，可临时添加 `--training.wandb_mode=online`。`train.log` 只保存
+INFO 以上的配置、loss、学习率、吞吐、显存、评估和 checkpoint 信息，不再记录数据文件
+锁和逐视频打开等 DEBUG 噪声。
 
 ## 7. 如何系统扩大数据多样性
 

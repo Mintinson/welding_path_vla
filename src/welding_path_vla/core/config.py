@@ -348,6 +348,15 @@ class PolicyConfig:
 
 @dataclass(slots=True)
 class TrainingConfig:
+    """策略训练、日志和实验跟踪配置。
+
+    Attributes:
+        wandb: 是否记录 W&B 实验。
+        wandb_mode: W&B 运行模式；默认离线，之后可使用 ``wandb sync`` 上传。
+        wandb_project: W&B 项目名称。
+        wandb_disable_artifact: 是否禁止 W&B 复制大型 checkpoint，只保留指标。
+    """
+
     dataset_repo_id: str | None = None
     dataset_root: str | None = "datasets/weldpath_lerobot_relative_v1"
     output_dir: str = "outputs/train"
@@ -362,7 +371,10 @@ class TrainingConfig:
     log_freq: int = 100
     save_freq: int = 10_000
     seed: int = 20260724
-    wandb: bool = False
+    wandb: bool = True
+    wandb_mode: str = "offline"
+    wandb_project: str = "welding_path_vla"
+    wandb_disable_artifact: bool = True
     amp_dtype: str = "bfloat16"
     resume: bool = False
     peft: dict[str, Any] | None = None
@@ -495,8 +507,7 @@ class AppConfig:
         seam_limit = maximum_seam_length(self.workpiece, self.task.seam_id)
         if seam_limit is not None and not 0 < self.task.seam_length_m <= seam_limit:
             raise ValueError(
-                f"task.seam_length_m must be in (0, {seam_limit:.4f}] for "
-                f"{self.task.seam_id}"
+                f"task.seam_length_m must be in (0, {seam_limit:.4f}] for {self.task.seam_id}"
             )
         if self.task.direction not in {"forward", "reverse"}:
             raise ValueError("task.direction must be forward or reverse")
@@ -604,6 +615,8 @@ class AppConfig:
             raise ValueError("policy horizon and training steps must be positive")
         if self.training.amp_dtype not in {"float16", "bfloat16"}:
             raise ValueError("training.amp_dtype must be float16 or bfloat16")
+        if self.training.wandb_mode not in {"online", "offline", "disabled"}:
+            raise ValueError("training.wandb_mode must be online, offline, or disabled")
         if (
             self.policy_evaluation.batch_size < 1
             or self.policy_evaluation.num_workers < 0

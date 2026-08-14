@@ -48,6 +48,7 @@ def lerobot_training_log(log_path: Path) -> Generator[None, None, None]:
 
     def init_logging_with_file(*args: Any, **kwargs: Any) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        kwargs.setdefault("file_level", "INFO")
         init_logging(*args, log_file=log_path, **kwargs)
 
     train_module.init_logging = init_logging_with_file

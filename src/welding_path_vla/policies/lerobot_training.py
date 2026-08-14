@@ -74,11 +74,22 @@ def apply_training_overrides(config: Any, policy: PolicyConfig, training: Traini
     config.max_eval_samples = training.max_eval_samples
     config.save_freq = training.save_freq
     config.wandb.enable = training.wandb
+    config.wandb.mode = training.wandb_mode
+    config.wandb.project = training.wandb_project
+    config.wandb.disable_artifact = training.wandb_disable_artifact
+    if config.resume and training.wandb and not config.wandb.run_id:
+        from secrets import token_hex
+
+        # 兼容过去未启用 W&B 的 checkpoint；新 ID 会随下一检查点持久化。
+        config.wandb.run_id = token_hex(4)
     config.dataset.repo_id = training.dataset_repo_id or config.dataset.repo_id
     config.dataset.root = Path(training.dataset_root) if training.dataset_root else None
     config.dataset.video_backend = training.video_backend
     config.dataset.eval_split = training.eval_split
     config.policy.device = policy.device
+    for name in ("scheduler_warmup_steps", "scheduler_decay_steps"):
+        if name in policy.parameters and hasattr(config.policy, name):
+            setattr(config.policy, name, policy.parameters[name])
     if training.lr is not None and hasattr(config.policy, "optimizer_lr"):
         config.policy.optimizer_lr = training.lr
     return config
@@ -146,7 +157,12 @@ def make_train_config(
         eval_steps=training.eval_steps,
         max_eval_samples=training.max_eval_samples,
         save_freq=training.save_freq,
-        wandb=WandBConfig(enable=training.wandb),
+        wandb=WandBConfig(
+            enable=training.wandb,
+            mode=training.wandb_mode,
+            project=training.wandb_project,
+            disable_artifact=training.wandb_disable_artifact,
+        ),
         peft=PeftConfig(**training.peft) if training.peft else None,
         resume=False,
     )
@@ -181,6 +197,8 @@ def training_plan(
         "steps": training.steps,
         "output_dir": training.output_dir,
         "log_file": str(Path(training.output_dir) / "train.log"),
+        "wandb_mode": training.wandb_mode if training.wandb else "disabled",
+        "wandb_dir": str(Path(training.output_dir) / "wandb"),
         "action_representation": policy.action_representation,
         "action_horizon": policy.action_horizon,
         "action_steps": policy.action_steps,

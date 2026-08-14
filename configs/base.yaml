@@ -142,7 +142,12 @@ training:
   log_freq: 100
   save_freq: 10000
   seed: 20260724
-  wandb: false
+  # 默认离线记录到 output_dir/wandb；联网后可使用 wandb sync 上传。
+  wandb: true
+  wandb_mode: offline
+  wandb_project: welding_path_vla
+  # checkpoint 已由 LeRobot 单独保存，避免 W&B 再复制一份大型模型。
+  wandb_disable_artifact: true
   amp_dtype: bfloat16
   resume: false
   peft: null
