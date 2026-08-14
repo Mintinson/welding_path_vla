@@ -1,0 +1,19 @@
+includes:
+  - smolvla.yaml
+
+policy:
+  parameters:
+    compile_model: true
+    compile_mode: reduce-overhead
+    scheduler_warmup_steps: 1250
+    scheduler_decay_steps: 57407
+
+training:
+  output_dir: outputs/train/smolvla_weldpath_relative_v1_a100
+  # 每卡 batch 32，双卡全局 batch 64；约完整遍历训练集一次。
+  batch_size: 32
+  steps: 57407
+  num_workers: 8
+  eval_steps: 2500
+  save_freq: 5000
+  resume: false

@@ -334,10 +334,11 @@ pixi run -e train train-policy --config_path=configs/default.yaml
 
 DataDiskD 当前数据集包含 4250 个 episode、4,096,853 帧和 15 个任务。LeRobot 按任务
 留出最后 10% episode 后，训练集实际为 3,674,023 帧。配置中的最大 step 以约一次完整
-训练集遍历为目标：ACT 为 1,837,012，SmolVLA / Trajectory VLA 为 229,627，
-Traj-VLA-Qwen 为 918,506，单卡 π0 / π0.5 为 3,674,023，双 A100 有效 batch 4 时为
-918,506。数据继续增加后，应重新使用“训练帧数 ÷ 有效 batch size”计算，而不是沿用固定
-的 5000 step。
+训练集遍历为目标。本机配置中 ACT 为 1,837,012，SmolVLA / Trajectory VLA 为 229,627，
+Traj-VLA-Qwen 为 918,506，单卡 π0 / π0.5 为 3,674,023。双 A100 配置使用更大的每卡
+batch：ACT、SmolVLA 和 Trajectory VLA 的全局 batch 64 对应 57,407 step；
+Traj-VLA-Qwen 的全局 batch 32 对应 114,814 step；π0 / π0.5 的全局 batch 8 对应
+459,253 step。数据继续增加后，应重新使用“训练帧数 ÷ 全局 batch”计算。
 
 W&B 默认以 offline 模式写入 `<training.output_dir>/wandb`，不会访问网络，也不会重复复制
 大型 checkpoint。网络可用后执行：
@@ -349,6 +350,25 @@ pixi run -e train wandb sync outputs/train/NAME/wandb/offline-run-*
 如需训练时直接在线显示，可临时添加 `--training.wandb_mode=online`。`train.log` 只保存
 INFO 以上的配置、loss、学习率、吞吐、显存、评估和 checkpoint 信息，不再记录数据文件
 锁和逐视频打开等 DEBUG 噪声。
+
+### 双 A100 加速
+
+所有策略都提供 `configs/{policy}_a100.yaml`。Accelerate 的 `batch_size` 是每个 DDP 进程、
+也就是每张 GPU 的 batch；A100 profile 通过增大每卡 batch 提高利用率，并按双卡全局 batch
+重新计算一轮数据的 step。SmolVLA、Trajectory VLA、Traj-VLA-Qwen、π0 和 π0.5 还启用
+`torch.compile`。π0 系列默认保留梯度检查点，以兼容 40 GiB A100。以 Trajectory VLA 为例：
+
+```bash
+pixi run -e train train-policy-2gpu \
+  --config_path=configs/trajectory_vla_a100.yaml
+```
+
+第一次运行会有编译预热，判断加速效果应忽略最初几十步，并比较 `train.log` 的 `updt_s`
+与 `smp/s`。完整一轮数据的预计时间约为 `steps × updt_s`；若发生 OOM，先把每卡 batch
+减半，再按新的双卡全局 batch 重算 step。
+
+完整公式、当前各策略的计算结果，以及更换 GPU 数量或数据集后的重算步骤，见
+[多 GPU Batch、Step 与训练时间计算](training-scale-guide.md)。
 
 ## 7. 如何系统扩大数据多样性
 

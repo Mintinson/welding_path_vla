@@ -101,7 +101,7 @@ upload-lerobot = "python scripts/upload_lerobot_dataset.py"
 robot-config = "python scripts/show_robot_config.py"
 policy-config = "python scripts/show_policy_config.py"
 train-policy = "python scripts/train_policy.py"
-# 在 2×A100 服务器上启动两个 DDP 进程；batch_size 是每张卡的 batch。
+# 在 2×A100 服务器上启动两个 DDP 进程；batch_size 是每个进程、每张卡的 batch。
 train-policy-2gpu = "accelerate launch --num_processes=2 scripts/train_policy.py"
 policy-data-check = "python scripts/check_policy_data.py"
 policy-evaluate = "python scripts/evaluate_policy.py"

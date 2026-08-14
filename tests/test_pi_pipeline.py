@@ -19,8 +19,8 @@ from welding_path_vla.policies.training import TrainingRequest
     [
         ("configs/pi0.yaml", "pi0", 1, 30),
         ("configs/pi0_5.yaml", "pi0_5", 1, 30),
-        ("configs/pi0_a100.yaml", "pi0", 2, 30),
-        ("configs/pi0_5_a100.yaml", "pi0_5", 2, 30),
+        ("configs/pi0_a100.yaml", "pi0", 4, 30),
+        ("configs/pi0_5_a100.yaml", "pi0_5", 4, 30),
     ],
 )
 def test_pi_training_configs_compose_hardware_profiles(

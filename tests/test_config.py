@@ -119,8 +119,12 @@ def test_frequency_layers_must_be_integral() -> None:
         ("configs/traj_vla_qwen.yaml", 918_506),
         ("configs/pi0.yaml", 3_674_023),
         ("configs/pi0_5.yaml", 3_674_023),
-        ("configs/pi0_a100.yaml", 918_506),
-        ("configs/pi0_5_a100.yaml", 918_506),
+        ("configs/pi0_a100.yaml", 459_253),
+        ("configs/pi0_5_a100.yaml", 459_253),
+        ("configs/act_a100.yaml", 57_407),
+        ("configs/smolvla_a100.yaml", 57_407),
+        ("configs/trajectory_vla_a100.yaml", 57_407),
+        ("configs/traj_vla_qwen_a100.yaml", 114_814),
     ],
 )
 def test_training_steps_cover_current_large_dataset_once(path: str, steps: int) -> None:
@@ -129,3 +133,25 @@ def test_training_steps_cover_current_large_dataset_once(path: str, steps: int) 
     assert config.training.steps == steps
     assert config.training.wandb
     assert config.training.wandb_mode == "offline"
+
+
+@pytest.mark.parametrize(
+    ("path", "batch_size", "compiled"),
+    [
+        ("configs/act_a100.yaml", 32, False),
+        ("configs/smolvla_a100.yaml", 32, True),
+        ("configs/trajectory_vla_a100.yaml", 32, True),
+        ("configs/traj_vla_qwen_a100.yaml", 16, True),
+        ("configs/pi0_a100.yaml", 4, True),
+        ("configs/pi0_5_a100.yaml", 4, True),
+    ],
+)
+def test_a100_profiles_use_large_per_gpu_batches(
+    path: str,
+    batch_size: int,
+    compiled: bool,
+) -> None:
+    """双 A100 配置应提高每卡利用率，并只启用模型支持的编译优化。"""
+    config = AppConfig.load(path)
+    assert config.training.batch_size == batch_size
+    assert config.policy.parameters.get("compile_model", False) is compiled

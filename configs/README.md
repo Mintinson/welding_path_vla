@@ -34,6 +34,24 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe
 pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
 ```
 
+所有训练策略都有对应的双 A100 入口：
+
+```text
+act_a100.yaml
+smolvla_a100.yaml
+trajectory_vla_a100.yaml
+traj_vla_qwen_a100.yaml
+pi0_a100.yaml
+pi0_5_a100.yaml
+```
+
+A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再按当前 3,674,023 个训练帧
+重新计算约一轮数据所需 step。支持的 VLA 同时启用 `torch.compile`；π0 / π0.5 默认保留
+梯度检查点，确保 40 GiB 型号也有合理的显存余量。需要固定 optimizer update 数量的实验，
+可以单独覆盖 `--training.steps`，但这时增大 batch 会增加总训练样本和计算量。
+详细计算公式和硬件调优流程见
+[多 GPU Batch、Step 与训练时间计算](../docs/training-scale-guide.md)。
+
 `{model}` 当前可取 `smolvla`、`trajectory_vla`、`pi0` 和 `pi0_5`；`{task}` 可取 `l_joint`、
 `pipe_bottom` 和 `pipe_top`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
 调整工件或焊缝只修改 `tasks/*.yaml`。临时参数仍可通过 Draccus 覆盖，例如

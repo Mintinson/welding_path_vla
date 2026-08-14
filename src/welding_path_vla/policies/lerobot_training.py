@@ -219,12 +219,18 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
     config = make_train_config(policy, training, spec)
     accelerator = None
     if spec.explicit_mixed_precision:
-        from accelerate import Accelerator
+        from accelerate import Accelerator, DataLoaderConfiguration
+        from accelerate.utils import DistributedDataParallelKwargs
 
         enabled = policy.parameters.get("use_amp", True)
-        precision = training.amp_dtype if enabled else "float32"
+        precision = policy.parameters.get("dtype", training.amp_dtype) if enabled else "float32"
         accelerator = Accelerator(
-            mixed_precision={"bfloat16": "bf16", "float16": "fp16"}.get(precision, "no")
+            step_scheduler_with_optimizer=False,
+            mixed_precision={"bfloat16": "bf16", "float16": "fp16"}.get(precision, "no"),
+            dataloader_config=DataLoaderConfiguration(
+                non_blocking=True,
+            ),
+            kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
         )
     resume_config = (
         config.checkpoint_path / "pretrained_model" / "train_config.json"
