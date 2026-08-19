@@ -4,13 +4,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from lerobot.processor.converters import TransitionKey
 from scipy.spatial.transform import Rotation
 
 from welding_path_vla.core.geometry import (
     absolute_ee_actions_from_relative,
     relative_ee_actions_from_absolute,
 )
-from welding_path_vla.policies.action_processors import require_relative_checkpoint
+from welding_path_vla.policies.action_processors import (
+    AbsoluteEEActionsProcessorStep,
+    RelativeEEActionsProcessorStep,
+    require_relative_checkpoint,
+)
 
 
 def rotation_6d(matrix: np.ndarray) -> np.ndarray:
@@ -60,3 +65,18 @@ def test_old_checkpoint_is_not_silently_resumed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     require_relative_checkpoint(tmp_path)
+
+
+def test_absolute_processor_aligns_anchor_with_policy_action() -> None:
+    """π0.5 的 GPU / 混合精度动作应使用同设备、同精度的 TCP 锚点。"""
+    relative_step = RelativeEEActionsProcessorStep()
+    relative_step.anchor_positions = torch.zeros((1, 3), dtype=torch.float32)
+    relative_step.anchor_quaternions = torch.tensor([[1, 0, 0, 0]], dtype=torch.float32)
+    processor = AbsoluteEEActionsProcessorStep(relative_step)
+    action = torch.tensor([[[0.1, 0.2, 0.3, 1, 0, 0, 0, 1, 0]]], dtype=torch.float64)
+
+    converted = processor({TransitionKey.ACTION: action})
+
+    absolute = converted[TransitionKey.ACTION]
+    assert absolute.dtype == action.dtype
+    torch.testing.assert_close(absolute[..., :3], action[..., :3])

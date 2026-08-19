@@ -58,4 +58,46 @@ def lerobot_training_log(log_path: Path) -> Generator[None, None, None]:
         train_module.init_logging = init_logging
 
 
-__all__ = ["lerobot_config_argument", "lerobot_training_log"]
+@contextmanager
+def synchronized_lerobot_config_validation(
+    config: Any,
+    accelerator: Any | None,
+) -> Generator[None, None, None]:
+    """在分布式训练中同步 LeRobot 的输出目录校验。
+
+    LeRobot 在 ``cfg.validate()`` 后立即初始化日志，而主 rank 的日志初始化会
+    创建 ``output_dir``。若另一 rank 较慢才执行校验，它会把本次运行刚创建的
+    目录误判成已有实验目录。让每个 rank 完成校验后再一起继续即可消除此竞态。
+    """
+    if accelerator is None:
+        # Some policies let LeRobot create Accelerator after cfg.validate().
+        # PartialState initializes the same shared distributed state early enough
+        # for this validation barrier, and the later Accelerator reuses it.
+        from accelerate import PartialState
+
+        distributed_state: Any = PartialState()
+    else:
+        distributed_state = accelerator
+    if distributed_state.num_processes <= 1:
+        yield
+        return
+
+    config_class = type(config)
+    original_validate = config_class.validate
+
+    def validate_with_barrier(instance: Any) -> None:
+        original_validate(instance)
+        distributed_state.wait_for_everyone()
+
+    config_class.validate = validate_with_barrier
+    try:
+        yield
+    finally:
+        config_class.validate = original_validate
+
+
+__all__ = [
+    "lerobot_config_argument",
+    "lerobot_training_log",
+    "synchronized_lerobot_config_validation",
+]

@@ -14,7 +14,11 @@ from welding_path_vla.policies.action_processors import (
 )
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint
 from welding_path_vla.policies.data import validate_dataset
-from welding_path_vla.policies.process import lerobot_config_argument, lerobot_training_log
+from welding_path_vla.policies.process import (
+    lerobot_config_argument,
+    lerobot_training_log,
+    synchronized_lerobot_config_validation,
+)
 from welding_path_vla.policies.spec import LeRobotPolicySpec
 
 
@@ -240,6 +244,7 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
     with (
         lerobot_config_argument(resume_config),
         lerobot_training_log(Path(training.output_dir) / "train.log"),
+        synchronized_lerobot_config_validation(config, accelerator),
         relative_processor_factory(),
     ):
         lerobot_train(config, accelerator=accelerator)

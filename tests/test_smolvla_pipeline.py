@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +69,75 @@ def test_smolvla_training_can_continue_from_checkpoint() -> None:
     policy = replace(config.policy, checkpoint="outputs/train/previous/pretrained_model")
     command = TrainingRequest(policy, replace(config.training, resume=False)).command()
     assert "--policy.path=outputs/train/previous/pretrained_model" in command
+
+
+def test_runtime_restores_policy_features_from_checkpoint_without_type(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """旧 checkpoint 缺少策略类型时也必须恢复强类型 feature。"""
+    from lerobot.configs import PolicyFeature
+    from lerobot.policies.pi05.configuration_pi05 import PI05Config
+    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+
+    from welding_path_vla.policies import runtime as runtime_module
+
+    class FakePolicy:
+        """只记录 runtime 传入配置的轻量 policy。"""
+
+        def __init__(self, config: Any) -> None:
+            self.config = config
+
+        @classmethod
+        def from_pretrained(cls, path: Path, *, config: Any) -> "FakePolicy":
+            return cls(config)
+
+        def to(self, device: str) -> "FakePolicy":
+            return self
+
+        def eval(self) -> "FakePolicy":
+            return self
+
+    checkpoint = tmp_path / "pretrained_model"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    "observation.images.global": {
+                        "type": "VISUAL",
+                        "shape": [3, 480, 640],
+                    },
+                    "observation.state": {"type": "STATE", "shape": [13]},
+                },
+                "output_features": {"action": {"type": "ACTION", "shape": [9]}},
+                "device": "cpu",
+                "use_peft": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "make_relative_pre_post_processors",
+        lambda *args, **kwargs: (object(), object()),
+    )
+    for config_class in (SmolVLAConfig, PI05Config):
+        spec = SimpleNamespace(
+            config_class=lambda config_class=config_class: config_class,
+            policy_class=lambda: FakePolicy,
+            display_name=config_class.__name__,
+        )
+        loaded = LeRobotRuntime.from_pretrained(checkpoint, "cpu", spec)
+
+        assert all(
+            isinstance(feature, PolicyFeature)
+            for feature in loaded.policy.config.input_features.values()
+        )
+        assert all(
+            isinstance(feature, PolicyFeature)
+            for feature in loaded.policy.config.output_features.values()
+        )
 
 
 def test_policy_evaluation_balances_frames_across_tasks() -> None:

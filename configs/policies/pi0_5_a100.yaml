@@ -7,16 +7,20 @@ policy:
   action_steps: 8
   parameters:
     num_inference_steps: 10
+    # Disable torch.compile to leave peak-memory headroom during model initialization.
     compile_model: true
     compile_mode: reduce-overhead
     freeze_vision_encoder: true
-    train_expert_only: false
+    # DDP replicates the model per GPU; train only the action expert through LoRA.
+    train_expert_only: true
+    gradient_checkpointing: false
     scheduler_warmup_steps: 9000
     scheduler_decay_steps: 459253
 
 training:
   output_dir: outputs/train/pi0_5_weldpath_relative_v1_a100
-  # 每卡 batch 4，双卡全局 batch 8；约完整遍历训练集一次。
+  # 每卡 batch 2，双卡全局 batch 4；在 40GB A100 上保留显存余量。
+  # 每卡 batch 2，双卡全局 batch 4；在 40GB A100 上保留显存余量。
   batch_size: 4
   steps: 459253
   num_workers: 8
@@ -25,4 +29,8 @@ training:
   log_freq: 50
   save_freq: 50000
   resume: false
-  peft: null
+  # 只训练 action expert 的低秩适配器，避免全参数 Adam 状态触发单卡 OOM。
+  peft:
+    method_type: LORA
+    r: 4
+    lora_alpha: 8

@@ -80,9 +80,11 @@ class AbsoluteEEActionsProcessorStep(ProcessorStep):
         step = self.relative_step
         if step is None or step.anchor_positions is None or step.anchor_quaternions is None:
             raise RuntimeError("relative action postprocessor 缺少当前 TCP 锚点")
+        anchor_positions = step.anchor_positions.to(action)
+        anchor_quaternions = step.anchor_quaternions.to(action)
         converted = transition.copy()
         cast(Any, converted)[TransitionKey.ACTION] = absolute_ee_actions_from_relative(
-            action, step.anchor_positions, step.anchor_quaternions
+            action, anchor_positions, anchor_quaternions
         )
         return converted
 

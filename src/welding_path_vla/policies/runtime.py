@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from draccus.argparsing import parse
+from draccus.options import config_type
 from lerobot.configs import PreTrainedConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
@@ -15,6 +18,27 @@ from welding_path_vla.policies.action_processors import make_relative_pre_post_p
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.spec import LeRobotPolicySpec
+
+
+def load_policy_config(
+    checkpoint: Path,
+    config_class: type[PreTrainedConfig],
+) -> PreTrainedConfig:
+    """加载 checkpoint 配置，并恢复嵌套的 LeRobot 强类型字段。
+
+    Args:
+        checkpoint: 包含 ``config.json`` 的模型目录。
+        config_class: 当前策略注册的具体配置类型。
+
+    Returns:
+        完整反序列化的策略配置。
+    """
+    config_path = checkpoint / "config.json"
+    config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    if "type" in config_data:
+        return PreTrainedConfig.from_pretrained(checkpoint)
+    with config_type("json"):
+        return parse(config_class, config_path, args=[])
 
 
 @dataclass(slots=True)
@@ -49,7 +73,7 @@ class LeRobotRuntime:
         selected = device if is_torch_device_available(device) else str(auto_select_torch_device())
         config_class = spec.config_class()
         policy_class = spec.policy_class()
-        config = PreTrainedConfig.from_pretrained(path)
+        config = load_policy_config(path, config_class)
         if not isinstance(config, config_class):
             raise ValueError(f"checkpoint policy is not {spec.display_name}: {path}")
         config.device = selected
@@ -118,4 +142,4 @@ class LeRobotRuntime:
         return self.action_queue.popleft()
 
 
-__all__ = ["LeRobotRuntime"]
+__all__ = ["LeRobotRuntime", "load_policy_config"]
