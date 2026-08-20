@@ -1,5 +1,8 @@
 # 策略公共层与扩展方式
 
+新策略应先复用公共数据、relative-action processor、训练、评估和 rollout。只有模型结构或
+processor 语义确实不同，才增加策略专属目录。
+
 ## 模块边界
 
 `src/welding_path_vla/policies/` 只保留一套 LeRobot 胶水流程：
@@ -14,7 +17,7 @@ simulation_rollout.py   共用 robosuite 闭环 rollout
 checkpoint.py           checkpoint 与 resume 路径解析
 data.py                 LeRobotDataset 查询和数据检查
 trajectory_vla/         项目真正维护的本地模型实现
-traj_vla_qwen/           Prismatic-Qwen 与成对层动作专家
+traj_vla_qwen/          Prismatic-Qwen 与成对层动作专家
 ```
 
 ACT、SmolVLA、π0 和 π0.5 直接使用 LeRobot 官方模型，因此各目录仅保留实验说明，不再
@@ -38,3 +41,17 @@ ACT、SmolVLA、π0 和 π0.5 直接使用 LeRobot 官方模型，因此各目�
 
 只有下列情况才应增加算法目录：模型结构由本项目维护、processor 语义不同，或确实需要公共
 接口无法表达的新训练目标。此时仍优先扩展一项明确的规格或 hook，避免复制整套生命周期代码。
+
+## 接入检查清单
+
+1. 在 `spec.py` 注册策略，并为惰性类路径增加导入测试；
+2. 在 `configs/policies/` 增加策略配置，必要时增加独立 A100 覆盖；
+3. 使用 `policy-data-check` 验证双相机、13D state、9D action 和任务字段；
+4. 运行短程训练，确认 loss、日志、processor 和 checkpoint 均落盘；
+5. 从 `checkpoints/last/pretrained_model` 做离线评估和单 episode 动作预测；
+6. 复用 `configs/deploy/` 任务入口执行闭环，不在模型目录增加第二套 rollout；
+7. 为缺少顶层 `type` 的旧官方 checkpoint 使用公共 `load_policy_config()`，不要手工把
+   `input_features` / `output_features` 字典拼成 `PolicyFeature`。
+
+策略对比必须保持数据划分、relative-action 语义、horizon、执行步数和评价阈值一致；模型特有的
+图像分辨率、tokenizer、flow 步数和冻结范围单独记录。

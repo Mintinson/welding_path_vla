@@ -1,4 +1,4 @@
-# Photo-aligned simulation layout
+# 真实照片对齐的仿真布局
 
 当前场景依据单张实验台照片建立，采用以下近似基准：
 
@@ -6,18 +6,26 @@
 - 机械臂底座位置：`[0.0, 0.0, 0.29] m`
 - 机械臂底座 yaw：`-90 deg`（绕底座竖直向上的局部 Z 轴；与 world Z 同向）
 - 工件位置：`[0.45, 0.0, 0.2925] m`
-- 全局相机位置：`[1.25, 0.0, 1.05] m`
+- 全局相机桌面局部位置：`[0.90, 0.0, 0.78] m`
+- 全局相机 world 位置：`[1.25, 0.0, 1.05] m`
 - 全局相机垂直视场角：`55 deg`
 - 腕部相机垂直视场角：`85 deg`
 
 全局相机位于机器人正前上方，与真实布局的中心支架一致，并始终朝向工件中心。
 
-这些数值来自照片比例而非手眼标定。桌面、底座、工件和相机位置由 `configs/default.yaml` 的 `scene` 与 `camera` 控制。开始 sim-to-real 实验前，应使用实测外参、相机内参和桌面坐标替换这些近似值。
+相机挂在 `table_frame` 上，因此桌面局部位置会随桌面整体移动，world 位置等于
+`scene.table_center_m + scene.global_camera_position_table_m`。这些数值来自照片比例而非手眼
+标定。桌面、底座、工件和相机参数实际定义在 `configs/base.yaml`；常用任务入口通过
+`includes` 继承。开始 sim-to-real 实验前，应使用实测外参、相机内参和桌面坐标替换近似值。
 
-工件默认只进行 XY 平移和 yaw 随机化，Z 固定在桌面支撑高度；未经夹具模型约束的正负 Z 随机会让工件嵌入桌面，因此默认关闭。采集器不仅检查 staging，还会预检完整参考轨迹；IK 跳解、关节限位、不可达或碰撞都会触发确定性重采样，最多尝试 `randomization.max_sampling_attempts` 次。
+工件默认只进行 XY 平移和 yaw 随机化，Z 固定在桌面支撑高度；未经夹具约束的 Z 随机会让
+工件嵌入桌面，因此默认关闭。采集器不仅检查 staging，还会预检完整参考轨迹；IK 跳解、限位、
+不可达或碰撞都会触发确定性重采样，最多尝试 `randomization.max_sampling_attempts` 次。
 
 腕部相机安装架与 link6 负 Y 侧突出的螺钉对齐；镜头光心从安装点沿光轴前移
 `40 mm`，局部位置为 `[0.008607, -0.071891, 0.172212] m`，避免支架进入自身视野。
 它是固定相机而非跟踪相机，光轴由 YAML 中的目标点对准标定 TCP。
 
-Elfin STL 在 link5 与 link6 的 joint6 交界处没有独立轴环，运行 MJCF 使用纯视觉的 `elfin_joint6_ring` 黑色圆环补齐外观；它不参与碰撞检测。基座 yaw 同时作用于 base mesh 和整条运动链，episode 中的 base-frame 位移由 world-frame 位移显式转换得到。
+Elfin STL 在 link5 与 link6 的 joint6 交界处没有独立轴环，运行 MJCF 使用纯视觉的
+`elfin_joint6_ring` 黑色圆环补齐外观；它不参与碰撞检测。基座 yaw 同时作用于 base mesh
+和整条运动链，episode 中的 base-frame 位移由 world-frame 位移显式转换得到。

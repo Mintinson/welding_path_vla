@@ -1,5 +1,18 @@
-# Package the Elfin5 model with the simulator
+# ADR 0004：Elfin5 资产随 Python 包分发
 
-The Elfin5 URDF, source MJCF, visual meshes, and welding scene live under the Python package assets. This makes model lookup independent of the current working directory and ensures laptop and server installations use the same robot revision.
+状态：已接受
 
-The welding scene uses source inertial parameters and visual STL meshes, while low-complexity primitive collision proxies remain separate. The source LIBERO scene is retained for provenance but is not used by data collection.
+## 背景
+
+模型若依赖工作目录或临时 `repo/`，笔记本和服务器会加载不同版本，安装后也无法可靠定位资源。
+
+## 决策
+
+Elfin5 URDF、MJCF、视觉 mesh 和焊接工具资产位于
+`src/welding_path_vla/assets/elfin5/`，通过包资源定位。视觉 STL 与低复杂度碰撞代理保持分离；
+来源场景只用于溯源，不参与采集。
+
+## 后果
+
+任意工作目录和 editable/installed package 都使用同一机器人修订；更新资产时必须同时验证
+TCP、碰撞代理、相机遮挡和 package data。

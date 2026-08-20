@@ -1,31 +1,25 @@
-# 使用 robosuite 管理机器人学习环境
+# ADR 0005：使用 robosuite 管理机器人学习环境
 
-当前 Elfin5-Pro 模型、焊枪 TCP、碰撞几何、专家轨迹和数据协议已经通过直接 MuJoCo
-测试，因此完成 ADR 0003 所要求的前置验证，并将环境生命周期迁移到 robosuite。
+状态：已接受
+
+## 背景
+
+[ADR 0003](0003-pure-mujoco-first.md) 已验证 Elfin5-Pro、焊枪 TCP、碰撞、专家轨迹和原始数据
+协议。下一阶段需要统一 reset、step、多模态 observation、任务组合和批量 episode 生命周期。
 
 ## 决策
 
 - `WeldingEnv` 继承 robosuite `MujocoEnv`；
-- robosuite 负责 `reset()`、`step(action)`、episode 时钟和 observation dictionary；
-- 动作统一为世界坐标系绝对 TCP 位姿 `[x, y, z, qw, qx, qy, qz]`；
-- 一个 30 Hz `step` 内保持 600 Hz MuJoCo 物理和 120 Hz IK/位置控制；
-- 使用 `Elfin5ProRobotModel`、`WeldingArena` 和 `WorkpieceObject` 组合 robosuite `Task`；
-- 机器人模型继续使用项目阻尼 IK，不接入与真机 `PushServoP` 语义不一致的通用 OSC；
-- 直线和圆弧通过同一个 `SeamPath` 接口提供采样、投影、局部切向与法向；
-- 采集和 ACT rollout 继续使用同一套原始 episode 与评价协议。
+- robosuite 管理 `reset()`、`step()`、episode 时钟和 observation dictionary；
+- 底层仍使用 MuJoCo、项目阻尼 IK 和位置控制，不强行套用与实机 `PushServoP` 不一致的 OSC；
+- 一个 30 Hz 策略 step 内执行 600 Hz 物理和 120 Hz 控制；
+- 环境由 `Elfin5ProRobotModel`、`WeldingArena` 和 `WorkpieceObject` 组合；
+- 工件焊缝统一实现 `SeamPath`，策略动作统一为世界系绝对 TCP 位姿。
 
-## 版本约束
+项目固定 `robosuite==1.5.1`。当前不使用 Mink、GR1 或外部 `robosuite_models`；兼容层只抑制
+这些可选组件的提示，不吞掉真正的运行异常。
 
-项目固定 `robosuite==1.5.1`。`1.5.2` 通过旧版 Mink 把 NumPy 限制到 1.x，与
-LeRobot 0.6 所需的 NumPy 2.x 冲突。当前环境不使用 Mink 全身 IK、GR1 或外部
-`robosuite_models`，这些可选组件的导入提示由项目兼容层定向静默；真正的导入异常不会
-被吞掉。
+## 后果
 
-## 模型边界
-
-- `Elfin5ProRobotModel`：本体 mesh、碰撞代理、焊枪、TCP、腕部相机和执行器；
-- `WeldingArena`：地面、桌面、灯光和固定于桌面的全局相机；
-- `WorkpieceObject`：可替换工件几何及其焊缝定义；
-- `WeldingEnv`：生命周期、观测、IK/控制、碰撞和稀疏成功条件。
-
-该拆分不改变现有动作语义、数据字段和评价接口。新增工件不应修改机器人或 Arena。
+新增工件和任务不修改机器人、Arena、录制器或策略接口，并可继续直接访问 `mj_model`、`mj_data`
+完成接触和底层状态查询。代价是调试时需要区分 robosuite 生命周期与 MuJoCo 控制层。

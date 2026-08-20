@@ -1,7 +1,8 @@
 # 焊接短时轨迹评估规范
 
-评估命令由 `scripts/evaluate.py` 提供；Pixi 分别暴露
-`evaluate-episode` 和 `evaluate-dataset` 两个任务。
+本页描述轨迹级论文指标。它与 `policy-evaluate` 不同：后者只在 LeRobot 留出数据上计算
+模型 loss 和动作 MAE；本页的 `evaluate-episode` / `evaluate-dataset` 计算闭环轨迹质量、
+安全与任务合规。
 
 ## 1. 模块边界
 
@@ -19,20 +20,20 @@
 
 ## 2. 主表指标
 
-单条 episode 报告：
+| 指标 | 报告字段 | 含义 |
+|---|---|---|
+| 单条成功 | `success` | ESR 的 episode 布尔值 |
+| 指令合规 | `instruction.*` | 焊缝、方向和顺序三个 ICR 子条件 |
+| 完成度 | `completion.pcr` | 从 track 起点沿正确方向达到的最远弧长比例 |
+| 方向性 | `completion.direction_ratio` | 正向弧长增量占总弧长变化的比例 |
+| 横向误差 | `tracking.cte_{rmse,p95,max}_m` | TCP 相对焊缝切向垂面的距离 |
+| 姿态误差 | `tracking.orientation_{p95,max}_deg` | 期望与实际旋转的测地角 |
+| 速度误差 | `tracking.speed_mape` | 沿焊缝切向速度的 MAPE，字段保存比例值 |
+| 平滑性 | `tracking.*jerk*` | 实际 jerk、专家 jerk 和二者比值 |
+| 安全 | `safety.*` | 违规信号和缺失的必需信号 |
+| 条件明细 | `conditions.*` | ESR 每个子条件的通过结果 |
 
-- `success`：ESR 的单条布尔值；
-- `instruction`：焊缝选择、方向、顺序三个 ICR 子条件；
-- `completion.pcr`：沿正确方向从初始投影位置达到的最远弧长比例；
-- `completion.direction_ratio`：正向弧长增量占总弧长变化的比例；
-- `tracking.cte_rmse_m / cte_p95_m / cte_max_m`；
-- `tracking.orientation_p95_deg / orientation_max_deg`；
-- `tracking.speed_mape`：比例值，乘以 100 后以百分数报告；
-- `tracking.jerk_rms_m_s3 / expert_jerk_rms_m_s3 / jerk_ratio`；
-- `safety.violations / missing_signals`；
-- 每个 ESR 子条件的通过结果。
-
-数据集聚合报告：
+数据集聚合报告包含：
 
 - `ESR`；
 - `ICR`；
@@ -40,7 +41,8 @@
 - CTE RMSE、CTE95、OE95、SpeedMAPE 和 jerk ratio 的 episode 均值；
 - 每类条件的失败次数，供错误分析使用。
 
-PCR 使用“相对于 track 起点达到的最远正向弧长”，而不是把每一步路程累加。因此反复前后振荡不会把 PCR 人为累积到 1，反向执行也会得到接近 0 的 PCR。
+PCR 不累计逐步路程，因此前后振荡不会把完成度虚增到 1。参考焊缝点必须已经按照任务期望方向
+排列；若实际沿反方向执行，PCR 和 `direction_ratio` 都会降低。
 
 ## 3. ESR 判定
 
@@ -56,7 +58,8 @@ and safety
 and termination
 ```
 
-平滑性默认只报告，不纳入 ESR，避免模型通过降低速度获得虚假的低 jerk。若实验明确需要，把 YAML 中 `require_smoothness_for_success` 设为 `true`。
+平滑性默认只报告，不纳入 ESR，避免模型通过降低速度获得虚假的低 jerk。若实验明确需要，把
+YAML 中 `require_smoothness_for_success` 设为 `true`。
 
 所有阈值位于统一配置：
 
@@ -76,7 +79,8 @@ evaluation:
   require_smoothness_for_success: false
 ```
 
-这些是初始工程阈值，不应直接当作论文最终阈值。正式阈值应根据焊接工艺允许偏差、机器人重复定位精度和传感器噪声预注册。
+这些是初始工程阈值，不应直接当作论文最终阈值。正式阈值应根据焊接工艺允许偏差、机器人
+重复定位精度和传感器噪声预注册。
 
 ## 4. 仿真 episode 评估
 

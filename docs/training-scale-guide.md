@@ -1,105 +1,108 @@
-# 多 GPU Batch、Step 与训练时间计算
+# Batch、Step 与训练时间计算
 
-本文统一说明训练配置中 `batch_size`、GPU 数量、`steps` 和数据集遍历次数的关系，主要用于
-双 A100 配置。当前训练入口使用 Accelerate DDP，模型在每张 GPU 上各保留一份。
+本文统一解释单卡和 Accelerate DDP 配置中的 batch、optimizer step、数据遍历量和训练时间。
+目标是充分利用 GPU，同时明确实验比较保持的是“相同步数”还是“相同数据量”。
 
-## 1. 基本定义
+## 1. 定义
 
-配置中的 `training.batch_size` 是每个 DDP 进程、也就是每张 GPU 的 batch。设：
+设：
 
-- $N$：训练划分的总帧数；当前为 3,674,023；
-- $G$：GPU 数量；双 A100 时为 2；
-- $B_{gpu}$：`training.batch_size`；
-- $A$：梯度累积次数；当前训练器为 1；
-- $E$：希望遍历训练集的轮数。
+- $N$：训练划分的帧数；
+- $G$：DDP 进程数，通常等于 GPU 数；
+- $B_{gpu}$：`training.batch_size`，即每个进程、每张 GPU 的 batch；
+- $A$：梯度累积次数；当前项目为 1；
+- $S$：optimizer update 数，即 `training.steps`；
+- $E$：目标数据遍历轮数。
 
-一次 optimizer update 实际处理的全局 batch 为：
+全局 batch：
 
-$$
-B_{global}=G\times B_{gpu}\times A.
-$$
+$$B_{global}=G\times B_{gpu}\times A.$$
 
-完整遍历 $E$ 轮训练集所需的 update 数为：
+固定 step 时实际处理的训练样本数和等效 epoch：
 
-$$
-S=\left\lceil\frac{E\times N}{B_{global}}\right\rceil.
-$$
+$$N_{seen}=S\times B_{global},\qquad E_{effective}=\frac{N_{seen}}{N}.$$
 
-必须向上取整，否则最后不足一个 batch 的数据不会被覆盖。实际处理的样本数为
-$S\times B_{global}$，因此最多只会比目标多 $B_{global}-1$ 个样本。
+固定数据遍历量时所需 step：
 
-## 2. 当前双 A100 配置
+$$S=\left\lceil\frac{E\times N}{B_{global}}\right\rceil.$$
 
-以下配置均以 $E=1$ 计算：
+`training.steps` 是 optimizer update 数，不是单卡 sample 数，也不是每个进程各自独立累计的
+step。DDP 每个 step 同步一次梯度。
 
-| 策略 | 每卡 batch $B_{gpu}$ | GPU 数 $G$ | 全局 batch $B_{global}$ | `training.steps` | 实际覆盖帧数 |
+## 2. 两种合理的比较目标
+
+### 固定 optimizer step
+
+保持 $S$ 不变并增大全局 batch，会让模型在相同 update 数内看到更多样本。这通常能提高 GPU
+利用率并减少达到某个 step 的 wall time，但训练数据量和优化轨迹已经变化，不能称为“相同训练量”。
+
+适合：固定 update budget 的消融、验证更大 batch 是否改善稳定性、希望同样 step 更快完成。
+
+### 固定数据遍历量
+
+增大 $B_{global}$ 后按公式降低 $S$，使 $N_{seen}$ 基本不变。这是在相同数据覆盖下比较硬件吞吐
+最直接的方法。
+
+适合：以一轮或若干轮数据为预算、比较不同 GPU 数或每卡 batch 的 wall time。
+
+无论选哪一种，实验记录都应同时保存 $G$、$B_{gpu}$、$A$、$S$ 和 $N_{seen}$，不能只写
+`batch_size`。
+
+## 3. 当前配置快照
+
+2026-08-10 的本地数据集训练划分为 $N=3,674,023$ 帧。当前双 A100 入口均使用两个 DDP
+进程，配置值如下：
+
+| 策略 | 每卡 batch | 全局 batch | step | 约处理帧数 | 等效 epoch |
 |---|---:|---:|---:|---:|---:|
-| ACT | 32 | 2 | 64 | 57,407 | 3,674,048 |
-| SmolVLA | 32 | 2 | 64 | 57,407 | 3,674,048 |
-| Trajectory VLA | 32 | 2 | 64 | 57,407 | 3,674,048 |
-| Traj-VLA-Qwen | 16 | 2 | 32 | 114,814 | 3,674,048 |
-| π0 | 4 | 2 | 8 | 459,253 | 3,674,024 |
-| π0.5 | 4 | 2 | 8 | 459,253 | 3,674,024 |
+| ACT | 32 | 64 | 57,407 | 3,674,048 | 1.000 |
+| SmolVLA | 32 | 64 | 60,000 | 3,840,000 | 1.045 |
+| Trajectory-VLA | 32 | 64 | 57,407 | 3,674,048 | 1.000 |
+| Traj-VLA-Qwen | 16 | 32 | 114,814 | 3,674,048 | 1.000 |
+| π0 | 4 | 8 | 459,253 | 3,674,024 | 1.000 |
+| π0.5 | 4 | 8 | 459,253 | 3,674,024 | 1.000 |
 
-例如 Trajectory VLA：
+SmolVLA 使用整齐的 60,000 step，而不是精确一轮的 57,407；因此它比一轮多约 4.5%。比较
+精确一轮 wall time 时应临时覆盖为 57,407，比较现有实验复现时则保留 60,000。
 
-$$
-B_{global}=2\times32=64,
-\qquad
-S=\left\lceil\frac{3,674,023}{64}\right\rceil=57,407.
-$$
+数据增加后先执行：
 
-如果改为 4 张 GPU、每卡 batch 32，则全局 batch 为 128，一轮数据需要：
+```bash
+pixi run -e train policy-data-check --config_path=configs/POLICY.yaml
+```
 
-$$
-S=\left\lceil\frac{3,674,023}{128}\right\rceil=28,704.
-$$
+再使用报告中的训练帧数重算，不能把本节快照永久当作默认事实。
 
-## 3. 固定 Step 与固定数据遍历量的区别
+## 4. 如何选择更快的 A100 配置
 
-固定 `steps` 时，增大 batch 会增加训练看到的样本总数：
+1. 用 100～200 个预热后 step 测量，忽略 `torch.compile` 首次编译开销。
+2. 逐步提高每卡 batch，直到 GPU 利用率趋于稳定、数据解码成为瓶颈或接近显存上限。
+3. 比较稳定区间的 `updt_s`、`smp/s` 和 `gpu_mem_gb`。
+4. 根据实验目标决定保持 step，还是按全局 batch 重算 step。
+5. 调整 scheduler 总长度、warmup、评估和保存频率，使它们与新 step 尺度一致。
 
-$$
-N_{seen}=S\times B_{global},
-\qquad
-E_{effective}=\frac{N_{seen}}{N}.
-$$
+训练时间近似为：
 
-因此，“batch 翻倍但 step 不变”相当于训练轮数翻倍，并不是同等训练工作量下的加速。
-这适用于研究固定 update 数的实验，但不能直接与一轮数据的配置比较 wall time。
+$$T\approx S\times t_{update}.$$
 
-若目标是更快完成相同的数据遍历量，应在增大 batch 后按上一节公式降低 `steps`。当前 A100
-配置采用这种方式。
+固定数据量时应比较 `steps × updt_s`；固定 step 时直接比较稳定后的 `updt_s`。`smp/s` 适合
+判断 GPU 与数据流水线利用率，但不能单独说明总实验时间。
 
-## 4. 估算和比较训练时间
+`num_workers` 只负责 DataLoader 解码。增加它不会扩大模型 batch；过高会增加 CPU、内存和视频
+解码竞争。先增大每卡 batch，再根据 GPU 等待数据的比例调 `num_workers`。
 
-忽略评估和 checkpoint 时，总训练时间近似为：
+## 5. OOM 与优化变量
 
-$$
-T\approx S\times t_{update},
-$$
+发生 OOM 时按以下顺序处理：
 
-其中 $t_{update}$ 对应 `train.log` 中稳定后的 `updt_s`。`torch.compile` 会让最初几十步包含
-编译开销，因此应在预热后比较：
+1. 降低每卡 batch；
+2. 保留或启用模型已有的 gradient checkpointing；
+3. 使用 BF16 和冻结主干；
+4. 对适合的模块使用 LoRA；
+5. 最后才降低图像分辨率、动作 horizon 或模型层数。
 
-- `updt_s`：完成固定 step 或一轮数据所需时间的直接依据，越低越好；
-- `smp/s`：GPU 和输入流水线的样本吞吐，越高越好；
-- `mem_gb`：峰值显存，用于判断能否继续提高每卡 batch。
+前两项主要改变吞吐和计算量；后几项可能改变模型容量或实验定义，必须作为独立实验记录。
+π0 / π0.5 是否关闭 gradient checkpointing 应以实际 A100 容量和峰值为准，不能仅凭 GPU 名称推断。
 
-一轮数据的配置优劣应比较 `steps × updt_s`，不能只比较 batch 或 `smp/s`。
-
-## 5. 在新硬件或新数据集上重算
-
-1. 从 LeRobot metadata 和实际 eval split 得到训练帧数 $N$。
-2. 用短程训练逐步提高每卡 batch，直到 GPU 利用率稳定或接近显存上限。
-3. 计算 $B_{global}=G\times B_{gpu}$。
-4. 使用 $S=\lceil E\times N/B_{global}\rceil$ 更新 `training.steps`。
-5. 将 scheduler decay 设为新的总 step；warmup 保持约总 step 的 2%。
-6. 相应缩短 `eval_steps` 和 `save_freq`，确保一轮训练中仍有足够的评估和 checkpoint。
-7. 运行 100～200 个预热后 step，通过 `updt_s`、`smp/s` 和显存决定是否继续调整。
-
-发生 OOM 时，先把每卡 batch 减半，再重新计算全局 batch 和 step。π0 / π0.5 应优先保留
-梯度检查点；只有在 80 GiB A100 上确认显存充足后，才考虑关闭它减少重计算。
-
-增大 batch 后是否调整学习率属于单独的优化实验。当前配置为了稳定性保持原学习率，不自动
-进行线性缩放；如果修改学习率，应单独记录并通过验证集确认，而不要与硬件加速同时混为一个变量。
+增大 batch 后是否缩放学习率也是独立优化问题。当前配置不自动线性缩放学习率；若改变学习率，
+应通过验证集单独确认，而不要与硬件加速结论混在一起。
