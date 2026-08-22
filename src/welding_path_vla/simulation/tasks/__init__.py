@@ -2,6 +2,7 @@
 
 from welding_path_vla.simulation.tasks.seams import (
     CircularSeamPath,
+    RoundedCornerSeamPath,
     SeamFrame,
     SeamPath,
     SeamProjection,
@@ -11,6 +12,7 @@ from welding_path_vla.simulation.tasks.seams import (
 
 __all__ = [
     "CircularSeamPath",
+    "RoundedCornerSeamPath",
     "SeamFrame",
     "SeamPath",
     "SeamProjection",

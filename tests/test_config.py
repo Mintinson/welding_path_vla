@@ -63,6 +63,16 @@ def test_trihedral_config_selects_vertical_corner_task() -> None:
     assert config.collection.dataset_root.endswith("weldpath_trihedral_vertical_raw_v2")
 
 
+def test_trihedral_horizontal_config_selects_continuous_pair() -> None:
+    """水平任务应一次连续执行两条水平内角焊缝，并保留长度随机化。"""
+    config = AppConfig.load("configs/trihedral_horizontal.yaml")
+    assert config.workpiece.kind == "trihedral_corner"
+    assert config.task.seam_id == "horizontal_pair"
+    assert config.task.direction == "forward"
+    assert config.randomization.seam_length_range_m == 0.010
+    assert config.collection.dataset_root.endswith("weldpath_trihedral_horizontal_raw_v2")
+
+
 @pytest.mark.parametrize(
     ("path", "seam_id", "max_steps"),
     [
@@ -70,6 +80,7 @@ def test_trihedral_config_selects_vertical_corner_task() -> None:
         ("configs/deploy/smolvla_pipe_bottom.yaml", "pipe_bottom", 1200),
         ("configs/deploy/smolvla_pipe_top.yaml", "pipe_top", 3300),
         ("configs/deploy/smolvla_curve_plate.yaml", "curve_seam", 1500),
+        ("configs/deploy/smolvla_trihedral_horizontal.yaml", "horizontal_pair", 1500),
         ("configs/deploy/smolvla_trihedral_vertical.yaml", "vertical_corner", 1500),
     ],
 )

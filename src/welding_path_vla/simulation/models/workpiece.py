@@ -12,6 +12,7 @@ from welding_path_vla.core.config import AppConfig, maximum_seam_length
 from welding_path_vla.simulation.robosuite_compat import MujocoObject, array_to_string
 from welding_path_vla.simulation.tasks import (
     CircularSeamPath,
+    RoundedCornerSeamPath,
     SeamPath,
     SinusoidalSeamPath,
     StraightSeamPath,
@@ -253,10 +254,8 @@ class WorkpieceObject(MujocoObject):
         endpoints = {
             "vertical_corner": corner
             + np.array([0, 0, maximum_seam_length(workpiece, "vertical_corner")]),
-            "floor_x": corner
-            + np.array([maximum_seam_length(workpiece, "floor_x"), 0, 0]),
-            "floor_y": corner
-            + np.array([0, maximum_seam_length(workpiece, "floor_y"), 0]),
+            "floor_x": corner + np.array([maximum_seam_length(workpiece, "floor_x"), 0, 0]),
+            "floor_y": corner + np.array([0, maximum_seam_length(workpiece, "floor_y"), 0]),
         }
         for seam_id, endpoint in endpoints.items():
             append_seam_visual(body, f"{seam_id}_visual", corner, endpoint)
@@ -343,6 +342,17 @@ class WorkpieceObject(MujocoObject):
             wall_x = workpiece.trihedral_wall_x_size_m
             wall_y = workpiece.trihedral_wall_y_size_m
             origin = np.array([wall_x[0] / 2, wall_y[1] / 2, floor[2] / 2])
+            if task.seam_id == "horizontal_pair":
+                return RoundedCornerSeamPath(
+                    task.seam_id,
+                    position + rotation @ origin,
+                    rotation,
+                    task.seam_length_m,
+                    workpiece.trihedral_corner_margin_m,
+                    work_angle,
+                    task.tcp_clearance_m,
+                    task.direction == "reverse",
+                )
             directions = {
                 "vertical_corner": np.array([0.0, 0.0, 1.0]),
                 "floor_x": np.array([1.0, 0.0, 0.0]),

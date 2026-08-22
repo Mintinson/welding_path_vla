@@ -18,6 +18,7 @@
 | `configs/tasks/pipe_bottom.yaml` | 空心圆管 + 方形底板 | `pipe_bottom` 管底圆弧 |
 | `configs/tasks/pipe_top.yaml` | 空心圆管 + 方形底板 | `pipe_top` 管口圆弧 |
 | `configs/tasks/curve_plate.yaml` | 带可见周期曲线的平板 | `curve_seam` 正弦/余弦焊缝 |
+| `configs/tasks/trihedral_horizontal.yaml` | 三块互相垂直的平板 | 连续连接 `floor_x`、`floor_y` 的 `horizontal_pair` |
 | `configs/tasks/trihedral_vertical.yaml` | 三块互相垂直的平板 | `vertical_corner`、`floor_x`、`floor_y` 三条内角直线 |
 
 圆管由 32 个环向碰撞/外观分段构成，因此内部保持空心，不会像实心 cylinder 一样错误阻挡
@@ -48,10 +49,11 @@ pixi run -e sim sim-collect \
   --collection.episodes=50
 ```
 
-三面角工件完整显示两条水平内角焊缝和一条竖直内角焊缝。一个 episode 只执行
-`task.seam_id` 指定的一条焊缝；默认 `configs/trihedral_vertical.yaml` 选择
-`vertical_corner`，用于考察自下而上的竖焊能力。`floor_x` 和 `floor_y` 已由工件接口提供，
-后续只需增加对应任务 YAML，无需改动环境或采集器。
+三面角工件完整显示两条水平内角焊缝和一条竖直内角焊缝。
+`configs/trihedral_vertical.yaml` 选择 `vertical_corner`，用于考察自下而上的竖焊能力；
+`configs/trihedral_horizontal.yaml` 则从 `floor_x` 外端进入，以工艺余量为半径绕过三板交汇死角，
+再沿 `floor_y` 一次运行到另一侧外端。两条直线共用 `task.seam_length_m`，因此每组 episode
+会同步改变两边的有效长度，整个过程只有一次接近和一次退出。
 
 三个板件尺寸分别由 `trihedral_floor_size_m`、`trihedral_wall_x_size_m` 和
 `trihedral_wall_y_size_m` 表示。非厚度方向尺寸、焊缝长度、工件位姿、焊枪姿态和速度均
@@ -62,6 +64,10 @@ pixi run -e sim sim-collect \
 pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
 pixi run -e sim sim-collect \
   --config_path=configs/trihedral_vertical.yaml \
+  --collection.episodes=50
+pixi run -e sim sim-view --config_path=configs/trihedral_horizontal.yaml
+pixi run -e sim sim-collect \
+  --config_path=configs/trihedral_horizontal.yaml \
   --collection.episodes=50
 ```
 

@@ -29,6 +29,7 @@ def test_deployment_can_load_all_task_modules() -> None:
         "l_joint",
         "pipe_bottom",
         "pipe_top",
+        "trihedral_horizontal",
         "trihedral_vertical",
     ]
     assert all(item.policy.family == "trajectory_vla" for item in tasks)
@@ -81,7 +82,7 @@ def test_all_tasks_write_subdirectories_and_combined_summary(
     monkeypatch.setattr(simulation_rollout, "rollout_episode", fake_rollout)
     reports = deploy_episodes(config, object())
 
-    assert len(reports) == 5
+    assert len(reports) == 6
     assert all(
         (tmp_path / f"smolvla_{report.task}" / "summary.json").exists() for report in reports
     )

@@ -91,6 +91,8 @@ pixi run -e policy-sim policy-sim-deploy \
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_curve_plate.yaml
 pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla_trihedral_horizontal.yaml
+pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
 ```
 

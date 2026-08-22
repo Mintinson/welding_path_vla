@@ -58,6 +58,6 @@ A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再
 [多 GPU Batch、Step 与训练时间计算](../docs/training-scale-guide.md)。
 
 `{model}` 当前可取 `smolvla`、`trajectory_vla`、`pi0` 和 `pi0_5`；`{task}` 可取 `l_joint`、
-`pipe_bottom`、`pipe_top`、`curve_plate` 和 `trihedral_vertical`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
+`pipe_bottom`、`pipe_top`、`curve_plate`、`trihedral_horizontal` 和 `trihedral_vertical`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
 调整工件或焊缝只修改 `tasks/*.yaml`。临时参数仍可通过 Draccus 覆盖，例如
 `--deployment.episodes=10`，无需复制整份配置。

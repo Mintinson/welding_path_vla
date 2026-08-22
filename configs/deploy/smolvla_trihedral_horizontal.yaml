@@ -1,0 +1,3 @@
+includes:
+  - smolvla.yaml
+  - ../tasks/trihedral_horizontal.yaml

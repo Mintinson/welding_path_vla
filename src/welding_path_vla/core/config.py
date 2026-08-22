@@ -141,6 +141,8 @@ def maximum_seam_length(workpiece: WorkpieceConfig, seam_id: str) -> float | Non
         "floor_x": min(floor[0], wall_y[0]) - wall_x[0] / 2 - margin,
         "floor_y": min(floor[1], wall_x[1]) - wall_y[1] / 2 - margin,
     }
+    if seam_id == "horizontal_pair":
+        return min(limits["floor_x"], limits["floor_y"])
     return limits[seam_id]
 
 
@@ -527,7 +529,12 @@ class AppConfig:
             "l_joint": {"straight_fillet"},
             "pipe_on_plate": {"pipe_bottom", "pipe_top"},
             "curve_plate": {"curve_seam"},
-            "trihedral_corner": {"vertical_corner", "floor_x", "floor_y"},
+            "trihedral_corner": {
+                "vertical_corner",
+                "floor_x",
+                "floor_y",
+                "horizontal_pair",
+            },
         }
         if self.task.seam_id not in allowed_seams[self.workpiece.kind]:
             raise ValueError(

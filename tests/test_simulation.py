@@ -6,7 +6,8 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from welding_path_vla.core.config import AppConfig
-from welding_path_vla.core.geometry import quaternion_to_matrix
+from welding_path_vla.core.geometry import quaternion_to_matrix, rotation_error
+from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
 from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
 from welding_path_vla.simulation.models import (
     Elfin5ProRobotModel,
@@ -23,6 +24,7 @@ from welding_path_vla.simulation.task_sampling import (
 )
 from welding_path_vla.simulation.tasks import (
     CircularSeamPath,
+    RoundedCornerSeamPath,
     SinusoidalSeamPath,
     StraightSeamPath,
 )
@@ -500,6 +502,7 @@ def test_task_parameters_change_once_per_ten_episode_indices() -> None:
         "configs/pipe_bottom.yaml",
         "configs/pipe_top.yaml",
         "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
         "configs/trihedral_vertical.yaml",
     ],
 )
@@ -526,6 +529,7 @@ def test_randomized_task_and_workpiece_are_jointly_rejected_until_reachable(
         "configs/pipe_bottom.yaml",
         "configs/pipe_top.yaml",
         "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
         "configs/trihedral_vertical.yaml",
     ],
 )
@@ -658,6 +662,104 @@ def test_trihedral_workpiece_exposes_three_seams_and_moderate_randomness() -> No
         for name in ("vertical_corner_visual", "floor_x_visual", "floor_y_visual"):
             geom = simulation.mj_model.geom(name)
             assert simulation.mj_model.geom_contype[geom.id] == 0
+    finally:
+        simulation.close()
+
+
+def test_trihedral_horizontal_expert_tracks_both_lines_without_reapproach() -> None:
+    """水平专家应从 X 侧外端经连续圆角一次运行到 Y 侧外端。"""
+    base = AppConfig.load("configs/trihedral_horizontal.yaml")
+    sampled_lengths = {
+        sample_episode_task_config(base, index * 10).task.seam_length_m for index in range(8)
+    }
+    assert len(sampled_lengths) > 1
+    assert all(abs(length - base.task.seam_length_m) <= 0.0101 for length in sampled_lengths)
+
+    simulation = WeldingEnv(base, camera_observations=False, ignore_done=True)
+    try:
+        seam = simulation.active_seam()
+        assert isinstance(seam, RoundedCornerSeamPath)
+        assert seam.seam_id == "horizontal_pair"
+        assert seam.start.tangent[0] < -0.999
+        assert seam.end.tangent[1] > 0.999
+        assert seam.sample(0.5).tangent[:2] == pytest.approx([-np.sqrt(0.5), np.sqrt(0.5)])
+        for progress in np.linspace(0, 1, 9):
+            frame = seam.sample(float(progress))
+            projection = seam.project(frame.position, float(progress))
+            assert projection.progress == pytest.approx(progress)
+            assert projection.distance_m < 1e-9
+
+        expert = ExpertTrajectory(base, simulation.tcp_pose(), seam)
+        phases = [frame.phase.value for frame in expert.frames]
+        transitions = list(pairwise(phases))
+        assert (
+            sum(current != "track" and following == "track" for current, following in transitions)
+            == 1
+        )
+        assert (
+            sum(current == "track" and following == "retreat" for current, following in transitions)
+            == 1
+        )
+    finally:
+        simulation.close()
+
+
+def test_trihedral_horizontal_expert_execution_passes_quality_gate() -> None:
+    """水平转角的实际控制轨迹应通过数据采集使用的质量门槛。"""
+    base = AppConfig.load("configs/trihedral_horizontal.yaml")
+    config = sample_episode_task_config(base, 0)
+    seed = config.collection.seed
+    simulation = WeldingEnv(config, seed, camera_observations=False, ignore_done=True)
+    try:
+        sample = sample_feasible_trajectory(simulation, config, np.random.default_rng(seed))
+        phases: list[str] = []
+        cross_track: list[float] = []
+        orientation: list[float] = []
+        progress: list[float] = []
+        collisions: list[bool] = []
+        collision_pairs: list[str] = []
+        ik_residuals: list[float] = []
+        for frame in sample.expert.frames:
+            action = np.concatenate([frame.pose.position, frame.pose.quaternion_wxyz])
+            _, _, _, info = simulation.step(action)
+            state = simulation.state()
+            phases.append(frame.phase.value)
+            cross_track.append(
+                sample.seam.project(state.tcp.position, frame.seam_progress).distance_m
+            )
+            orientation.append(
+                float(
+                    np.degrees(
+                        np.linalg.norm(
+                            rotation_error(
+                                frame.pose.quaternion_wxyz,
+                                state.tcp.quaternion_wxyz,
+                            )
+                        )
+                    )
+                )
+            )
+            progress.append(frame.seam_progress)
+            collisions.append(bool(info["collision"]))
+            collision_pairs.append(
+                "|".join(f"{first}:{second}" for first, second in info["collision_pairs"])
+            )
+            ik_residuals.append(float(info["ik_residual_m"]))
+
+        report = report_from_arrays(
+            {
+                "phase": np.asarray(phases),
+                "cross_track_error": np.asarray(cross_track),
+                "orientation_error_deg": np.asarray(orientation),
+                "seam_progress": np.asarray(progress),
+                "collision": np.asarray(collisions),
+                "collision_pairs": np.asarray(collision_pairs),
+                "ik_residual": np.asarray(ik_residuals),
+            },
+            config.quality,
+            recovery=False,
+        )
+        assert report.valid, report.as_dict()
     finally:
         simulation.close()
 

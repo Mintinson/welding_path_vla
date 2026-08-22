@@ -1,0 +1,63 @@
+workpiece:
+  kind: trihedral_corner
+  # 三块板及其随机化范围与竖焊任务完全相同。
+  trihedral_floor_size_m: [0.23, 0.21, 0.005]
+  trihedral_wall_x_size_m: [0.005, 0.19, 0.17]
+  trihedral_wall_y_size_m: [0.22, 0.005, 0.16]
+  # 30 mm 圆角为枪颈转向留出空间，并降低 90° 转角处的姿态角速度。
+  trihedral_corner_margin_m: 0.030
+
+scene:
+  workpiece_position_m: [0.40, -0.12, 0.2925]
+
+task:
+  task_id: trihedral_horizontal
+  instruction: Weld both horizontal inner corner seams continuously from one outer edge to the other.
+  seam_id: horizontal_pair
+  direction: forward
+  approach_speed_mps: 0.06
+  # 水平转角使用 8 mm/s，避免控制器在短圆弧上产生明显姿态滞后。
+  speed_mps: 0.008
+  retreat_speed_mps: 0.04
+  orientation_follow_ratio: 1.0
+  work_angle_deg: 45.0
+  # 水平转角需要让枪颈始终位于两块立板围成的开放侧。
+  travel_angle_deg: 0.0
+  tool_roll_deg: -89.0
+  approach_distance_m: 0.04
+  staging_clearance_m: 0.18
+  retreat_distance_m: 0.04
+  # 每条水平直线的标称有效长度；两段在一个 TRACK 阶段内连续执行。
+  seam_length_m: 0.11
+  tcp_clearance_m: 0.002
+
+randomization:
+  xy_m: 0.02
+  yaw_deg: 6.0
+  joint_degs: [18, 8, 8, 10, 15, 15]
+  max_sampling_attempts: 15
+  initial_tcp_m: 0.015
+  # 连续转角优先采集干净专家轨迹，不在圆角附近叠加恢复扰动。
+  recovery_probability: 0.0
+  work_angle_range_deg: 2.0
+  # 行走角偏离 0° 会让枪颈在连续转角时扫入立板，因此保持垂直于切向。
+  travel_angle_range_deg: 0.0
+  tool_roll_range_deg: 0.0
+  orientation_follow_range: 0.0
+  approach_speed_range_mps: 0.004
+  speed_range_mps: 0.001
+  retreat_speed_range_mps: 0.004
+  trihedral_size_range_m: 0.008
+  # 两条水平直线共用一次采样值，保证圆角两侧长度一致。
+  seam_length_range_m: 0.010
+  reverse_probability: 0.0
+
+collection:
+  dataset_root: datasets/weldpath_trihedral_horizontal_raw_v2
+
+quality:
+  # 转角动态跟踪存在轻微滞后，P95 放宽 1°；最大误差仍沿用 5° 硬限制。
+  orientation_p95_deg: 3.0
+
+deployment:
+  max_steps: 1500

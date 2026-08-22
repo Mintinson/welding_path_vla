@@ -65,8 +65,9 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla_curve_plate.yaml
 ```
 
-部署目录提供 `l_joint`、`pipe_bottom`、`pipe_top`、`curve_plate` 和
-`trihedral_vertical` 五个入口，它们共享 `configs/deploy/trajectory_vla.yaml` 中的 checkpoint。
+部署目录提供 `l_joint`、`pipe_bottom`、`pipe_top`、`curve_plate`、
+`trihedral_horizontal` 和 `trihedral_vertical` 六个入口，它们共享
+`configs/deploy/trajectory_vla.yaml` 中的 checkpoint。
 
 基于 Prismatic + Qwen2.5 的另一条研究分支位于
 [`policies/traj_vla_qwen/README.md`](../src/welding_path_vla/policies/traj_vla_qwen/README.md)。

@@ -80,6 +80,7 @@ l_joint
 pipe_bottom
 pipe_top
 curve_plate
+trihedral_horizontal
 trihedral_vertical
 ```
 

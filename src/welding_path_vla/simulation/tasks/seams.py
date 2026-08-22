@@ -124,6 +124,137 @@ class StraightSeamPath(SeamPath):
         return SeamProjection(progress, raw, closest, float(np.linalg.norm(position - closest)))
 
 
+class RoundedCornerSeamPath(SeamPath):
+    """连接两条互相垂直直线的圆角路径。
+
+    两条直线分别位于局部 X、Y 轴上，圆角绕开三板交汇的不可达死角。正向执行时
+    从 X 轴外端进入，经圆角连续转向后从 Y 轴外端离开。
+    """
+
+    def __init__(
+        self,
+        seam_id: str,
+        center: np.ndarray,
+        rotation: np.ndarray,
+        straight_length_m: float,
+        corner_radius_m: float,
+        work_angle_rad: float,
+        clearance_m: float,
+        reverse: bool,
+    ) -> None:
+        """创建水平双焊缝的连续 TCP 路径。
+
+        Args:
+            seam_id: 稳定的焊缝标识。
+            center: 三板交汇点的世界坐标。
+            rotation: 工件局部坐标到世界坐标的旋转矩阵。
+            straight_length_m: 每条水平直线的有效焊接长度。
+            corner_radius_m: 绕开三板交汇死角的转弯半径。
+            work_angle_rad: 焊枪相对底板法向的工作角。
+            clearance_m: TCP 沿焊接法向离开理论焊缝的净空。
+            reverse: 是否从 Y 轴外端反向执行到 X 轴外端。
+        """
+        self.seam_id = seam_id
+        self.center = np.asarray(center, dtype=np.float64)
+        self.workpiece_rotation = np.asarray(rotation, dtype=np.float64)
+        self.straight_length_m = straight_length_m
+        self.corner_radius_m = corner_radius_m
+        self.work_angle_rad = work_angle_rad
+        self.clearance_m = clearance_m
+        self.reverse = reverse
+        self.horizontal_clearance_m = clearance_m * np.sin(work_angle_rad)
+        self.vertical_clearance_m = clearance_m * np.cos(work_angle_rad)
+        self.effective_radius_m = corner_radius_m - self.horizontal_clearance_m
+        if self.effective_radius_m <= 0:
+            raise ValueError("corner radius must exceed the horizontal TCP clearance")
+        self.arc_length_m = np.pi * self.effective_radius_m / 2
+        self.length_m = 2 * straight_length_m + self.arc_length_m
+
+    def local_frame(self, distance_m: float) -> SeamFrame:
+        """返回正向弧长位置对应的工件局部标架。"""
+        distance = float(np.clip(distance_m, 0, self.length_m))
+        radius = self.corner_radius_m
+        offset = self.horizontal_clearance_m
+        height = self.vertical_clearance_m
+        work_sin = np.sin(self.work_angle_rad)
+        work_cos = np.cos(self.work_angle_rad)
+        if distance <= self.straight_length_m:
+            position = np.array([radius + self.straight_length_m - distance, offset, height])
+            tangent = np.array([-1.0, 0.0, 0.0])
+            normal = np.array([0.0, work_sin, work_cos])
+        elif distance < self.straight_length_m + self.arc_length_m:
+            angle = (distance - self.straight_length_m) / self.effective_radius_m
+            position = np.array(
+                [
+                    radius - self.effective_radius_m * np.sin(angle),
+                    radius - self.effective_radius_m * np.cos(angle),
+                    height,
+                ]
+            )
+            tangent = np.array([-np.cos(angle), np.sin(angle), 0.0])
+            normal = np.array([work_sin * np.sin(angle), work_sin * np.cos(angle), work_cos])
+        else:
+            line_distance = distance - self.straight_length_m - self.arc_length_m
+            position = np.array([offset, radius + line_distance, height])
+            tangent = np.array([0.0, 1.0, 0.0])
+            normal = np.array([work_sin, 0.0, work_cos])
+        return SeamFrame(position, tangent, normal)
+
+    def sample(self, progress: float) -> SeamFrame:
+        """按总弧长进度采样位置，并保持圆角处切向和法向连续。"""
+        alpha = float(np.clip(progress, 0, 1))
+        distance = self.length_m * (1 - alpha if self.reverse else alpha)
+        local = self.local_frame(distance)
+        direction = -1.0 if self.reverse else 1.0
+        return SeamFrame(
+            self.center + self.workpiece_rotation @ local.position,
+            normalize(direction * self.workpiece_rotation @ local.tangent),
+            normalize(self.workpiece_rotation @ local.normal),
+        )
+
+    def project(
+        self,
+        position: np.ndarray,
+        hint_progress: float | None = None,
+    ) -> SeamProjection:
+        """投影到两条直线或连接圆角，并用进度提示消除拐角歧义。"""
+        local = self.workpiece_rotation.T @ (position - self.center)
+        radius = self.corner_radius_m
+        line = self.straight_length_m
+
+        first_raw = (radius + line - local[0]) / line
+        first_alpha = float(np.clip(first_raw, 0, 1))
+        first_distance = first_alpha * line
+
+        angle = float(np.clip(np.arctan2(radius - local[0], radius - local[1]), 0, np.pi / 2))
+        arc_distance = line + angle * self.effective_radius_m
+
+        second_raw = (local[1] - radius) / line
+        second_alpha = float(np.clip(second_raw, 0, 1))
+        second_distance = line + self.arc_length_m + second_alpha * line
+        candidates = [first_distance, arc_distance, second_distance]
+        projections = [self.local_frame(distance).position for distance in candidates]
+        distances = [float(np.linalg.norm(local - projected)) for projected in projections]
+        target = 0.5 if hint_progress is None else hint_progress
+        progresses = [distance / self.length_m for distance in candidates]
+        if self.reverse:
+            progresses = [1 - progress for progress in progresses]
+        best = min(
+            range(3),
+            key=lambda index: (round(distances[index], 10), abs(progresses[index] - target)),
+        )
+
+        geometric_raw = candidates[best] / self.length_m
+        if best == 0 and first_raw < 0:
+            geometric_raw = first_raw * line / self.length_m
+        elif best == 2 and second_raw > 1:
+            geometric_raw = (line + self.arc_length_m + second_raw * line) / self.length_m
+        raw_progress = 1 - geometric_raw if self.reverse else geometric_raw
+        progress = float(np.clip(raw_progress, 0, 1))
+        world_point = self.center + self.workpiece_rotation @ projections[best]
+        return SeamProjection(progress, raw_progress, world_point, distances[best])
+
+
 class SinusoidalSeamPath(SeamPath):
     """平板上的正弦或余弦焊缝，以真实弧长均匀采样。"""
 

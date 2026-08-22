@@ -299,7 +299,7 @@ outputs/deploy/smolvla_pipe_top/
 归档位置。
 若中途异常退出，已经完成的 episode 会保留，但根目录 `summary.json` 可能尚未生成。
 
-批量模式在同一个 `output_root` 中建立五个模型—任务子目录，并额外写入跨任务摘要：
+批量模式在同一个 `output_root` 中建立六个模型—任务子目录，并额外写入跨任务摘要：
 
 ```text
 outputs/deploy/
@@ -307,6 +307,7 @@ outputs/deploy/
 ├── smolvla_pipe_bottom/
 ├── smolvla_pipe_top/
 ├── smolvla_curve_plate/
+├── smolvla_trihedral_horizontal/
 ├── smolvla_trihedral_vertical/
 └── smolvla_all_tasks_summary.json
 ```
@@ -355,6 +356,7 @@ l_joint
 pipe_bottom
 pipe_top
 curve_plate
+trihedral_horizontal
 trihedral_vertical
 ```
 
