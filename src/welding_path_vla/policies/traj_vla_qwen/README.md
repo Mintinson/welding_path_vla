@@ -21,20 +21,44 @@ Flow Matching 动作生成结合起来。默认结构为：
             │   (Qwen2.5 VLM)     │                           │  (Action Expert)    │
             └──────────┬──────────┘                           └──────────┬──────────┘
                        │                                                 │
-                       └─────────────────►[PairedLayerDecoder]◄──────────┘
-                                      (逐层交织与联合 Cross-Attention)
+                       └─────────────────►[Expert Decoder]◄─────────────┘
+                                   (Paired SA 或 Interleaved SA/CA)
                                                  │
                                       [Flow Matching 预测动作噪声/速度]
 ```
 
-每对 Qwen/Expert 层分别计算 Q/K/V，再沿 token 维执行同一次联合注意力。
-上下文不能读取带噪动作；动作可以读取视觉、语言、状态和更早动作。推理时
+上下文始终不能读取带噪动作；动作可以读取视觉、语言、状态和更早动作。推理时
 Context Stream 只计算一次，后续去噪步骤复用逐层 KV cache。
+
+## Expert Attention 结构
+
+Expert Decoder 提供两种可互换结构，配置名称及语义与 `trajectory_vla` 一致：
+
+| `attention_mode` | 实现 | 注意力结构 |
+| --- | --- | --- |
+| `self_attn` | `PairedLayerDecoder` | 每层对 Context/Expert token 执行一次非对称联合 SA |
+| `cross_attn` | `InterleavedSACADecoder` | 周期性联合 SA，其余层为 Expert query 读取 Context K/V 的单向 CA |
+
+当前训练配置采用 Interleaved SA/CA，每两层用一次联合 SA：
+
+```yaml
+policy:
+  parameters:
+    attention_mode: cross_attn
+    self_attn_every_n_layers: 2
+```
+
+第 `0, 2, 4, ...` 层为联合 SA，第 `1, 3, 5, ...` 层为 Context SA 加
+Context→Expert CA。可将周期设为更大的正整数，减少联合 SA 的密度；设为 `1`
+等价于每层均使用联合 SA。第一版 checkpoint 不包含这两个字段，因此配置类默认
+仍为 `self_attn`，可保持原结构和权重形状。已有 checkpoint 不应在部署时强制切换
+模式；CA 层的 K/V 投影形状不同，切换结构后需要重新训练或显式迁移权重。
 
 ## 默认训练显存估算
 
 以下结果对应当前默认配置：双相机、`batch_size=4`、96 个语言 token、
-30 步动作块、16 层 Qwen2.5 Context Stream、16 层 Action Expert、BF16
+30 步动作块、16 层 Qwen2.5 Context Stream、16 层 Action Expert、每两层一次
+联合 SA、BF16
 混合精度和 AdamW。参数量由当前环境中的实际模型配置统计，而非按模型名称估算。
 
 ### 1. 参数量与参数显存
@@ -48,11 +72,11 @@ Context Stream 只计算一次，后续去噪步骤复用逐层 KV cache。
 | DINOv2 ViT-L | 303.231 M | 否 | FP32 | 1.130 GiB |
 | SigLIP ViT-SO400M | 427.681 M | 否 | FP32 | 1.593 GiB |
 | 截断后的 16 层 Qwen2.5 | 374.734 M | 否 | BF16 | 0.698 GiB |
-| 16 层 Action Expert | 79.863 M | 是 | BF16 | 0.149 GiB |
+| 16 层 Action Expert | 79.028 M | 是 | BF16 | 0.147 GiB |
 | 2×2 Token Merger | 18.942 M | 是 | FP32 | 0.071 GiB |
 | Prismatic Projector | 27.552 M | 是 | FP32 | 0.103 GiB |
 | 状态、动作与时间投影 | 1.429 M | 是 | FP32 | 0.005 GiB |
-| **合计** | **1,233.432 M** | **127.787 M 可训练** | — | **3.748 GiB** |
+| **合计** | **1,232.596 M** | **126.951 M 可训练** | — | **3.746 GiB** |
 
 以参数个数 `N` 和每个元素的字节数 `b` 计算：
 
@@ -68,36 +92,36 @@ BF16: b = 2 bytes
 (303,230,976 + 427,680,704) × 4 / 1024³ = 2.723 GiB
 ```
 
-默认可训练参数由 `47.923 M FP32 + 79.863 M BF16` 组成，因此梯度需要：
+默认可训练参数由 `47.923 M FP32 + 79.028 M BF16` 组成，因此梯度需要：
 
 ```text
-47,923,456 × 4 + 79,863,456 × 2 = 0.327 GiB
+47,923,456 × 4 + 79,027,872 × 2 = 0.326 GiB
 ```
 
 当前 PyTorch 2.11 的标准 AdamW 为每个参数保存一阶、二阶矩；状态精度与参数
 精度相同，没有额外 FP32 master weights：
 
 ```text
-2 × (47,923,456 × 4 + 79,863,456 × 2) = 0.655 GiB
+2 × (47,923,456 × 4 + 79,027,872 × 2) = 0.651 GiB
 ```
 
 由此得到不含激活的稳态下限：
 
 ```text
-参数 3.748 + 梯度 0.327 + AdamW 状态 0.655 = 4.730 GiB
+参数 3.746 + 梯度 0.326 + AdamW 状态 0.651 = 4.723 GiB
 ```
 
 ### 2. 激活与实际峰值
 
-每路相机由 256 个 patch token 经 Token Merger 压缩为 64 个 token。默认联合
-注意力长度为：
+每路相机由 256 个 patch token 经 Token Merger 压缩为 64 个 token。联合 SA
+层的注意力长度为：
 
 ```text
 2 × 64 个视觉 token + 96 个语言 token + 1 个状态 token + 30 个动作 token
 = 255 tokens
 ```
 
-`PairedLayerDecoder` 的注意力分数显式使用 FP32。仅一层注意力矩阵就需要：
+注意力分数显式使用 FP32。仅一层联合 SA 的注意力矩阵就需要：
 
 ```text
 batch × heads × tokens² × 4 bytes
@@ -105,13 +129,18 @@ batch × heads × tokens² × 4 bytes
 = 13.9 MiB
 ```
 
+默认配置中的 CA 层分别计算 225-token Context SA，以及 `30 × 225` 的
+Expert→Context 注意力；因此其注意力激活小于联合 SA 层。Interleaved 结构还将
+8 个 CA 层的 Expert K/V 投影改为读取 Qwen K/V，较逐层联合 SA 版本减少约
+0.836 M 参数。
+
 此外还要保留 Q/K/V、Qwen 与 Expert 的 MLP 中间量、残差和反向传播状态。
 冻结 Qwen 只能省去其梯度和优化器状态；为了把梯度传回可训练的 Projector，
 Qwen 各层的部分激活仍需保留。视觉编码器的输入和参数都不求导，因此不会
 保留完整的视觉反向图。
 
-在 RTX 4060 Laptop 上，以真实的 16+16 层、两个 64-token 相机、96-token
-语言和 30-step 动作运行前向、反向与 AdamW，测得：
+以下 RTX 4060 Laptop 实测来自第一版逐层联合 SA 结构，可视为当前默认结构的
+保守参考；切换结构后应以新训练日志重新测量峰值：
 
 | 项目 | 峰值 |
 | --- | ---: |

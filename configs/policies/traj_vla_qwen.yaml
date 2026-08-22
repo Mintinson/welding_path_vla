@@ -16,6 +16,10 @@ policy:
     num_vlm_layers: 16
     num_expert_layers: 16
     expert_width_multiplier: 0.75
+    # 与 SmolVLA 一致：每 2 层用一次联合 SA，其余层为 Context→Expert CA。
+    # 改为 self_attn 可恢复第一版每层联合注意力结构。
+    attention_mode: cross_attn
+    self_attn_every_n_layers: 2
     token_merge_factor: 2
     train_vision_encoder: false
     train_token_merger: true
@@ -61,7 +65,6 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/traj_vla_qwen_l_joint
   episodes: 3
   max_steps: 3300
   seed: 20260806

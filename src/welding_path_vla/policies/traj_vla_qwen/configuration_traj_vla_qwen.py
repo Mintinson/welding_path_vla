@@ -65,6 +65,9 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     num_vlm_layers: int = 16
     num_expert_layers: int = 16
     expert_width_multiplier: float = 0.75
+    # self_attn 保留第一版逐层联合注意力；cross_attn 使用周期性 SA / CA。
+    attention_mode: Literal["self_attn", "cross_attn"] = "self_attn"
+    self_attn_every_n_layers: int = 2
 
     train_vision_encoder: bool = False
     train_token_merger: bool = True
@@ -106,6 +109,10 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             raise ValueError("Qwen and expert layer counts must be positive")
         if self.num_vlm_layers != self.num_expert_layers:
             raise ValueError("the first paired-layer version requires equal Qwen and expert depths")
+        if self.attention_mode not in {"self_attn", "cross_attn"}:
+            raise ValueError("attention_mode must be self_attn or cross_attn")
+        if self.self_attn_every_n_layers < 1:
+            raise ValueError("self_attn_every_n_layers must be positive")
         if self.vision_patch_grid % self.token_merge_factor:
             raise ValueError("token_merge_factor must divide vision_patch_grid")
         if not 0 <= self.train_language_last_n_layers <= self.num_vlm_layers:

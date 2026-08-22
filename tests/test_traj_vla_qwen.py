@@ -17,6 +17,7 @@ from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
     QwenPromptProcessorStep,
 )
 from welding_path_vla.policies.traj_vla_qwen.qwen_with_expert import (
+    InterleavedSACADecoder,
     PairedLayerDecoder,
     Qwen25DecoderAdapter,
 )
@@ -26,6 +27,7 @@ from welding_path_vla.policies.trajectory_vla.flow_matching import make_attentio
 def make_tiny_paired_decoder(
     checkpoint_qwen: bool = False,
     checkpoint_expert: bool = False,
+    attention_mode: str = "self_attn",
 ) -> PairedLayerDecoder:
     """构造无需下载权重的两层 Qwen2.5 双流网络。"""
     transformers = pytest.importorskip("transformers")
@@ -46,13 +48,16 @@ def make_tiny_paired_decoder(
     language = Qwen2Model(language_config)
     expert = Qwen2Model(expert_config)
     expert.embed_tokens = None
-    return PairedLayerDecoder(
-        language,
-        expert,
-        Qwen25DecoderAdapter(),
-        checkpoint_qwen=checkpoint_qwen,
-        checkpoint_expert=checkpoint_expert,
-    )
+    common = {
+        "language_model": language,
+        "expert_model": expert,
+        "adapter": Qwen25DecoderAdapter(),
+        "checkpoint_qwen": checkpoint_qwen,
+        "checkpoint_expert": checkpoint_expert,
+    }
+    if attention_mode == "cross_attn":
+        return InterleavedSACADecoder(**common, self_attn_every_n_layers=2)
+    return PairedLayerDecoder(**common)
 
 
 def test_qwen_config_and_policy_are_registered() -> None:
@@ -61,6 +66,8 @@ def test_qwen_config_and_policy_are_registered() -> None:
     assert config.policy.family == "traj_vla_qwen"
     assert config.policy.parameters["num_vlm_layers"] == 16
     assert config.policy.parameters["num_expert_layers"] == 16
+    assert config.policy.parameters["attention_mode"] == "cross_attn"
+    assert config.policy.parameters["self_attn_every_n_layers"] == 2
     assert config.policy.parameters["frozen_vision_dtype"] == "float32"
     assert not config.policy.parameters["gradient_checkpointing_qwen"]
     assert not config.policy.parameters["gradient_checkpointing_expert"]
@@ -75,6 +82,15 @@ def test_qwen_config_rejects_unpaired_depth() -> None:
         assert "equal" in str(error)
     else:
         raise AssertionError("unpaired decoder depth was accepted")
+
+
+def test_qwen_attention_config_preserves_old_checkpoint_default() -> None:
+    """缺少新字段的第一版 checkpoint 应继续使用逐层联合注意力。"""
+    assert TrajVLAQwenConfig().attention_mode == "self_attn"
+    with pytest.raises(ValueError, match="attention_mode"):
+        TrajVLAQwenConfig(attention_mode="invalid")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="positive"):
+        TrajVLAQwenConfig(self_attn_every_n_layers=0)
 
 
 def test_trainable_vision_rejects_frozen_bfloat16_setting() -> None:
@@ -113,10 +129,11 @@ def test_qwen_prompt_matches_prismatic_pretraining_format() -> None:
     assert prompt.endswith("<|im_start|>assistant\n")
 
 
-def test_paired_attention_is_asymmetric_and_cache_equivalent() -> None:
-    """上下文不能读取动作，KV cache 与完整双流前向应保持一致。"""
+@pytest.mark.parametrize("attention_mode", ["self_attn", "cross_attn"])
+def test_paired_attention_is_asymmetric_and_cache_equivalent(attention_mode: str) -> None:
+    """两种 Expert 结构都应保持非对称可见性和 KV cache 等价。"""
     torch.manual_seed(7)
-    decoder = make_tiny_paired_decoder().eval()
+    decoder = make_tiny_paired_decoder(attention_mode=attention_mode).eval()
     context = torch.randn(1, 3, 32)
     action = torch.randn(1, 2, 24)
     padding = torch.ones(1, 5, dtype=torch.bool)
@@ -150,10 +167,21 @@ def test_paired_attention_is_asymmetric_and_cache_equivalent() -> None:
     assert torch.allclose(full[1], cached[1], atol=1e-5)
 
 
-def test_paired_layer_checkpointing_preserves_gradients() -> None:
-    """双流 checkpoint 重算应保持输出和输入梯度不变。"""
+def test_interleaved_decoder_alternates_sa_and_ca_projections() -> None:
+    """Interleaved 模式应保留 SA 层，并仅改造 CA 层的 Expert K/V。"""
+    decoder = make_tiny_paired_decoder(attention_mode="cross_attn")
+    assert isinstance(decoder, InterleavedSACADecoder)
+    assert decoder.uses_self_attention(0)
+    assert not decoder.uses_self_attention(1)
+    assert decoder.expert_model.layers[0].self_attn.k_proj.in_features == 24
+    assert decoder.expert_model.layers[1].self_attn.k_proj.in_features == 16
+
+
+@pytest.mark.parametrize("attention_mode", ["self_attn", "cross_attn"])
+def test_paired_layer_checkpointing_preserves_gradients(attention_mode: str) -> None:
+    """两种 Expert 结构的 checkpoint 重算都应保持输出和梯度。"""
     torch.manual_seed(11)
-    direct = make_tiny_paired_decoder().train()
+    direct = make_tiny_paired_decoder(attention_mode=attention_mode).train()
     checkpointed = deepcopy(direct)
     checkpointed.checkpoint_qwen = True
     checkpointed.checkpoint_expert = True
