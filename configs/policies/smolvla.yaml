@@ -47,7 +47,6 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/smolvla_weldpath_relative_v1
   episodes: 3
   max_steps: 3300
   seed: 20260729

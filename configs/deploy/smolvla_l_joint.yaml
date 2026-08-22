@@ -1,8 +1,6 @@
 includes:
-  - ../base.yaml
   - smolvla.yaml
   - ../tasks/l_joint.yaml
 
 deployment:
-  log_dir: outputs/deploy/smolvla_l_joint
   max_steps: 1000

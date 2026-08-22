@@ -12,6 +12,7 @@ scene:
   workpiece_position_m: [0.40, -0.12, 0.2925]
 
 task:
+  task_id: trihedral_vertical
   instruction: Weld along the vertical inner corner seam of the three-plate workpiece.
   seam_id: vertical_corner
   direction: forward

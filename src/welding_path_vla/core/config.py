@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from draccus.argparsing import parse
+from draccus.parsers.decoding import decode
 
 from welding_path_vla.core.config_files import materialized_config
 
@@ -148,6 +149,7 @@ class TaskConfig:
     """焊缝任务、分阶段速度和焊枪姿态参数。
 
     Attributes:
+        task_id: 用于实验目录和跨任务聚合的稳定任务标识。
         instruction: 当前任务的自然语言描述。
         seam_id: 工件提供的焊缝标识。
         direction: 沿焊缝正向或反向执行。
@@ -170,6 +172,7 @@ class TaskConfig:
         curve_frequency: 曲线在整段焊缝中的周期数量。
     """
 
+    task_id: str = "l_joint"
     instruction: str = "Weld along the straight fillet seam of the L-shaped workpiece."
     seam_id: str = "straight_fillet"
     direction: str = "forward"
@@ -424,8 +427,29 @@ class LeRobotExportConfig:
 
 @dataclass(slots=True)
 class DeploymentConfig:
+    """仿真策略部署与输出组织参数。
+
+    Attributes:
+        dry_run: 保留的兼容字段；当前闭环部署不会据此跳过执行。
+        output_root: 自动命名的模型—任务输出目录所在的公共根目录。
+        log_dir: 关闭自动命名时使用的完整输出路径。
+        auto_log_dir: 是否按 ``{policy.family}_{task.task_id}`` 自动命名目录。
+        run_all_tasks: 是否依次执行 ``task_config_dir`` 中的全部任务。
+        task_config_dir: 批量部署时读取任务 YAML 的目录。
+        episodes: 每个任务执行的 episode 数量。
+        max_steps: 每条 episode 允许的最大策略步数。
+        seed: 第 0 条 episode 使用的随机种子。
+        record_video: 是否记录全局与腕部相机视频。
+        completion_progress_min: 判定自然完成所需的最小焊缝进度。
+        completion_distance_m: 判定自然完成所允许的最大 TCP—焊缝距离。
+    """
+
     dry_run: bool = True
+    output_root: str = "outputs/deploy"
     log_dir: str = "outputs/deploy"
+    auto_log_dir: bool = True
+    run_all_tasks: bool = False
+    task_config_dir: str = "configs/tasks"
     episodes: int = 5
     max_steps: int = 1_000
     seed: int = 20260724
@@ -463,6 +487,11 @@ class AppConfig:
         """组合 YAML 模块后通过 Draccus 完成类型解析。"""
         with materialized_config(path) as config_path:
             return parse(cls, config_path=config_path, args=[])
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> AppConfig:
+        """从已经组合的字典恢复强类型配置。"""
+        return decode(cls, values)
 
     def validate(self) -> None:
         self.timing.validate()

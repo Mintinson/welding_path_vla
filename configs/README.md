@@ -16,12 +16,17 @@ deploy/{model}_{task}.yaml        可以直接运行的完整任务入口
 
 ```yaml
 includes:
-  - ../base.yaml
   - smolvla.yaml
   - ../tasks/pipe_top.yaml
+```
 
-deployment:
-  log_dir: outputs/deploy/smolvla_pipe_top
+输出目录由程序自动生成为 `outputs/deploy/{model}_{task_id}`，任务组合文件不需要再同步维护
+目录名。一次运行全部任务：
+
+```bash
+pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla.yaml \
+  --deployment.run_all_tasks=true
 ```
 
 策略和任务是两个正交模块。例如 π0.5 训练、双 A100 训练和三个任务部署分别为：
@@ -53,6 +58,6 @@ A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再
 [多 GPU Batch、Step 与训练时间计算](../docs/training-scale-guide.md)。
 
 `{model}` 当前可取 `smolvla`、`trajectory_vla`、`pi0` 和 `pi0_5`；`{task}` 可取 `l_joint`、
-`pipe_bottom` 和 `pipe_top`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
+`pipe_bottom`、`pipe_top`、`curve_plate` 和 `trihedral_vertical`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
 调整工件或焊缝只修改 `tasks/*.yaml`。临时参数仍可通过 Draccus 覆盖，例如
 `--deployment.episodes=10`，无需复制整份配置。

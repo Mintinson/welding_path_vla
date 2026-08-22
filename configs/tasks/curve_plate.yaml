@@ -4,6 +4,7 @@ workpiece:
   curve_visual_segments: 80
 
 task:
+  task_id: curve_plate
   instruction: Weld along the periodic curved seam on the flat plate.
   seam_id: curve_seam
   direction: forward

@@ -48,7 +48,6 @@ policy_evaluation:
 
 deployment:
   dry_run: false
-  log_dir: outputs/deploy/trajectory_vla_l_joint
   episodes: 3
   max_steps: 3300
   seed: 20260730

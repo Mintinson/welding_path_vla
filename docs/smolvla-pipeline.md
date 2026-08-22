@@ -94,6 +94,14 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
 ```
 
+一次运行全部任务并自动写入 `outputs/deploy/smolvla_{task_id}`：
+
+```bash
+pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla.yaml \
+  --deployment.run_all_tasks=true
+```
+
 公共 checkpoint 位于 `configs/deploy/smolvla.yaml`。也可在命令行临时覆盖：
 
 ```bash
@@ -108,4 +116,4 @@ pixi run -e policy-sim policy-sim-deploy \
 
 每个 rollout 保存 `config.json`、`rollout.npz`、`summary.json` 和双相机 H.264 视频。
 策略安全门可能裁剪过大的平移增量并继续闭环；部署自然退出条件与论文统一成功条件应分别解释，
-详见[评估规范](evaluation.md)。
+完整过程与排错方式见[仿真策略部署](simulation-deployment.md)，指标定义见[评估规范](evaluation.md)。

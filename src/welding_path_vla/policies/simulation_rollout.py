@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.config_files import compose_config, merge_config
 from welding_path_vla.core.domain import Phase
 from welding_path_vla.core.geometry import absolute_ee_action_to_pose
 from welding_path_vla.dataset.video import VideoRecorder
@@ -37,8 +38,23 @@ from welding_path_vla.simulation.task_sampling import (
 
 @dataclass(frozen=True, slots=True)
 class SimulationRolloutReport:
-    """一次策略仿真 rollout 的产物和终止状态。"""
+    """一次策略仿真 rollout 的产物和终止状态。
 
+    Attributes:
+        task: 稳定任务标识，用于跨任务汇总。
+        episode: 当前任务内的 episode 编号。
+        seed: 本次环境与任务采样使用的随机种子。
+        steps: 实际执行的策略步数。
+        completed: 是否满足自然完成条件。
+        termination_reason: 完成、超时、碰撞或安全终止原因。
+        collision: 本次执行是否出现有效碰撞。
+        trace_path: 逐步 rollout 数组的保存路径。
+        videos: 已保存的相机视频路径。
+        diagnostics: 用于排查控制和跟踪问题的统计摘要。
+        evaluation: 轨迹满足评估条件时生成的论文指标。
+    """
+
+    task: str
     episode: int
     seed: int
     steps: int
@@ -261,6 +277,7 @@ def rollout_episode(
         )
         videos = recorder.finish() if recorder else ()
         report = SimulationRolloutReport(
+            task=config.task.task_id,
             episode=episode,
             seed=seed,
             steps=len(trajectory["timestamp"]),
@@ -283,9 +300,33 @@ def rollout_episode(
         simulation.close()
 
 
-def deploy_episodes(config: AppConfig, runtime: Any) -> list[SimulationRolloutReport]:
-    """用已加载的策略连续运行并保存多个仿真 episode。"""
-    root = Path(config.deployment.log_dir)
+def deployment_task_configs(config: AppConfig) -> tuple[AppConfig, ...]:
+    """返回单任务配置，或从任务目录组合全部部署任务。"""
+    if not config.deployment.run_all_tasks:
+        return (config,)
+    task_paths = sorted(Path(config.deployment.task_config_dir).glob("*.yaml"))
+    if not task_paths:
+        raise FileNotFoundError(f"no task YAML files under: {config.deployment.task_config_dir}")
+    configurations: list[AppConfig] = []
+    for path in task_paths:
+        values = merge_config(config.as_dict(), compose_config(path))
+        values["deployment"]["run_all_tasks"] = False
+        values["deployment"]["auto_log_dir"] = True
+        configurations.append(AppConfig.from_dict(values))
+    return tuple(configurations)
+
+
+def deployment_output_dir(config: AppConfig) -> Path:
+    """按模型与任务自动生成目录，或返回显式的兼容路径。"""
+    if config.deployment.auto_log_dir:
+        name = f"{config.policy.family}_{config.task.task_id}"
+        return Path(config.deployment.output_root) / name
+    return Path(config.deployment.log_dir)
+
+
+def deploy_task_episodes(config: AppConfig, runtime: Any) -> list[SimulationRolloutReport]:
+    """在一个任务的自动目录中连续运行多个 episode。"""
+    root = deployment_output_dir(config)
     root.mkdir(parents=True, exist_ok=True)
     reports = [
         rollout_episode(config, runtime, episode, root / f"episode_{episode:06d}")
@@ -298,8 +339,29 @@ def deploy_episodes(config: AppConfig, runtime: Any) -> list[SimulationRolloutRe
     return reports
 
 
+def deploy_episodes(config: AppConfig, runtime: Any) -> list[SimulationRolloutReport]:
+    """运行单个或全部任务，并为批量执行生成跨任务摘要。"""
+    reports = [
+        report
+        for task_config in deployment_task_configs(config)
+        for report in deploy_task_episodes(task_config, runtime)
+    ]
+    if config.deployment.run_all_tasks:
+        root = Path(config.deployment.output_root)
+        root.mkdir(parents=True, exist_ok=True)
+        summary = root / f"{config.policy.family}_all_tasks_summary.json"
+        summary.write_text(
+            json.dumps([report.as_dict() for report in reports], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return reports
+
+
 __all__ = [
     "SimulationRolloutReport",
     "deploy_episodes",
+    "deploy_task_episodes",
+    "deployment_output_dir",
+    "deployment_task_configs",
     "rollout_episode",
 ]

@@ -1,7 +1,3 @@
 includes:
-  - ../base.yaml
   - smolvla.yaml
   - ../tasks/curve_plate.yaml
-
-deployment:
-  log_dir: outputs/deploy/smolvla_curve_plate

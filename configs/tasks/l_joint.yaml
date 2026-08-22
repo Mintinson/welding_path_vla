@@ -5,6 +5,7 @@ workpiece:
   l_joint_thickness_m: 0.005
 
 task:
+  task_id: l_joint
   instruction: Weld along the straight fillet seam of the L-shaped workpiece.
   seam_id: straight_fillet
   direction: forward

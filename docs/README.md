@@ -9,7 +9,8 @@
 2. [仿真数据采集原理与格式](data-collection.md)：几何专家、时间对齐、raw schema 和 LeRobot 结构。
 3. [数据采集与训练工作流](data-training-workflow.md)：从仿真采集到 LeRobot 导出、训练和上传。
 4. [工件与焊缝任务](simulation/workpieces.md)：五类现有任务及新增任务的边界。
-5. [评估规范](evaluation.md)：ESR、ICR、PCR、CTE、姿态、速度、平滑性与真机日志。
+5. [仿真策略部署](simulation-deployment.md)：checkpoint 加载、闭环控制、安全门、输出和排错。
+6. [评估规范](evaluation.md)：ESR、ICR、PCR、CTE、姿态、速度、平滑性与真机日志。
 
 ## 按主题查找
 
@@ -21,6 +22,7 @@
 | 训练规模 | [Batch、Step 与训练时间](training-scale-guide.md) | DDP 全局 batch、epoch、step 和 wall time 计算 |
 | 仿真任务 | [工件与焊缝任务](simulation/workpieces.md) | L 型、管底、管口、曲线平板和三面角工件 |
 | 场景布局 | [真实照片对齐布局](simulation/photo-layout.md) | 桌面、机器人、相机和坐标近似 |
+| 仿真部署 | [闭环 Rollout](simulation-deployment.md) | checkpoint、动作处理、安全门、终止、输出与排错 |
 | ACT | [ACT 基线](act-pipeline.md) | 数据契约、训练、离线评估和仿真部署 |
 | SmolVLA | [SmolVLA 基线](smolvla-pipeline.md) | 官方模型接入、恢复训练和多任务部署 |
 | π0 / π0.5 | [π0 系列](pi-pipeline.md) | LoRA、A100 配置、训练和部署 |

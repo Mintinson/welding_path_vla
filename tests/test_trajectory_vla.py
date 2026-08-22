@@ -9,6 +9,7 @@ from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.factory import get_policy_pipeline
 from welding_path_vla.policies.runtime import LeRobotRuntime
+from welding_path_vla.policies.simulation_rollout import deployment_output_dir
 from welding_path_vla.policies.spec import TRAJECTORY_VLA
 from welding_path_vla.policies.training import TrainingRequest
 from welding_path_vla.policies.trajectory_vla.configuration_trajectory_vla import (
@@ -33,13 +34,13 @@ from welding_path_vla.policies.trajectory_vla.flow_matching import (
     ],
 )
 def test_trajectory_vla_configs_switch_complete_tasks(path: str, seam: str) -> None:
-    """部署配置应同时切换工件、焊缝和输出目录。"""
+    """部署配置应同时切换工件、焊缝并自动生成输出目录。"""
     config = AppConfig.load(path)
     assert config.policy.family == "trajectory_vla"
     assert config.task.seam_id == seam
     assert config.policy.checkpoint is not None
     task_name = {"straight_fillet": "l_joint", "curve_seam": "curve_plate"}.get(seam, seam)
-    assert task_name in config.deployment.log_dir
+    assert deployment_output_dir(config).name == f"trajectory_vla_{task_name}"
 
 
 def test_trajectory_vla_uses_local_registered_policy() -> None:

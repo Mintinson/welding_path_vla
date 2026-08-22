@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from welding_path_vla.core.config import AppConfig, DeploymentConfig, PolicyConfig
 from welding_path_vla.policies.factory import get_policy_pipeline
@@ -15,10 +14,6 @@ class DeploymentRequest:
     def validate(self) -> None:
         if not self.policy.checkpoint:
             raise ValueError("policy.checkpoint is required for deployment")
-
-    @property
-    def log_dir(self) -> Path:
-        return Path(self.deployment.log_dir)
 
 
 def deploy_simulation(config: AppConfig):

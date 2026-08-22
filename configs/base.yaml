@@ -180,7 +180,12 @@ lerobot_export:
 
 deployment:
   dry_run: true
+  # 默认输出到 output_root/{policy.family}_{task.task_id}。
+  output_root: outputs/deploy
   log_dir: outputs/deploy
+  auto_log_dir: true
+  run_all_tasks: false
+  task_config_dir: configs/tasks
   episodes: 5
   max_steps: 1000
   seed: 20260724

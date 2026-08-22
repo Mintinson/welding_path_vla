@@ -2,6 +2,7 @@ workpiece:
   kind: pipe_on_plate
 
 task:
+  task_id: pipe_bottom
   instruction: Weld along the lower circular fillet seam where the pipe meets the base plate.
   seam_id: pipe_bottom
   direction: forward

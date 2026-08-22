@@ -32,7 +32,7 @@
 | `train-policy` | `train_policy.py` | 单进程训练、恢复训练或命令预览 |
 | `train-policy-2gpu` | `train_policy.py` | 用 Accelerate 启动两个 DDP 进程 |
 | `policy-evaluate` | `evaluate_policy.py` | 在 LeRobot 留出数据上评估 checkpoint |
-| `policy-sim-deploy` | `deploy_simulation_policy.py` | 在 robosuite 中执行闭环 rollout |
+| `policy-sim-deploy` | `deploy_simulation_policy.py` | 在 robosuite 中执行[闭环 rollout](simulation-deployment.md) |
 | `evaluate-episode` | `evaluate.py --mode=episode` | 计算单条仿真或真机 episode 指标 |
 | `evaluate-dataset` | `evaluate.py --mode=dataset` | 聚合原始数据集指标 |
 | `robot-config` | `show_robot_config.py` | 输出机器人、安装外参与安全配置 |
@@ -68,6 +68,9 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml \
   --deployment.episodes=10
 ```
+
+目录默认自动命名为 `outputs/deploy/{policy.family}_{task.task_id}`。同一 checkpoint 批量运行
+全部任务时增加 `--deployment.run_all_tasks=true`，无需逐个切换配置和输出目录。
 
 项目的组合层只识别 `--config_path=PATH` 形式。其他字段由 Draccus 直接解析，使用
 `--section.field=value` 覆盖；布尔值显式写成 `true` 或 `false`。

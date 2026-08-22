@@ -1,8 +1,6 @@
 includes:
-  - ../base.yaml
   - trajectory_vla.yaml
   - ../tasks/l_joint.yaml
 
 deployment:
-  log_dir: outputs/deploy/trajectory_vla_l_joint
   max_steps: 1000

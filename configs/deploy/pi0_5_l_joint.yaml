@@ -1,8 +1,6 @@
 includes:
-  - ../base.yaml
   - pi0_5.yaml
   - ../tasks/l_joint.yaml
 
 deployment:
-  log_dir: outputs/deploy/pi0_5_l_joint
   max_steps: 1000

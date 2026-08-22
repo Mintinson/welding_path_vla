@@ -1,7 +1,3 @@
 includes:
-  - ../base.yaml
   - pi0_5.yaml
   - ../tasks/pipe_top.yaml
-
-deployment:
-  log_dir: outputs/deploy/pi0_5_pipe_top

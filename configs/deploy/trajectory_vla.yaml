@@ -1,4 +1,5 @@
 includes:
+  - ../base.yaml
   - ../policies/trajectory_vla.yaml
 
 policy:

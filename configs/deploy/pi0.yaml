@@ -1,4 +1,5 @@
 includes:
+  - ../base.yaml
   - ../policies/pi0.yaml
 
 policy:
