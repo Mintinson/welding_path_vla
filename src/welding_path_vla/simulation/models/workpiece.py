@@ -8,7 +8,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from welding_path_vla.core.config import AppConfig, maximum_seam_length
+from welding_path_vla.core.config import AppConfig, TaskConfig
 from welding_path_vla.simulation.robosuite_compat import MujocoObject, array_to_string
 from welding_path_vla.simulation.tasks import (
     CircularSeamPath,
@@ -20,6 +20,11 @@ from welding_path_vla.simulation.tasks import (
 
 STEEL_RGBA = "0.34 0.27 0.22 1"
 PLATE_RGBA = "0.46 0.45 0.42 1"
+SEAM_VISUAL_PREFIX = "weld_seam_"
+SEAM_PENDING_RGBA = np.array([0.005, 0.005, 0.005, 1.0])
+SEAM_WELDED_RGBA = np.array([1.0, 1.0, 1.0, 1.0])
+SEAM_VISUAL_RADIUS_M = 0.0025
+SEAM_VISUAL_SEGMENT_M = 0.005
 
 
 def append_geom_pair(body: ET.Element, attributes: dict[str, str]) -> None:
@@ -49,7 +54,7 @@ def append_seam_visual(
     start: np.ndarray,
     end: np.ndarray,
 ) -> None:
-    """添加仅用于成像的细焊道，不参与碰撞判断。
+    """添加仅用于成像的黑色焊缝分段，不参与碰撞判断。
 
     Args:
         body: 接收 geom 的工件 body。
@@ -64,8 +69,8 @@ def append_seam_visual(
             "name": name,
             "type": "capsule",
             "fromto": array_to_string([*start, *end]),
-            "size": "0.0015",
-            "rgba": "0.12 0.06 0.025 1",
+            "size": str(SEAM_VISUAL_RADIUS_M),
+            "rgba": array_to_string(SEAM_PENDING_RGBA),
             "group": "1",
             "contype": "0",
             "conaffinity": "0",
@@ -90,6 +95,7 @@ class WorkpieceObject(MujocoObject):
         super().__init__(obj_type="all", duplicate_collision_geoms=False)
         self.config = config
         self._name = "workpiece"
+        self.weld_visual_names: list[str] = []
         builders = {
             "l_joint": self.build_l_joint,
             "pipe_on_plate": self.build_pipe_on_plate,
@@ -146,6 +152,7 @@ class WorkpieceObject(MujocoObject):
                 "rgba": "0.60 0.64 0.68 1",
             },
         )
+        self.append_weld_visuals(body)
         self.append_seam_sites(body)
         return body
 
@@ -185,6 +192,7 @@ class WorkpieceObject(MujocoObject):
                     "rgba": STEEL_RGBA,
                 },
             )
+        self.append_weld_visuals(body)
         self.append_seam_sites(body)
         return body
 
@@ -201,28 +209,7 @@ class WorkpieceObject(MujocoObject):
                 "rgba": "0.48 0.51 0.54 1",
             },
         )
-        seam = self.seam(np.zeros(3), np.eye(3))
-        count = self.config.workpiece.curve_visual_segments
-        points = []
-        for index in range(count + 1):
-            frame = seam.sample(index / count)
-            points.append(frame.position - self.config.task.tcp_clearance_m * frame.normal)
-        for index, (start, end) in enumerate(pairwise(points)):
-            ET.SubElement(
-                body,
-                "geom",
-                {
-                    "name": f"curve_seam_visual_{index:02d}",
-                    "type": "capsule",
-                    "fromto": array_to_string([*start, *end]),
-                    "size": "0.0015",
-                    "rgba": "0.12 0.06 0.025 1",
-                    "group": "1",
-                    "contype": "0",
-                    "conaffinity": "0",
-                    "mass": "1e-8",
-                },
-            )
+        self.append_weld_visuals(body)
         self.append_seam_sites(body)
         return body
 
@@ -250,17 +237,75 @@ class WorkpieceObject(MujocoObject):
                 },
             )
 
-        corner = np.array([wall_x[0] / 2, wall_y[1] / 2, floor[2] / 2])
-        endpoints = {
-            "vertical_corner": corner
-            + np.array([0, 0, maximum_seam_length(workpiece, "vertical_corner")]),
-            "floor_x": corner + np.array([maximum_seam_length(workpiece, "floor_x"), 0, 0]),
-            "floor_y": corner + np.array([0, maximum_seam_length(workpiece, "floor_y"), 0]),
-        }
-        for seam_id, endpoint in endpoints.items():
-            append_seam_visual(body, f"{seam_id}_visual", corner, endpoint)
+        self.append_weld_visuals(body)
         self.append_seam_sites(body)
         return body
+
+    def visual_tasks(self) -> tuple[TaskConfig, ...]:
+        """返回当前工件所有已配置任务对应的焊缝参数。
+
+        同一工件的候选焊缝始终同时显示，使视觉策略必须结合任务文本选择目标。
+        圆管的另一条焊缝使用任务模块中的标称范围；当前任务仍保留 episode 实际范围。
+
+        Returns:
+            用于构造可视焊缝的任务参数。
+        """
+        active = self.config.task
+        if self.config.workpiece.kind == "trihedral_corner":
+            tasks = []
+            for seam_id in ("horizontal_pair", "vertical_corner"):
+                task = deepcopy(active)
+                task.seam_id = seam_id
+                task.direction = "forward"
+                tasks.append(task)
+            return tuple(tasks)
+        if self.config.workpiece.kind == "pipe_on_plate":
+            tasks = []
+            for seam_id, sweep in (("pipe_bottom", 90.0), ("pipe_top", 360.0)):
+                task = deepcopy(active)
+                if seam_id != active.seam_id:
+                    task.seam_id = seam_id
+                    task.direction = "forward"
+                    task.arc_start_deg = -90.0
+                    task.arc_sweep_deg = sweep
+                tasks.append(task)
+            return tuple(tasks)
+        return (deepcopy(active),)
+
+    def append_weld_visuals(self, body: ET.Element) -> None:
+        """把所有候选焊缝离散为明显的黑色可变色分段。
+
+        Args:
+            body: 接收焊缝渲染 geom 的工件 body。
+        """
+        for task in self.visual_tasks():
+            seam = self.seam(np.zeros(3), np.eye(3), task)
+            progress_ranges = (
+                (
+                    (0.0, seam.straight_length_m / seam.length_m),
+                    (1.0 - seam.straight_length_m / seam.length_m, 1.0),
+                )
+                if isinstance(seam, RoundedCornerSeamPath)
+                else ((0.0, 1.0),)
+            )
+            visual_index = 0
+            for progress_start, progress_end in progress_ranges:
+                length = (progress_end - progress_start) * seam.length_m
+                count = (
+                    self.config.workpiece.curve_visual_segments
+                    if task.seam_id == "curve_seam"
+                    else max(1, int(np.ceil(length / SEAM_VISUAL_SEGMENT_M)))
+                )
+                points = []
+                for index in range(count + 1):
+                    progress = progress_start + index / count * (progress_end - progress_start)
+                    frame = seam.sample(progress)
+                    points.append(frame.position - task.tcp_clearance_m * frame.normal)
+                for start, end in pairwise(points):
+                    name = f"{SEAM_VISUAL_PREFIX}{task.seam_id}_{visual_index:03d}"
+                    append_seam_visual(body, name, start, end)
+                    self.weld_visual_names.append(name)
+                    visual_index += 1
 
     def append_seam_sites(self, body: ET.Element) -> None:
         """添加不可见起终点 site，兼容检查工具并辅助调试。"""
@@ -293,17 +338,19 @@ class WorkpieceObject(MujocoObject):
         self,
         position: np.ndarray,
         rotation: np.ndarray,
+        task: TaskConfig | None = None,
     ) -> SeamPath:
         """按工件类型返回世界坐标下的任务焊缝。
 
         Args:
             position: 工件原点世界坐标。
             rotation: 工件局部坐标到世界坐标的旋转矩阵。
+            task: 可选任务参数；默认使用当前 episode 任务。
 
         Returns:
             与当前工件匹配的焊缝路径对象。
         """
-        task = self.config.task
+        task = task or self.config.task
         workpiece = self.config.workpiece
         work_angle = np.radians(task.work_angle_deg)
         if workpiece.kind == "l_joint":
@@ -348,7 +395,7 @@ class WorkpieceObject(MujocoObject):
                     position + rotation @ origin,
                     rotation,
                     task.seam_length_m,
-                    workpiece.trihedral_corner_margin_m,
+                    workpiece.trihedral_turn_radius_m,
                     work_angle,
                     task.tcp_clearance_m,
                     task.direction == "reverse",

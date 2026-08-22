@@ -2,6 +2,16 @@
 
 from welding_path_vla.simulation.models.arena import WeldingArena
 from welding_path_vla.simulation.models.robot import Elfin5ProRobotModel
-from welding_path_vla.simulation.models.workpiece import WorkpieceObject
+from welding_path_vla.simulation.models.workpiece import (
+    SEAM_PENDING_RGBA,
+    SEAM_WELDED_RGBA,
+    WorkpieceObject,
+)
 
-__all__ = ["Elfin5ProRobotModel", "WeldingArena", "WorkpieceObject"]
+__all__ = [
+    "SEAM_PENDING_RGBA",
+    "SEAM_WELDED_RGBA",
+    "Elfin5ProRobotModel",
+    "WeldingArena",
+    "WorkpieceObject",
+]

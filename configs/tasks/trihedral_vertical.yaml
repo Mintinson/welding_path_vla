@@ -6,6 +6,8 @@ workpiece:
   trihedral_wall_y_size_m: [0.22, 0.005, 0.16]
   # 真实枪嘴无法进入三块板的数学交点，保留 12 mm 工艺起点余量。
   trihedral_corner_margin_m: 0.012
+  # 与水平任务共享相同的可视焊缝转角，保证任务切换时工件外观一致。
+  trihedral_turn_radius_m: 0.030
 
 scene:
   # 将内角置于机械臂前侧可达区，并给枪身留出立板外侧空间。

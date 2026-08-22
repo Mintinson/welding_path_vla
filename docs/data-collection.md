@@ -25,7 +25,7 @@
   → 工件和焊缝几何
   → 几何专家参考轨迹
   → 连续 IK / 限位 / 碰撞预检
-  → robosuite 闭环执行
+  → robosuite 闭环执行 + 黑色焊缝逐段变白
   → 原始 episode：N 条动作 + N+1 个状态和图像
   → 质量门：有效 / 无效
   → LeRobot：N 行训练样本 + 双相机视频
@@ -61,7 +61,7 @@
 
 ### 2.2 构造有向焊缝
 
-`WorkpieceObject.seam()` 根据工件最终位姿和任务参数返回统一的 `SeamPath`。当前有三种几何
+`WorkpieceObject.seam()` 根据工件最终位姿和任务参数返回统一的 `SeamPath`。当前有四种几何
 实现：
 
 | 路径 | 用途 | `sample(progress)` 的行为 |
@@ -69,6 +69,7 @@
 | `StraightSeamPath` | L 型和三面角直线焊缝 | 解析插值位置，切向和法向固定 |
 | `CircularSeamPath` | 圆管上、下圆弧 | 按圆心角计算位置，切向和法向随圆周旋转 |
 | `SinusoidalSeamPath` | 平板正弦 / 余弦焊缝 | 用稠密查找表按真实弧长采样，不按曲线参数等间隔采样 |
+| `RoundedCornerSeamPath` | 三面角水平双焊缝 | 两条直线通过连续圆角一次连接 |
 
 每个 `SeamFrame` 都包含世界系位置、沿任务方向的单位切向和焊枪接近侧法向。副法向由
 `normal × tangent` 得到，三者构成焊缝局部标架。`direction=reverse` 会交换直线起终点或改变
@@ -77,6 +78,10 @@
 对 L 型、圆管和三面角任务，工作角决定焊枪相对工件表面的方向；曲线平板任务当前使用固定平板
 法向。行走角在法向与切向之间产生倾斜，`tool_roll_deg` 再绕焊枪轴旋转。圆弧的局部标架会沿
 管壁转动；`orientation_follow_ratio` 决定输出姿态跟随这种变化的比例。
+
+工件还把所有候选任务焊缝离散为黑色视觉分段。每个策略 step 后，环境计算 TCP 到各段中心线
+的距离，小于 `task.weld_success_distance_m` 的分段变为白色且不会回黑。相机观测因此同时包含
+“还有哪些位置待焊”和“当前任务已经完成到哪里”；新 episode 或 `reset()` 会恢复全部黑线。
 
 ### 2.3 先证明轨迹可执行
 

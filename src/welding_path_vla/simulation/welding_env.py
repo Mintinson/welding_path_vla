@@ -18,6 +18,8 @@ from welding_path_vla.core.geometry import (
     yaw_degrees_to_matrix,
 )
 from welding_path_vla.simulation.models import (
+    SEAM_PENDING_RGBA,
+    SEAM_WELDED_RGBA,
     Elfin5ProRobotModel,
     WeldingArena,
     WorkpieceObject,
@@ -149,6 +151,13 @@ class WeldingEnv(MujocoEnv):
             for geom_id in range(self.mj_model.ngeom)
             if self.mj_model.geom_bodyid[geom_id] == self.workpiece_id
         }
+        self.weld_visual_geom_ids = np.asarray(
+            [
+                self.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in self.workpiece.weld_visual_names
+            ],
+            dtype=np.int32,
+        )
         self.joint_ids = [
             self.name_id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in self.joint_names
         ]
@@ -168,6 +177,7 @@ class WeldingEnv(MujocoEnv):
             context.vopt.geomgroup[0] = 0
             context.vopt.sitegroup[5] = 0
         self.set_joint_position(np.radians(self.config.robot.initial_joint_deg))
+        self.reset_weld_visuals()
         self.last_collision_pairs = ()
         self.target_pose = None
         self.seam_progress_hint = 0.0
@@ -287,6 +297,7 @@ class WeldingEnv(MujocoEnv):
         """汇总一个策略周期的接触、成功状态和控制诊断。"""
         self.observed_contacts.update(self.collision_pairs)
         self.last_collision_pairs = tuple(sorted(self.observed_contacts))
+        self.update_weld_visuals()
         reward, done, info = super()._post_action(action)
         info.update(
             {
@@ -298,6 +309,30 @@ class WeldingEnv(MujocoEnv):
             }
         )
         return reward, done, info
+
+    def reset_weld_visuals(self) -> None:
+        """将所有候选焊缝恢复为未焊接的黑色。"""
+        self.mj_model.geom_rgba[self.weld_visual_geom_ids] = SEAM_PENDING_RGBA
+
+    def update_weld_visuals(self, tcp_position: np.ndarray | None = None) -> None:
+        """将 TCP 距离阈值内的焊缝分段永久标记为白色。
+
+        Args:
+            tcp_position: 可选 TCP 世界坐标；默认读取当前仿真状态。
+        """
+        tcp = self.tcp_pose().position if tcp_position is None else np.asarray(tcp_position)
+        geom_ids = self.weld_visual_geom_ids
+        centers = self.mj_data.geom_xpos[geom_ids]
+        rotations = self.mj_data.geom_xmat[geom_ids].reshape(-1, 3, 3)
+        half_lengths = self.mj_model.geom_size[geom_ids, 1]
+        axes = rotations[:, :, 2]
+        starts = centers - half_lengths[:, None] * axes
+        vectors = 2 * half_lengths[:, None] * axes
+        progress = np.sum((tcp - starts) * vectors, axis=1) / np.sum(vectors**2, axis=1)
+        closest = starts + np.clip(progress, 0, 1)[:, None] * vectors
+        distances = np.linalg.norm(tcp - closest, axis=1)
+        welded = geom_ids[distances <= self.config.task.weld_success_distance_m]
+        self.mj_model.geom_rgba[welded] = SEAM_WELDED_RGBA
 
     def reward(self, action: np.ndarray | None = None) -> float:
         """使用稀疏任务奖励：到达焊缝末端且仍在跟踪带内时为 1。"""

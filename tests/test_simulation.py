@@ -10,6 +10,8 @@ from welding_path_vla.core.geometry import quaternion_to_matrix, rotation_error
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
 from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
 from welding_path_vla.simulation.models import (
+    SEAM_PENDING_RGBA,
+    SEAM_WELDED_RGBA,
     Elfin5ProRobotModel,
     WeldingArena,
     WorkpieceObject,
@@ -597,9 +599,10 @@ def test_curve_plate_exposes_arc_length_parameterized_fixed_orientation_seam() -
         assert isinstance(seam, SinusoidalSeamPath)
         plate_visual = simulation.mj_model.geom("curve_plate_visual")
         assert simulation.mj_model.geom_contype[plate_visual.id] == 0
-        curve_geom = simulation.mj_model.geom("curve_seam_visual_00")
+        curve_geom = simulation.mj_model.geom("weld_seam_curve_seam_000")
         assert simulation.mj_model.geom_contype[curve_geom.id] == 0
         assert curve_geom.rgba[3] == 1
+        np.testing.assert_allclose(curve_geom.rgba, SEAM_PENDING_RGBA)
         frames = [seam.sample(progress) for progress in np.linspace(0, 1, 21)]
         distances = [
             np.linalg.norm(second.position - first.position) for first, second in pairwise(frames)
@@ -659,7 +662,7 @@ def test_trihedral_workpiece_exposes_three_seams_and_moderate_randomness() -> No
         assert seam.tangent[2] > 0.999
         assert abs(seam.normal[2]) < 1e-7
         assert seam.length_m == pytest.approx(config.task.seam_length_m)
-        for name in ("vertical_corner_visual", "floor_x_visual", "floor_y_visual"):
+        for name in ("weld_seam_horizontal_pair_000", "weld_seam_vertical_corner_000"):
             geom = simulation.mj_model.geom(name)
             assert simulation.mj_model.geom_contype[geom.id] == 0
     finally:
@@ -700,6 +703,80 @@ def test_trihedral_horizontal_expert_tracks_both_lines_without_reapproach() -> N
             sum(current == "track" and following == "retreat" for current, following in transitions)
             == 1
         )
+    finally:
+        simulation.close()
+
+
+@pytest.mark.parametrize(
+    ("config_path", "seam_ids"),
+    [
+        ("configs/pipe_bottom.yaml", ("pipe_bottom", "pipe_top")),
+        ("configs/pipe_top.yaml", ("pipe_bottom", "pipe_top")),
+        (
+            "configs/trihedral_horizontal.yaml",
+            ("horizontal_pair", "vertical_corner"),
+        ),
+        (
+            "configs/trihedral_vertical.yaml",
+            ("horizontal_pair", "vertical_corner"),
+        ),
+    ],
+)
+def test_shared_workpiece_displays_every_task_seam(
+    config_path: str,
+    seam_ids: tuple[str, ...],
+) -> None:
+    """共享工件在任一任务下都应显示全部候选黑色焊缝。"""
+    simulation = WeldingEnv(AppConfig.load(config_path), camera_observations=False)
+    try:
+        names = simulation.workpiece.weld_visual_names
+        assert all(
+            any(name.startswith(f"weld_seam_{seam_id}_") for name in names) for seam_id in seam_ids
+        )
+        colors = simulation.mj_model.geom_rgba[simulation.weld_visual_geom_ids]
+        np.testing.assert_allclose(colors, np.tile(SEAM_PENDING_RGBA, (len(colors), 1)))
+    finally:
+        simulation.close()
+
+
+def test_weld_visuals_turn_white_near_tcp_and_reset_to_black() -> None:
+    """TCP 经过目标焊缝后仅该任务分段变白，环境重置后恢复全黑。"""
+    config = AppConfig.load("configs/trihedral_horizontal.yaml")
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        horizontal = np.asarray(
+            [
+                simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in simulation.workpiece.weld_visual_names
+                if name.startswith("weld_seam_horizontal_pair_")
+            ]
+        )
+        vertical = np.asarray(
+            [
+                simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in simulation.workpiece.weld_visual_names
+                if name.startswith("weld_seam_vertical_corner_")
+            ]
+        )
+        seam = simulation.active_seam()
+        for progress in np.linspace(0, 1, 201):
+            simulation.update_weld_visuals(seam.sample(float(progress)).position)
+
+        np.testing.assert_allclose(
+            simulation.mj_model.geom_rgba[horizontal],
+            np.tile(SEAM_WELDED_RGBA, (len(horizontal), 1)),
+        )
+        np.testing.assert_allclose(
+            simulation.mj_model.geom_rgba[vertical],
+            np.tile(SEAM_PENDING_RGBA, (len(vertical), 1)),
+        )
+        visual_length = float(np.sum(2 * simulation.mj_model.geom_size[horizontal, 1]))
+        expected_length = 2 * config.task.seam_length_m
+        assert visual_length == pytest.approx(expected_length, rel=0.002)
+
+        simulation.reset()
+        colors = simulation.mj_model.geom_rgba[simulation.weld_visual_geom_ids]
+        np.testing.assert_allclose(colors, np.tile(SEAM_PENDING_RGBA, (len(colors), 1)))
     finally:
         simulation.close()
 
@@ -760,6 +837,17 @@ def test_trihedral_horizontal_expert_execution_passes_quality_gate() -> None:
             recovery=False,
         )
         assert report.valid, report.as_dict()
+        active_visuals = np.asarray(
+            [
+                simulation.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in simulation.workpiece.weld_visual_names
+                if name.startswith("weld_seam_horizontal_pair_")
+            ]
+        )
+        np.testing.assert_allclose(
+            simulation.mj_model.geom_rgba[active_visuals],
+            np.tile(SEAM_WELDED_RGBA, (len(active_visuals), 1)),
+        )
     finally:
         simulation.close()
 

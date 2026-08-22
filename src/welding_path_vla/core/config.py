@@ -96,6 +96,7 @@ class WorkpieceConfig:
         trihedral_wall_x_size_m: X 法向立板沿 X、Y、Z 的尺寸。
         trihedral_wall_y_size_m: Y 法向立板沿 X、Y、Z 的尺寸。
         trihedral_corner_margin_m: 焊缝避开三板交汇死角的起点距离。
+        trihedral_turn_radius_m: 水平双焊缝绕开三板交汇死角的转弯半径。
     """
 
     kind: str = "l_joint"
@@ -113,6 +114,7 @@ class WorkpieceConfig:
     trihedral_wall_x_size_m: list[float] = field(default_factory=lambda: [0.005, 0.20, 0.18])
     trihedral_wall_y_size_m: list[float] = field(default_factory=lambda: [0.23, 0.005, 0.16])
     trihedral_corner_margin_m: float = 0.012
+    trihedral_turn_radius_m: float = 0.030
 
 
 def maximum_seam_length(workpiece: WorkpieceConfig, seam_id: str) -> float | None:
@@ -142,7 +144,9 @@ def maximum_seam_length(workpiece: WorkpieceConfig, seam_id: str) -> float | Non
         "floor_y": min(floor[1], wall_x[1]) - wall_y[1] / 2 - margin,
     }
     if seam_id == "horizontal_pair":
-        return min(limits["floor_x"], limits["floor_y"])
+        floor_x = min(floor[0], wall_y[0]) - wall_x[0] / 2
+        floor_y = min(floor[1], wall_x[1]) - wall_y[1] / 2
+        return min(floor_x, floor_y) - workpiece.trihedral_turn_radius_m
     return limits[seam_id]
 
 
@@ -168,6 +172,7 @@ class TaskConfig:
         retreat_distance_m: 焊缝终点外的退出距离。
         staging_clearance_m: 空中转移点高于焊缝的最小距离。
         tcp_clearance_m: TCP 相对理论焊缝中心的安全净空。
+        weld_success_distance_m: TCP 将附近焊缝标记为已焊白色的距离阈值。
         seam_length_m: 直线焊缝长度。
         curve_kind: 平板曲线类型，取 ``sine`` 或 ``cosine``。
         curve_amplitude_m: 曲线横向振幅，单位为米。
@@ -192,6 +197,7 @@ class TaskConfig:
     retreat_distance_m: float = 0.04
     seam_length_m: float = 0.20
     tcp_clearance_m: float = 0.0015
+    weld_success_distance_m: float = 0.003
     curve_kind: str = "sine"
     curve_amplitude_m: float = 0.02
     curve_frequency: float = 1.5
@@ -519,6 +525,8 @@ class AppConfig:
             raise ValueError("trihedral plate sizes must contain three positive values")
         if self.workpiece.trihedral_corner_margin_m < 0:
             raise ValueError("workpiece.trihedral_corner_margin_m must be non-negative")
+        if self.workpiece.trihedral_turn_radius_m <= 0:
+            raise ValueError("workpiece.trihedral_turn_radius_m must be positive")
         if self.workpiece.pipe_segments < 12:
             raise ValueError("workpiece.pipe_segments must be at least 12")
         if self.workpiece.curve_visual_segments < 8:
@@ -547,6 +555,8 @@ class AppConfig:
             )
         if self.task.direction not in {"forward", "reverse"}:
             raise ValueError("task.direction must be forward or reverse")
+        if self.task.weld_success_distance_m <= 0:
+            raise ValueError("task.weld_success_distance_m must be positive")
         if not 0 < abs(self.task.arc_sweep_deg) <= 360:
             raise ValueError("task.arc_sweep_deg must be in [-360, 360] and non-zero")
         if (

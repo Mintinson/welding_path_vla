@@ -4,8 +4,9 @@ workpiece:
   trihedral_floor_size_m: [0.23, 0.21, 0.005]
   trihedral_wall_x_size_m: [0.005, 0.19, 0.17]
   trihedral_wall_y_size_m: [0.22, 0.005, 0.16]
+  trihedral_corner_margin_m: 0.012
   # 30 mm 圆角为枪颈转向留出空间，并降低 90° 转角处的姿态角速度。
-  trihedral_corner_margin_m: 0.030
+  trihedral_turn_radius_m: 0.030
 
 scene:
   workpiece_position_m: [0.40, -0.12, 0.2925]

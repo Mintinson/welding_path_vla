@@ -10,6 +10,18 @@
 `SeamPath` 负责按进度采样位置、切向和法向，也负责把实际 TCP 投影回有限焊缝。专家轨迹、
 数据采集、自然退出和 ACT rollout 因此不再假设焊缝一定是直线。
 
+## 可视焊缝状态
+
+每条需要执行的焊缝按真实任务长度绘制为 5 mm 左右的黑色分段，线宽为 5 mm。TCP 距离某段
+小于 `task.weld_success_distance_m`（默认 6 mm）后，该段永久变为白色，直到环境重置。
+这只改变渲染颜色，不参与碰撞、轨迹投影或质量指标。
+
+水平双焊缝只绘制两条真实直线；绕开三板死角的圆角属于连续转移动作，不显示为待焊黑线。
+
+共享同一工件的候选任务会同时显示。例如圆管始终显示 `pipe_bottom` 和 `pipe_top`，三面角
+始终显示 `horizontal_pair` 和 `vertical_corner`；专家只会把当前任务经过的焊缝逐段变白，
+其余候选线保持黑色。策略因此必须结合任务文本判断目标，而不能从“场景里唯一一条线”猜测任务。
+
 ## 现有工件
 
 | 配置 | 工件 | 焊缝 |
@@ -51,14 +63,15 @@ pixi run -e sim sim-collect \
 
 三面角工件完整显示两条水平内角焊缝和一条竖直内角焊缝。
 `configs/trihedral_vertical.yaml` 选择 `vertical_corner`，用于考察自下而上的竖焊能力；
-`configs/trihedral_horizontal.yaml` 则从 `floor_x` 外端进入，以工艺余量为半径绕过三板交汇死角，
+`configs/trihedral_horizontal.yaml` 则从 `floor_x` 外端进入，以 `trihedral_turn_radius_m` 为半径
+绕过三板交汇死角，
 再沿 `floor_y` 一次运行到另一侧外端。两条直线共用 `task.seam_length_m`，因此每组 episode
 会同步改变两边的有效长度，整个过程只有一次接近和一次退出。
 
 三个板件尺寸分别由 `trihedral_floor_size_m`、`trihedral_wall_x_size_m` 和
 `trihedral_wall_y_size_m` 表示。非厚度方向尺寸、焊缝长度、工件位姿、焊枪姿态和速度均
-采用小范围成组随机化；三板交点附近保留 `trihedral_corner_margin_m` 工艺余量，避免真实枪嘴
-无法进入的数学尖角造成确定性碰撞。
+采用小范围成组随机化；竖缝使用 `trihedral_corner_margin_m` 避开数学尖角，水平双焊缝使用
+独立的 `trihedral_turn_radius_m` 为枪颈转向留出空间。
 
 ```bash
 pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
