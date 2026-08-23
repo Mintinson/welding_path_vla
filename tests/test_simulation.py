@@ -896,3 +896,18 @@ def test_initial_joint_randomization_is_bounded_and_collision_free() -> None:
         assert not simulation.collision
     finally:
         simulation.close()
+
+
+def test_l_joint_group_27_has_reachable_staging_pose() -> None:
+    """L 型工件不应采样已知不可达的反向预置姿态。"""
+    base = AppConfig.load("configs/default.yaml")
+    config = sample_episode_task_config(base, 270)
+    seed = base.collection.seed + 270
+    simulation = WeldingEnv(config, seed, camera_observations=False)
+    try:
+        simulation.randomize_workpiece(np.random.default_rng(seed))
+        _, residual = stage_for_task(simulation, config)
+        assert config.task.direction == "forward"
+        assert residual <= 0.005
+    finally:
+        simulation.close()

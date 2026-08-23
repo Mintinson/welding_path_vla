@@ -88,6 +88,7 @@ pixi run -e sim sim-collect --config_path=configs/trihedral_vertical.yaml --coll
 pixi run -e sim sim-view --config_path=configs/trihedral_horizontal.yaml
 pixi run -e sim sim-collect --config_path=configs/trihedral_horizontal.yaml --collection.episodes=50
 pixi run -e sim sim-replay --episode=PATH
+pixi run -e sim rerender-dataset --dataset=datasets/weldpath_raw_v2
 pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
 pixi run -e data export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
 # 在上述命令后添加 --repo_id=USER/REPO --lerobot_export.push_to_hub=true 可自动上传
@@ -167,8 +168,10 @@ pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
 架构、解冻开关与训练/评估/部署命令见
 [Trajectory-VLA Qwen](src/welding_path_vla/policies/traj_vla_qwen/README.md)。
 
-`export-lerobot` 默认采用 LeRobot 官方 AV1 配置，只保存视频 feature。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
+`export-lerobot` 默认读取 `configs/base.yaml`，采用有界流式 AV1、CRF 30、preset 12 编码，直接从 raw MP4 写入视频 feature，不生成中间 PNG。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
+
+旧仿真数据可用 `rerender-dataset` 原地补录黑色待焊线和白色已焊轨迹。raw 模式只替换双相机 MP4；LeRobot 模式通过 manifest 找回 raw 唯一事实源，重建后逐列校验状态、动作、时间戳和索引不变，再原子替换数据集。
 
 Pixi 任务直接调用 `scripts/` 下的单一职责脚本；也可以在对应 Pixi shell 中直接运行，例如 `python scripts/evaluate.py --help`。`src/welding_path_vla` 只提供可复用包代码，不再承载命令行入口。任务与脚本的完整映射见 [脚本入口与模块边界](docs/script-entrypoints.md)。
 
-所有运行参数来自同一个类型化 YAML；更换 `--config_path` 即可切换场景、真机、安全、策略、训练和部署配置，任意字段都可用 `--section.field=value` 覆盖。`collection.episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。原始数据与 rollout 由同一个 LeRobot / PyAV 接口写入可预览的 H.264；最终训练数据默认转为体积更小的 AV1。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。
+所有运行参数来自同一个类型化 YAML；更换 `--config_path` 即可切换场景、真机、安全、策略、训练和部署配置，任意字段都可用 `--section.field=value` 覆盖。`collection.episodes` 表示目标有效回合数，质量不合格的回合仍会分类保留，并在达到 `max_attempt_multiplier` 上限时报错。每个 episode 都保存解析后的配置、seed、任务和质量结果。原始数据与 rollout 使用可直接预览的 H.264，默认训练数据转换为更注重质量的 AV1。完整流程见 [数据采集、训练与多样性扩展报告](docs/data-training-workflow.md)；论文指标与真机日志规范见 [焊接短时轨迹评估规范](docs/evaluation.md)。

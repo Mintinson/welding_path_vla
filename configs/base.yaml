@@ -61,7 +61,7 @@ randomization:
   z_m: 0.0
   yaw_deg: 15.0
   # staging 构型附近六个关节的最大独立偏移（度）。
-  joint_degs: [30, 10, 10, 15, 25, 25]
+  joint_degs: [60, 20, 20, 30, 60, 60]
   # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
   max_sampling_attempts: 10
   initial_tcp_m: 0.03
@@ -170,11 +170,12 @@ lerobot_export:
   parallel_video_encoding: true
   image_writer_processes: 0
   image_writer_threads: 8
-  # 每个相机最多缓存 64 帧，限制长 episode 的峰值内存。
-  encoder_queue_maxsize: 64
-  encoder_threads: null
-  # LeRobot 官方默认 AV1 配置适合训练数据归档；原始视频仍使用兼容性更好的 H.264。
+  # 每个相机最多缓存 30 帧，每路使用 4 个线程，限制峰值内存和 CPU 竞争。
+  encoder_queue_maxsize: 30
+  encoder_threads: 4
+  # 默认 AV1 优先保留视频质量；需要更快转换时可改为 h264 + veryfast。
   video_codec: libsvtav1
+  # video_codec: h264
   video_quality: 30
   video_preset: 12
 

@@ -97,6 +97,7 @@ check = { depends-on = ["lint", "typecheck", "test"] }
 sim-view = "python scripts/view_simulation.py"
 sim-collect = "python scripts/collect_simulation_data.py"
 sim-replay = "python scripts/replay_episode.py"
+rerender-dataset = "python scripts/rerender_dataset.py"
 data-validate = "python scripts/validate_dataset.py"
 evaluate-episode = "python scripts/evaluate.py --mode=episode"
 evaluate-dataset = "python scripts/evaluate.py --mode=dataset"

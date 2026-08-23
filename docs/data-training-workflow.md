@@ -146,17 +146,46 @@ pixi run -e data export-lerobot \
 ```
 
 默认只保存视频 feature，不保留逐帧图片。LeRobot 使用 AV1、`yuv420p`、CRF 30、preset 12；
-双相机编码可以并行，但多个 raw 数据源由同一个 writer 顺序追加，避免多个 writer 竞争 metadata
-和耗尽内存。流式编码通过有界队列限制帧缓存，可用以下参数调节：
+双相机由两个编码线程并行处理，但多个 raw 数据源顺序追加，避免多个 writer 竞争 metadata。
+默认流式编码直接完成“raw MP4 解码帧 → AV1 MP4”，不会执行临时 PNG 的写入和读取；每路相机
+最多排队 30 帧，每路编码器使用 4 个线程。终端只显示数据集、episode 和帧进度，隐藏 Hugging
+Face `Map` 进度及 SVT 初始化信息。可用以下参数调节：
 
-- `lerobot_export.parallel_video_encoding`：并行编码双相机；
-- `lerobot_export.encoder_queue_maxsize`：每路编码器最大排队帧数；
+- `lerobot_export.parallel_video_encoding`：关闭流式模式时，并行编码双相机；
+- `lerobot_export.encoder_queue_maxsize`：每路编码器最大排队帧数，默认 30；
 - `lerobot_export.encoder_threads`：每个编码器线程数；
-- `lerobot_export.streaming_encoding=false`：必要时退回 LeRobot 临时图片流程；
+- `lerobot_export.streaming_encoding=false`：仅在编码兼容问题时退回较慢的临时 PNG 流程；
 - `lerobot_export.save_images=true`：改为图片 feature，不生成视频 feature。
+- `lerobot_export.video_codec=h264`：愿意降低画质换取速度时改用 H.264 编码。
 
-不要用外层 episode 多进程同时写一个 LeRobot 目标。内存紧张时先减小编码队列、关闭双相机并行
-或关闭流式编码；`collection.workers` 只影响仿真采集，不影响数据导出。
+不要用外层 episode 多进程同时写一个 LeRobot 目标。内存紧张时先减小编码队列或编码线程数；
+`collection.workers` 只影响仿真采集，不影响数据导出。
+
+### 5.1 为旧数据补录焊缝状态
+
+旧 raw 仿真数据已经保存完整配置、工件位姿和逐帧关节/TCP 状态，因此无需重新运行专家或物理控制，
+可以只恢复每帧场景并重新渲染双相机视频：
+
+```bash
+pixi run -e sim rerender-dataset \
+  --dataset=datasets/weldpath_trihedral_vertical_raw_v2
+```
+
+脚本先在 episode 内的临时目录录制并校验两路视频帧数，成功后才替换 `global.mp4` 和
+`wrist.mp4`；`trajectory.npz`、`metadata.json`、初始姿态、状态和动作均不写入。
+
+LeRobot 数据必须能找到 manifest 中对应的 raw 唯一事实源：
+
+```bash
+pixi run -e sim rerender-dataset \
+  --dataset=datasets/weldpath_lerobot_relative_v1 \
+  --raw_dataset_glob='datasets/*_raw_v2'
+```
+
+该模式先同步重渲染涉及的 raw episode，再在同一磁盘的临时目录重建 LeRobot 视觉数据。替换前会
+逐列验证 `observation.state`、`action`、时间戳、frame/episode/index 和任务映射完全相等；验证失败
+时保留原 LeRobot 数据集。默认成功后删除旧目录，也可加 `--keep_backup=true` 保留
+`<dataset>_before_rerender`。运行前必须结束该数据集上的采集、导出或训练写入进程。
 
 按原始 episode 编号选择闭区间：
 
@@ -198,7 +227,7 @@ HF_XET_HIGH_PERFORMANCE=1 pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=/path/to/weldpath_lerobot_relative_v1 \
-  --repo_id=USER/weldpath_relative_v1 \
+  --repo_id=mintinson/weldpath_relative_v1 \
   --lerobot_export.push_to_hub=true
 ```
 
@@ -207,8 +236,8 @@ HF_XET_HIGH_PERFORMANCE=1 pixi run -e data export-lerobot \
 
 ```bash
 HF_XET_HIGH_PERFORMANCE=1 pixi run -e data upload-lerobot \
-  --dataset=/path/to/weldpath_lerobot_relative_v1 \
-  --repo_id=USER/weldpath_relative_v1
+  --dataset=/run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1 \
+  --repo_id=mintinson/weldpath_relative_v1
 ```
 
 重复执行上传会复用 Hub/Xet 已有文件，不重新转换 raw episode。不要使用 `sudo`：它会改变 PATH、

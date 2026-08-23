@@ -219,7 +219,7 @@ datasets/<raw_dataset>/
 采集数据版本，而不是另一套数组 schema。判断兼容性应读取 metadata，不能只看目录名。
 
 双相机 raw 视频默认是 640×480、30 FPS、H.264 MP4，使用相同调用时序写帧。H.264 便于在
-VS Code 和浏览器中直接预览；训练归档阶段再由 LeRobot 转码为更节省空间的 AV1。
+VS Code 和浏览器中直接预览；LeRobot 默认重新编码为更注重视频质量的 AV1。
 
 ### 4.2 `trajectory.npz`
 
@@ -392,8 +392,11 @@ LeRobot 行中显式读取某条 episode 的目标速度。如果后续要研究
 - `meta/stats.json` 保存归一化需要的统计量；
 - `meta/welding_path_vla_export.json` 是本项目增加的增量清单，记录 raw 源、已导出目录名和动作契约。
 
-默认 `save_images=false`，因此没有逐帧图片目录。设为 `true` 时视觉 feature 改为图片，主要用于
-调试，不建议用于大规模训练集。
+默认 `save_images=false` 且 `streaming_encoding=true`，视频帧直接送入有界编码队列，因此转换
+期间和转换完成后都不会创建逐帧图片目录。旧版或显式设置 `streaming_encoding=false` 时，LeRobot
+会先写临时 PNG，再在 episode 结束时编码并删除；中断转换可能留下这些临时文件。设
+`save_images=true` 时视觉 feature 才会正式改为图片，主要用于调试，不建议用于大规模训练集。
+视频模式恢复导出时会自动清除旧版中断所遗留的 `images/` 临时树。
 
 ### 6.3 为什么 Parquet 存 absolute，训练却叫 relative action
 
@@ -473,8 +476,30 @@ pixi run -e data export-lerobot \
   --repo_id=USER/weldpath_relative_v1
 ```
 
-默认转换双相机视频，使用 AV1、`yuv420p`、CRF 30 和 preset 12。多个 raw 源顺序写入同一个
-LeRobot writer，双相机可在单 episode 内并行编码，从而避免并发修改 metadata 或过量占用内存。
+默认转换双相机视频，使用 AV1、`yuv420p`、CRF 30 和 preset 12。两路相机各自通过最多 30 帧的
+有界队列流式编码，多个 raw 源顺序写入，从而避免临时 PNG、并发修改 metadata 或过量占用内存。
+终端显示数据集、episode 和帧级进度，不显示 Hugging Face `Map` 或编码器原生日志。
+
+如需优先转换速度，可添加
+`--lerobot_export.video_codec=h264 --lerobot_export.video_preset=veryfast`，代价是画质降低。
+
+### 7.1 原地重渲染旧仿真数据
+
+旧视频缺少黑白焊缝状态时，使用统一入口按旧状态重新渲染：
+
+```bash
+# raw：只替换每个 episode 的 global.mp4 / wrist.mp4
+pixi run -e sim rerender-dataset --dataset=datasets/weldpath_raw_v2
+
+# LeRobot：通过 manifest 查找 raw，校验低维数据不变后原子替换
+pixi run -e sim rerender-dataset \
+  --dataset=datasets/weldpath_lerobot_relative_v1 \
+  --raw_dataset_glob='datasets/*_raw_v2'
+```
+
+LeRobot 文件本身没有工件随机位姿和完整仿真配置，不能脱离 raw 准确重建。缺少 manifest 对应的
+raw 数据时脚本会停止，不会尝试从旧像素猜测焊缝位置。不要与 `export-lerobot` 同时操作同一个
+目标目录；希望保留替换前副本时添加 `--keep_backup=true`。
 
 ## 8. 直接读取数据
 

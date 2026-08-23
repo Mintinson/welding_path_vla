@@ -25,6 +25,7 @@
 | `sim-view` | `view_simulation.py` | 打开场景并检查机器人、工件和相机 |
 | `sim-collect` | `collect_simulation_data.py` | 采集通过质量门的仿真 episode |
 | `sim-replay` | `replay_episode.py` | 同步回放双相机视频 |
+| `rerender-dataset` | `rerender_dataset.py` | 按旧状态原地重渲染 raw 或 LeRobot 视觉数据 |
 | `data-validate` | `validate_dataset.py` | 汇总原始数据质量状态 |
 | `export-lerobot` | `export_lerobot.py` | 单源或多源导出 LeRobot Dataset v3 |
 | `upload-lerobot` | `upload_lerobot_dataset.py` | 上传已经完成的 LeRobot 数据集 |

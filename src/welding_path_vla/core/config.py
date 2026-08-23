@@ -269,7 +269,7 @@ class CollectionConfig:
     max_attempt_multiplier: int = 3
     seed: int = 20260721
     headless: bool = True
-    workers: int = 1
+    workers: int = 4
 
 
 @dataclass(slots=True)
@@ -407,9 +407,10 @@ class LeRobotExportConfig:
     """LeRobot 转换、增量写入与视频编码参数。
 
     Attributes:
-        streaming_encoding: 是否边解码边编码。SVT-AV1 的长生命周期线程可能
-            持续保留内存，因此默认使用内存有界的临时帧路径。
+        streaming_encoding: 是否边解码边编码。默认直接写入视频，避免 PNG
+            落盘和二次读取；每路编码器由有界队列限制内存。
         parallel_video_encoding: 是否由 LeRobot 并行编码同一 episode 的多路相机。
+        video_codec: 新数据集默认使用更注重视频质量的 AV1 编码。
         hub_upload_attempts: Hub 网络连接失败时的总尝试次数。
         hub_retry_wait_s: Hub 网络连接失败后的重试等待时间。
     """
@@ -422,12 +423,12 @@ class LeRobotExportConfig:
     hub_upload_attempts: int = 5
     hub_retry_wait_s: float = 30.0
     save_images: bool = False
-    streaming_encoding: bool = False
+    streaming_encoding: bool = True
     parallel_video_encoding: bool = True
     image_writer_processes: int = 0
     image_writer_threads: int = 8
-    encoder_queue_maxsize: int = 64
-    encoder_threads: int | None = None
+    encoder_queue_maxsize: int = 30
+    encoder_threads: int | None = 4
     video_codec: str = "libsvtav1"
     video_quality: int = 30
     video_preset: str | int | None = "12"

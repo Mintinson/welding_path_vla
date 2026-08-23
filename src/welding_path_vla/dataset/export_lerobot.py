@@ -293,7 +293,12 @@ def video_frame_pairs(path: Path, count: int) -> Iterator[tuple[np.ndarray, np.n
             capture.release()
 
 
-def add_episode(dataset: Any, episode: EpisodeReader, options: LeRobotExportConfig) -> None:
+def add_episode(
+    dataset: Any,
+    episode: EpisodeReader,
+    options: LeRobotExportConfig,
+    show_progress: bool = False,
+) -> None:
     """批量计算数值特征，并流式送入 LeRobot writer。"""
     trajectory = episode.trajectory
     count = episode.action_count
@@ -307,7 +312,15 @@ def add_episode(dataset: Any, episode: EpisodeReader, options: LeRobotExportConf
     ).astype(np.float32)
     action_source = episode.metadata["resolved_config"]["policy"]["action_source"]
     actions = build_absolute_actions(episode, source=action_source)
-    for index, (global_frame, wrist_frame) in enumerate(video_frame_pairs(episode.path, count)):
+    frames = tqdm(
+        video_frame_pairs(episode.path, count),
+        total=count,
+        desc=f"  {episode.path.name}",
+        unit="frame",
+        leave=False,
+        disable=not show_progress,
+    )
+    for index, (global_frame, wrist_frame) in enumerate(frames):
         dataset.add_frame(
             {
                 GLOBAL_IMAGE: global_frame,
@@ -320,16 +333,17 @@ def add_episode(dataset: Any, episode: EpisodeReader, options: LeRobotExportConf
     dataset.save_episode(parallel_encoding=options.parallel_video_encoding)
 
 
-def remove_empty_image_tree(destination: Path) -> None:
-    """视频模式完成后清除 LeRobot 留下的空图片目录。"""
+def remove_video_image_tree(destination: Path) -> None:
+    """清除视频模式中断时遗留的临时图片。"""
     root = destination / "images"
     if not root.exists():
         return
     for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
-        if path.is_dir() and not any(path.iterdir()):
+        if path.is_file():
+            path.unlink()
+        else:
             path.rmdir()
-    if not any(root.iterdir()):
-        root.rmdir()
+    root.rmdir()
 
 
 def update_episode_stats(
@@ -435,6 +449,8 @@ def export_lerobot(
     pending = [path for path in selected if path.name not in exported_names]
     if not pending:
         write_manifest(destination, manifest)
+        if not options.save_images:
+            remove_video_image_tree(destination)
         return ExportReport(
             str(destination),
             len(selected),
@@ -452,11 +468,11 @@ def export_lerobot(
     try:
         for path in tqdm(
             pending,
-            desc="Exporting episodes",
+            desc=f"Exporting {root.name}",
             unit="episode",
             disable=not show_progress,
         ):
-            add_episode(dataset, EpisodeReader(path), options)
+            add_episode(dataset, EpisodeReader(path), options, show_progress)
             saved.append(path.name)
     finally:
         dataset.finalize()
@@ -466,7 +482,7 @@ def export_lerobot(
                 recompute_relative_action_stats(destination, action_horizon, action_stride)
             write_manifest(destination, manifest)
         if not options.save_images:
-            remove_empty_image_tree(destination)
+            remove_video_image_tree(destination)
 
     return ExportReport(
         str(destination),

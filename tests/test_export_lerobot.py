@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -85,9 +87,14 @@ def test_video_export_can_resume_and_skip_completed_episodes(tmp_path: Path) -> 
     assert first.exported_episodes == 1
     assert not (output / "images").exists()
 
+    stale_image = output / "images/observation.images.global/episode-000001/frame-000000.png"
+    stale_image.parent.mkdir(parents=True)
+    stale_image.write_bytes(b"interrupted temporary frame")
     options.incremental = True
     options.end_episode = 4
     second = export_lerobot(source, output, "test/welding", options, action_horizon=2)
+    stale_image.parent.mkdir(parents=True)
+    stale_image.write_bytes(b"interrupted temporary frame")
     third = export_lerobot(source, output, "test/welding", options, action_horizon=2)
     info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     manifest = json.loads(
@@ -98,6 +105,7 @@ def test_video_export_can_resume_and_skip_completed_episodes(tmp_path: Path) -> 
     assert third.exported_episodes == 0
     assert third.skipped_episodes == 2
     assert info["total_episodes"] == 2
+    assert not (output / "images").exists()
     assert info["features"]["observation.images.global"]["dtype"] == "video"
     assert info["features"]["observation.state"]["names"] == [
         "joint_1",
@@ -136,18 +144,91 @@ def test_image_storage_is_explicit_opt_in(tmp_path: Path) -> None:
     assert not (output / "videos").exists()
 
 
-def test_default_video_export_uses_bounded_parallel_camera_encoding(tmp_path: Path) -> None:
-    """默认关闭流式编码，并保留 LeRobot 的双相机并行编码。"""
+def test_default_video_export_uses_bounded_streaming_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认直接流式写视频，不经过临时 PNG。"""
+    from lerobot.datasets import dataset_writer
+
     source = tmp_path / "raw"
     output = tmp_path / "videos"
     write_raw_episode(source, 0)
+    written_images = []
+    write_image = dataset_writer.write_image
+
+    def record_write_image(*args: object, **kwargs: object) -> None:
+        written_images.append(args[1])
+        write_image(*args, **kwargs)
+
+    monkeypatch.setattr(dataset_writer, "write_image", record_write_image)
     options = LeRobotExportConfig()
-    assert not options.streaming_encoding
-    assert options.parallel_video_encoding
+    assert options.streaming_encoding
+    assert options.encoder_queue_maxsize == 30
+    assert options.encoder_threads == 4
+    assert options.video_codec == "libsvtav1"
+    assert options.video_preset == "12"
     export_lerobot(source, output, "test/welding-parallel", options, action_horizon=2)
     videos = list((output / "videos").rglob("*.mp4"))
+    info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     assert len(videos) == 2
+    assert info["features"]["observation.images.global"]["info"]["video.codec"] == "av1"
+    assert not written_images
     assert not (output / "images").exists()
+
+
+def test_export_cli_uses_base_config_by_default(tmp_path: Path) -> None:
+    """未指定配置路径时，导出任务应读取 base.yaml。"""
+    source = tmp_path / "raw"
+    output = tmp_path / "videos"
+    write_raw_episode(source, 0)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/export_lerobot.py",
+            f"--dataset={source}",
+            f"--output={output}",
+            "--policy.action_horizon=2",
+            "--policy.action_steps=2",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
+    video = info["features"]["observation.images.global"]["info"]
+    assert video["video.codec"] == "av1"
+    assert video["video.preset"] == "12"
+
+
+def test_export_cli_hides_dependency_progress_and_encoder_banner(tmp_path: Path) -> None:
+    """CLI 应只显示项目 episode 进度，不混入 Map 和 SVT 原生日志。"""
+    source = tmp_path / "raw"
+    output = tmp_path / "videos"
+    write_raw_episode(source, 0)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/export_lerobot.py",
+            f"--dataset={source}",
+            f"--output={output}",
+            "--policy.action_horizon=2",
+            "--policy.action_steps=2",
+            "--lerobot_export.video_codec=h264",
+            "--lerobot_export.video_preset=veryfast",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Exporting raw" in result.stderr
+    assert "Map:" not in result.stderr
+    assert "Svt[" not in result.stderr
+    assert "libx264" not in result.stderr
+    assert "Auto-inserting" not in result.stderr
+    assert "Starting second pass" not in result.stderr
 
 
 def test_sequential_export_combines_multiple_raw_datasets(tmp_path: Path) -> None:

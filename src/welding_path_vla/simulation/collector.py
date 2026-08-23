@@ -284,7 +284,7 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
         RuntimeError: 达到 max_attempt_multiplier 倍尝试次数后
                       仍无法收集到足够的有效 episode。
     """
-
+    task_id = config.task.task_id 
     target = episodes or config.collection.episodes
     root = Path(config.collection.dataset_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -316,7 +316,7 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
     with (
         tqdm(
             total=target,
-            desc=f"Collecting Valid Episodes (target: {target})",
+            desc=f"Collecting Valid {task_id} Episodes (target: {target})",
             unit="episode",
             position=0,
             dynamic_ncols=True,

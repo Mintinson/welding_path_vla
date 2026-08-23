@@ -17,8 +17,8 @@ def test_default_config_is_valid() -> None:
     assert config.robot.initial_joint_deg[0] == 90.9411
     assert config.workpiece.kind == "l_joint"
     assert config.task.seam_id == "straight_fillet"
-    assert len(config.randomization.joint_degs) == 6
-    assert all(value > 0 for value in config.randomization.joint_degs)
+    assert config.randomization.joint_degs == [60, 20, 20, 30, 60, 60]
+    assert config.randomization.reverse_probability == 0
     assert config.policy.family == "smolvla"
     assert config.policy.action_source == "safe_command"
     assert not config.real_robot.enabled

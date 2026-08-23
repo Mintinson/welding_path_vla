@@ -9,6 +9,7 @@ SCRIPTS = (
     "collect_simulation_data.py",
     "view_simulation.py",
     "replay_episode.py",
+    "rerender_dataset.py",
     "validate_dataset.py",
     "export_lerobot.py",
     "evaluate.py",

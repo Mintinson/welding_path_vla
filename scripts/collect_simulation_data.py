@@ -8,6 +8,8 @@ from common import cli, output_json
 
 from welding_path_vla.core.config import AppConfig
 
+os.environ.setdefault("SVT_LOG_FILE", os.devnull)
+
 
 @cli
 def main(config: AppConfig) -> None:
