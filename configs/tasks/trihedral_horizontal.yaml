@@ -35,7 +35,8 @@ task:
 randomization:
   xy_m: 0.02
   yaw_deg: 6.0
-  joint_degs: [18, 8, 8, 10, 15, 15]
+  # 完整轨迹预检会拒绝不可行初态，因此可安全使用与其他任务相同的宽关节范围。
+  joint_degs: [60, 20, 20, 30, 60, 60]
   max_sampling_attempts: 15
   initial_tcp_m: 0.015
   # 连续转角优先采集干净专家轨迹，不在圆角附近叠加恢复扰动。

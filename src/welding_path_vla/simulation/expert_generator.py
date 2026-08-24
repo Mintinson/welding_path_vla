@@ -241,6 +241,14 @@ class ExpertTrajectory:
             0.0,
             self.config.task.approach_speed_mps,
         )
+        # 起焊点短暂停稳，让位置伺服消除下降段残余误差；这些帧仍属于接近阶段，
+        # 不会把控制器的瞬态误差错误计入焊缝跟踪质量。
+        settle = [
+            ReferenceFrame(
+                Pose(self.seam_start.copy(), start_quaternion.copy()), Phase.APPROACH, 0.0
+            )
+            for _ in range(round(0.25 * self.config.timing.policy_hz))
+        ]
         retreat = self.segment(
             self.seam_end,
             self.post,
@@ -250,7 +258,7 @@ class ExpertTrajectory:
             1.0,
             self.config.task.retreat_speed_mps,
         )
-        return lift + transfer + lower + descend + track + retreat
+        return lift + transfer + lower + descend + settle + track + retreat
 
 
 def interpolate_quaternion(

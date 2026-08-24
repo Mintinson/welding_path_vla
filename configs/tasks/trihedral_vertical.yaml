@@ -19,7 +19,7 @@ task:
   seam_id: vertical_corner
   direction: forward
   approach_speed_mps: 0.06
-  speed_mps: 0.015
+  speed_mps: 0.02
   retreat_speed_mps: 0.04
   orientation_follow_ratio: 1.0
   work_angle_deg: 45.0
@@ -35,7 +35,8 @@ task:
 randomization:
   xy_m: 0.02
   yaw_deg: 6.0
-  joint_degs: [18, 8, 8, 10, 15, 15]
+  # 完整轨迹预检会拒绝不可行初态，因此可安全使用与其他任务相同的宽关节范围。
+  joint_degs: [60, 20, 20, 30, 60, 60]
   max_sampling_attempts: 15
   initial_tcp_m: 0.015
   work_angle_range_deg: 2.0
@@ -43,7 +44,7 @@ randomization:
   tool_roll_range_deg: 2.0
   orientation_follow_range: 0.0
   approach_speed_range_mps: 0.004
-  speed_range_mps: 0.002
+  speed_range_mps: 0.01
   retreat_speed_range_mps: 0.004
   # 每个任务组只小幅改变板件尺寸和有效焊缝长度。
   trihedral_size_range_m: 0.008

@@ -9,8 +9,8 @@ task:
   # 上圆完整执行一周；进度提示负责消除首尾同点造成的投影歧义。
   arc_start_deg: -90.0
   arc_sweep_deg: 360.0
-  # 接近阶段继承 60 mm/s；焊接阶段降为 4 mm/s。
-  speed_mps: 0.004
+  # 接近阶段继承 60 mm/s；焊接阶段以 15 mm/s 为中心随机变化。
+  speed_mps: 0.015
   tcp_clearance_m: 0.002
   # 枪身近似竖直并保持起点姿态，避免整圆时腕部无意义地旋转 360°。
   work_angle_deg: 0.0
@@ -27,11 +27,14 @@ randomization:
   travel_angle_range_deg: 2.0
   tool_roll_range_deg: 3.0
   orientation_follow_range: 0.03
-  speed_range_mps: 0.001
+  # 双向各占一半；反向时专家会补偿行走角和滚转角，保持物理焊枪姿态可达。
+  reverse_probability: 0.5
+  # speed_range_mps 是中心值的 ± 扰动，因此实际速度严格落在 10–20 mm/s。
+  speed_range_mps: 0.008
 
 collection:
   dataset_root: datasets/weldpath_pipe_top_raw_v2
 
 deployment:
-  # 4 mm/s 完整圆周约需 79 秒，留出接近、退出和策略修正时间。
+  # 15 mm/s 完整圆周约需 21 秒，仍为接近、退出和策略修正保留余量。
   max_steps: 3300

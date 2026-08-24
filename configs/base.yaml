@@ -62,6 +62,8 @@ randomization:
   yaw_deg: 15.0
   # staging 构型附近六个关节的最大独立偏移（度）。
   joint_degs: [60, 20, 20, 30, 60, 60]
+  # 轴 1 使用绝对角度均匀采样，使初始 TCP 覆盖工作区左右两侧。
+  initial_joint1_range_deg: [30, 150]
   # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
   max_sampling_attempts: 10
   initial_tcp_m: 0.03
@@ -77,7 +79,7 @@ randomization:
   arc_sweep_range_deg: 0.0
   # 速度以 m/s 采样并保留三位小数。
   approach_speed_range_mps: 0.005
-  speed_range_mps: 0.002
+  speed_range_mps: 0.01
   retreat_speed_range_mps: 0.005
   reverse_probability: 0.5
   # 每 10 个 episode 编号共享方向、姿态、圆弧和速度参数。
@@ -87,7 +89,7 @@ collection:
   dataset_root: datasets/weldpath_raw_v2
   episodes: 50
   max_attempt_multiplier: 3
-  seed: 20260721
+  seed: 20260823
   # 原始数据和 rollout 统一由 LeRobot / PyAV 写入可直接预览的 H.264 MP4。
   headless: true
   # 每个 worker 独立持有 MuJoCo / EGL 环境；显存不足时改为 1 或 2。

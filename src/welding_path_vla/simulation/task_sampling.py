@@ -94,6 +94,10 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
         """在给定范围均匀采样并取整到度。"""
         return round(float(rng.uniform(max(lower, center - radius), min(upper, center + radius))))
 
+    def wrap_angle(angle_deg: float) -> int:
+        """把等价角规范到 ``[-180, 180)``。"""
+        return round((angle_deg + 180) % 360 - 180)
+
     task.work_angle_deg = sample_angle(
         config.task.work_angle_deg, randomization.work_angle_range_deg, 0.0, 90.0
     )
@@ -168,6 +172,11 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
         task.arc_start_deg = round(
             geometric_start + task.arc_sweep_deg if task.direction == "reverse" else geometric_start
         )
+        if task.direction == "reverse":
+            # 切向反转会让局部 XY 轴绕焊枪 Z 轴翻转 180°。同步反转行走角并
+            # 补偿滚转角，可让上下圆缝都保持物理焊枪姿态，只改变执行方向。
+            task.travel_angle_deg = -task.travel_angle_deg
+            task.tool_roll_deg = wrap_angle(task.tool_roll_deg - 180)
     if sampled.workpiece.kind == "curve_plate":
         task.curve_amplitude_m = sample_value(
             config.task.curve_amplitude_m,

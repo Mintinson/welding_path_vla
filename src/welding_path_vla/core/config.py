@@ -212,6 +212,7 @@ class RandomizationConfig:
         z_m: 工件沿 Z 方向的最大平移。
         yaw_deg: 工件偏航角的最大变化。
         joint_degs: 六个关节相对 staging 构型的最大变化。
+        initial_joint1_range_deg: 初始轴 1 的绝对均匀采样范围。
         max_sampling_attempts: 不可达或碰撞时的最大重采样次数。
         initial_tcp_m: 初始 TCP 各轴最大平移扰动。
         recovery_probability: episode 中插入恢复扰动的概率。
@@ -238,7 +239,8 @@ class RandomizationConfig:
     xy_m: float = 0.05
     z_m: float = 0.0
     yaw_deg: float = 15.0
-    joint_degs: list[float] = field(default_factory=lambda: [30.0, 10.0, 10.0, 15.0, 25.0, 25.0])
+    joint_degs: list[float] = field(default_factory=lambda: [40.0, 20.0, 10.0, 15.0, 25.0, 30.0])
+    initial_joint1_range_deg: list[float] = field(default_factory=lambda: [30.0, 150.0])
     max_sampling_attempts: int = 10
     initial_tcp_m: float = 0.03
     recovery_probability: float = 0.25
@@ -613,6 +615,9 @@ class AppConfig:
             value < 0 for value in self.randomization.joint_degs
         ):
             raise ValueError("randomization.joint_degs must contain six non-negative values")
+        joint1_range = self.randomization.initial_joint1_range_deg
+        if len(joint1_range) != 2 or joint1_range[0] >= joint1_range[1]:
+            raise ValueError("randomization.initial_joint1_range_deg must be increasing")
         if self.randomization.max_sampling_attempts < 1 or self.randomization.task_group_size < 1:
             raise ValueError("randomization sampling counts must be positive")
         if (

@@ -75,6 +75,10 @@
 `normal × tangent` 得到，三者构成焊缝局部标架。`direction=reverse` 会交换直线起终点或改变
 圆弧、曲线的参数方向，所以 `progress=0 → 1` 始终表示任务要求的执行方向。
 
+圆管焊缝反向执行时，专家同时取反行走角并对滚转角补偿 180°。这是切向反转的工艺等价
+变换：焊枪在同一几何点保持相同物理姿态，只改变沿焊缝的运动方向，避免腕部被迫切换到不可达
+构型。
+
 对 L 型、圆管和三面角任务，工作角决定焊枪相对工件表面的方向；曲线平板任务当前使用固定平板
 法向。行走角在法向与切向之间产生倾斜，`tool_roll_deg` 再绕焊枪轴旋转。圆弧的局部标架会沿
 管壁转动；`orientation_follow_ratio` 决定输出姿态跟随这种变化的比例。
@@ -85,11 +89,15 @@
 
 ### 2.3 先证明轨迹可执行
 
+随机化配置中的 `*_range` 表示相对标称值的正负半径，不是上下限。例如
+`speed_mps: 0.015` 与 `speed_range_mps: 0.005` 会采样 0.010–0.020 m/s。
+
 正式渲染和录制前会进行分层拒绝采样：
 
 1. 随机化工件在桌面上的位置和偏航角；
 2. 在焊缝起点上方求解 staging 位姿，拒绝 IK 六维残差超过 0.005 或发生碰撞的场景；
-3. 在 staging 构型附近随机化六个关节，并拒绝不可行构型；
+3. 轴 1 在 `initial_joint1_range_deg` 绝对范围内均匀采样，其余关节在 staging 构型附近
+   随机化，并拒绝不可行构型；
 4. 尝试施加初始 TCP 平移偏差，模拟初态和标定误差；
 5. 从最终初态重新生成完整专家轨迹；
 6. 以上一帧关节解为下一帧 IK 初值，对所有参考帧执行连续预检。
@@ -107,7 +115,7 @@
 ### 2.4 几何专家如何生成轨迹
 
 几何专家不是学习模型。它使用仿真中已知的焊缝中心线、法向和任务参数，生成世界系绝对 TCP
-参考。完整轨迹由六段组成：
+参考。完整轨迹在开始跟踪前包含一个很短的停稳阶段：
 
 ```text
 当前 TCP
@@ -115,8 +123,9 @@
   ├─ 2. transfer：在空中平移到焊缝起点上方
   ├─ 3. lower：下降到预接近点
   ├─ 4. descend：沿接近方向到达焊缝起点
-  ├─ 5. track：沿有向焊缝执行
-  └─ 6. retreat：从焊缝终点沿退出方向离开
+  ├─ 5. settle：在起焊点停稳 0.25 秒
+  ├─ 6. track：沿有向焊缝执行
+  └─ 7. retreat：从焊缝终点沿退出方向离开
 ```
 
 直线段的离散帧数为：
@@ -277,7 +286,7 @@ pickle。下表中 `N` 是动作数，状态类数组为 `N+1`，动作和诊断
 |---|---|---|
 | 身份 | `episode_index`、`seed`、`robot_model`、`asset_id`、`seam_id` | 可追溯和复现 |
 | 任务 | `instruction`、`direction`、`task_parameters` | 恢复该条数据实际执行的任务 |
-| 初态采样 | `initial_joint_offset_deg`、`initial_tcp_offset_m`、各类 attempts | 分析随机覆盖和拒绝率 |
+| 初态采样 | `initial_joint_position_deg`、`initial_tcp_position_m`、偏移和各类 attempts | 分析随机覆盖和拒绝率 |
 | 规划 | `staging_ik_residual`、`planning_max_ik_residual` | 区分场景采样问题与执行问题 |
 | 坐标契约 | `coordinate_frames`、`quaternion_order`、单位字段 | 防止坐标系和单位误用 |
 | 场景 | `workpiece_position`、`workpiece_quaternion_wxyz` | 复现场景和研究域随机化 |
@@ -289,8 +298,9 @@ pickle。下表中 `N` 是动作数，状态类数组为 `N+1`，动作和诊断
 
 ### 4.4 `dataset.json`
 
-数据集根目录的摘要记录下一 episode 编号、有效数、已落盘尝试数、预采样错误数、worker 数和
-质量状态分布。它用于增量采集和快速查看健康度，不替代每条 episode 的 `metadata.json`。
+数据集根目录的摘要记录下一 episode 编号、有效数、已落盘尝试数、预采样错误数、worker 数、
+初始轴 1 / TCP 覆盖范围和质量状态分布。它用于增量采集和快速查看健康度，不替代每条 episode
+的 `metadata.json`。正常结束和 Ctrl+C 中断都会原子更新该文件并清理 `.incomplete`。
 
 预采样阶段完全找不到可行轨迹时，只增加 `collection_error`，不会生成 episode 目录；已经完成
 录制但未通过质量门的数据仍会保留，便于排查失败，而不会被 LeRobot exporter 选中。
@@ -465,6 +475,16 @@ pixi run -e sim sim-replay \
 
 确认画面、碰撞和失败原因合理后，再提高 `collection.workers`。每个 worker 都持有独立的 MuJoCo、
 EGL 和 H.264 编码器；并行数受 GPU 渲染上下文、CPU 编码和内存共同限制。
+
+一次验证全部任务可使用批处理入口；它会依次打印每项成功率和初态覆盖，Ctrl+C 时会先等待当前
+数据集保存总结，再释放整个采集进程组：
+
+```bash
+pixi run -e sim sim-collect-all \
+  --dataset-root=datasetss \
+  --episodes=10 \
+  --workers=4
+```
 
 把一个或多个 raw 数据集导出为统一 LeRobot Dataset：
 

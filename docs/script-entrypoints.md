@@ -86,6 +86,12 @@ pixi run -e sim sim-collect \
   --collection.episodes=5 \
   --collection.workers=1
 
+# 依次采集全部任务，并输出每项成功率和初态覆盖
+pixi run -e sim sim-collect-all \
+  --dataset-root=datasetss \
+  --episodes=10 \
+  --workers=4
+
 # 验证原始数据
 pixi run -e sim data-validate \
   --config_path=configs/default.yaml \

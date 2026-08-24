@@ -2,6 +2,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.simulation import collector as collection
 
@@ -10,6 +12,7 @@ def test_collection_targets_valid_episodes_and_keeps_failures(tmp_path: Path, mo
     config = AppConfig()
     config.collection.dataset_root = str(tmp_path)
     config.collection.max_attempt_multiplier = 3
+    config.collection.headless = False
     outcomes = iter([False, True, True])
 
     def fake_collect(config: AppConfig, episode_index: int, seed: int) -> Path:
@@ -89,3 +92,40 @@ def test_collection_retries_expected_sampling_errors(tmp_path: Path, monkeypatch
     assert summary["last_request_attempts"] == 2
     assert summary["last_request_collection_errors"] == 1
     assert summary["status"] == {"valid_success": 1, "collection_error": 1}
+
+
+def test_interrupted_collection_writes_summary_and_cleans_incomplete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Ctrl+C 应保存现有汇总，并清除未完成的 episode。"""
+    config = AppConfig()
+    config.collection.dataset_root = str(tmp_path)
+    config.collection.headless = False
+    calls = 0
+
+    def fake_collect(config: AppConfig, episode_index: int, seed: int) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            incomplete = tmp_path / ".incomplete" / f"episode_{episode_index:06d}"
+            incomplete.mkdir(parents=True)
+            (incomplete / "partial.mp4").write_bytes(b"partial")
+            raise KeyboardInterrupt
+        path = tmp_path / "episodes" / f"episode_{episode_index:06d}"
+        path.mkdir(parents=True)
+        metadata = {"quality": {"valid": True, "status": "valid_success"}, "seed": seed}
+        (path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(collection, "collect_episode", fake_collect)
+    with pytest.raises(KeyboardInterrupt):
+        collection.collect_dataset(config, episodes=2)
+
+    summary = json.loads((tmp_path / "dataset.json").read_text(encoding="utf-8"))
+    assert summary["last_request_collected_valid_episodes"] == 1
+    assert summary["last_request_attempts"] == 1
+    assert summary["last_request_interrupted"] is True
+    assert summary["next_episode_index"] == 1
+    assert summary["status"] == {"valid_success": 1}
+    assert not (tmp_path / ".incomplete").exists()

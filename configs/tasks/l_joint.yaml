@@ -10,7 +10,7 @@ task:
   seam_id: straight_fillet
   direction: forward
   approach_speed_mps: 0.06
-  speed_mps: 0.02
+  speed_mps: 0.03
   retreat_speed_mps: 0.04
   orientation_follow_ratio: 1.0
   work_angle_deg: 45.0

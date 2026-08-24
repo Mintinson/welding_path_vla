@@ -507,6 +507,9 @@ class WeldingEnv(MujocoEnv):
         margin = self.config.safety.joint_position_margin_rad
         lower = np.maximum(center - radius, self.joint_ranges[:, 0] + margin)
         upper = np.minimum(center + radius, self.joint_ranges[:, 1] - margin)
+        joint1_range = np.radians(self.config.randomization.initial_joint1_range_deg)
+        lower[0] = max(joint1_range[0], self.joint_ranges[0, 0] + margin)
+        upper[0] = min(joint1_range[1], self.joint_ranges[0, 1] - margin)
         table_top = self.config.scene.table_center_m[2] + self.config.scene.table_half_size_m[2]
         for attempt in range(1, attempts + 1):
             candidate = rng.uniform(lower, upper)

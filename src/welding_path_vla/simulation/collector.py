@@ -14,6 +14,7 @@ import multiprocessing
 import shutil
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -62,7 +63,7 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
     try:
         # --- 阶段 1–4: 重采样场景和初态，直到完整轨迹通过连续 IK 预检 ---
         sample = sample_feasible_trajectory(simulation, config, rng)
-    except Exception:
+    except BaseException:
         simulation.close()
         raise
 
@@ -74,6 +75,8 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
 
     try:
         state = simulation.state()
+        initial_joint_position_deg = np.degrees(state.joint_position).tolist()
+        initial_tcp_position_m = state.tcp.position.tolist()
         observation = simulation.observe()
 
         # 记录初始状态 (t=0), 包含关节/TCP 信息和多视角图像
@@ -201,6 +204,8 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             "scene_sampling_attempts": sample.scene_sampling_attempts,
             "motion_sampling_attempts": sample.motion_sampling_attempts,
             "initial_joint_offset_deg": sample.initial_joint_offset_deg.tolist(),
+            "initial_joint_position_deg": initial_joint_position_deg,
+            "initial_tcp_position_m": initial_tcp_position_m,
             "initial_joint_sampling_attempts": sample.joint_sampling_attempts,
             "initial_tcp_offset_m": sample.initial_tcp_offset_m.tolist(),
             "initial_tcp_sampling_attempts": sample.tcp_sampling_attempts,
@@ -259,7 +264,7 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             "quality": report.as_dict(),
         }
         return recorder.finish(metadata)
-    except Exception:
+    except BaseException:
         recorder.abort()
         raise
     finally:
@@ -284,7 +289,7 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
         RuntimeError: 达到 max_attempt_multiplier 倍尝试次数后
                       仍无法收集到足够的有效 episode。
     """
-    task_id = config.task.task_id 
+    task_id = config.task.task_id
     target = episodes or config.collection.episodes
     root = Path(config.collection.dataset_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -313,7 +318,81 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
         width = shutil.get_terminal_size(fallback=(120, 20)).columns
         return text.rjust(max(width - 1, len(text)))
 
+    @contextmanager
+    def persist_collection_summary():
+        """在正常完成或 Ctrl+C 后统一清理暂存目录并保存汇总。"""
+        interrupted = False
+        try:
+            yield
+        except KeyboardInterrupt:
+            interrupted = True
+            raise
+        finally:
+            shutil.rmtree(root / ".incomplete", ignore_errors=True)
+            all_episodes = sorted((root / "episodes").glob("episode_*"))
+            metadata = [
+                json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+                for path in all_episodes
+            ]
+            quality = [item["quality"] for item in metadata]
+            current_metadata = [
+                item
+                for path, item in zip(all_episodes, metadata, strict=True)
+                if int(path.name.rsplit("_", 1)[1]) >= next_index
+            ]
+            joint1 = [
+                item["initial_joint_position_deg"][0]
+                for item in current_metadata
+                if "initial_joint_position_deg" in item
+            ]
+            tcp = np.asarray(
+                [
+                    item["initial_tcp_position_m"]
+                    for item in current_metadata
+                    if "initial_tcp_position_m" in item
+                ]
+            )
+            joint1_summary = (
+                {"min": min(joint1), "max": max(joint1), "span": max(joint1) - min(joint1)}
+                if joint1
+                else None
+            )
+            tcp_span = np.ptp(tcp, axis=0).tolist() if tcp.size else None
+            status = Counter(item["status"] for item in quality)
+            total_collection_errors = previous_collection_errors + collection_errors
+            if total_collection_errors:
+                status["collection_error"] = total_collection_errors
+            completed_next = (
+                max(
+                    (int(path.name.rsplit("_", 1)[1]) for path in all_episodes),
+                    default=next_index - 1,
+                )
+                + 1
+            )
+            summary = {
+                "dataset": root.name,
+                "last_request_valid_episodes": target,
+                "last_request_collected_valid_episodes": valid,
+                "last_request_attempts": attempts,
+                "last_request_collection_errors": collection_errors,
+                "last_request_interrupted": interrupted,
+                "last_request_initial_joint1_deg": joint1_summary,
+                "last_request_initial_tcp_span_m": tcp_span,
+                "collection_errors": total_collection_errors,
+                "collection_workers": workers,
+                "next_episode_index": max(next_index + attempts, completed_next),
+                "valid_episodes": sum(item["valid"] for item in quality),
+                "attempted_episodes": len(all_episodes),
+                "status": dict(status),
+                "seed": config.collection.seed,
+                "format": RAW_DATASET_FORMAT,
+            }
+            temporary_summary = summary_path.with_suffix(".tmp")
+            temporary_summary.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            temporary_summary.replace(summary_path)
+
     with (
+        persist_collection_summary(),
         tqdm(
             total=target,
             desc=f"Collecting Valid {task_id} Episodes (target: {target})",
@@ -408,33 +487,6 @@ def collect_dataset(config: AppConfig, episodes: int | None = None) -> list[Path
                         register_error(episode_index, error)
                     else:
                         register_episode(episode_index, path)
-    # 汇总全部 episode (含之前已有的) 的质量分布
-    all_episodes = sorted((root / "episodes").glob("episode_*"))
-    quality = [
-        json.loads((path / "metadata.json").read_text(encoding="utf-8"))["quality"]
-        for path in all_episodes
-    ]
-    status = Counter(item["status"] for item in quality)
-    total_collection_errors = previous_collection_errors + collection_errors
-    if total_collection_errors:
-        status["collection_error"] = total_collection_errors
-    summary = {
-        "dataset": root.name,
-        "last_request_valid_episodes": target,
-        "last_request_collected_valid_episodes": valid,
-        "last_request_attempts": attempts,
-        "last_request_collection_errors": collection_errors,
-        "collection_errors": total_collection_errors,
-        "collection_workers": workers,
-        "next_episode_index": next_index + attempts,
-        "valid_episodes": sum(item["valid"] for item in quality),
-        "attempted_episodes": len(all_episodes),
-        "status": dict(status),
-        "seed": config.collection.seed,
-        "format": RAW_DATASET_FORMAT,
-    }
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
     if valid < target:
         raise RuntimeError(
             f"collected only {valid}/{target} valid episodes after {attempts} attempts; "

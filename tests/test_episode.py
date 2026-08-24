@@ -29,13 +29,17 @@ def test_default_video_recorder_does_not_probe_unavailable_hardware_codec(
     assert "Failed to initialize VideoWriter" not in errors
 
 
-def test_raw_video_is_browser_compatible_h264(tmp_path: Path) -> None:
+def test_raw_video_is_browser_compatible_h264(tmp_path: Path, capfd) -> None:
     """原始视频应采用 VS Code 内置 Chromium 可播放的 H.264 格式。"""
     config = AppConfig.load("configs/default.yaml")
     recorder = EpisodeRecorder(tmp_path, 0, config)
     image = np.zeros((config.camera.height, config.camera.width, 3), dtype=np.uint8)
     recorder.video.append({"global": image, "wrist": image})
     recorder.video.finish()
+    errors = capfd.readouterr().err
+    assert "libx264" not in errors
+    assert "Auto-inserting" not in errors
+    assert "Starting second pass" not in errors
     with av.open(recorder.temporary_path / "global.mp4") as container:
         stream = container.streams.video[0]
         assert stream.codec_context.name == "h264"
@@ -69,6 +73,8 @@ def test_episode_has_n_plus_one_states(tmp_path: Path) -> None:
     assert "safe_command_position" in episode.trajectory
     assert episode.trajectory["episode_done"][-1]
     assert episode.metadata["initial_joint_offset_deg"] != [0.0] * 6
+    assert len(episode.metadata["initial_joint_position_deg"]) == 6
+    assert len(episode.metadata["initial_tcp_position_m"]) == 3
     assert episode.metadata["planning_max_ik_residual"] <= 0.005
     assert episode.metadata["quality"]["failure_reasons"] == []
     expected_base = frame_delta(

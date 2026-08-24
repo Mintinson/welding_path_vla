@@ -470,12 +470,16 @@ def test_pipe_task_randomization_is_bounded_and_reproducible() -> None:
         - (sample.task.arc_sweep_deg if sample.task.direction == "reverse" else 0)
         for sample in samples
     ]
+    forward = [sample for sample in samples if sample.task.direction == "forward"]
+    reverse = [sample for sample in samples if sample.task.direction == "reverse"]
     assert directions == {"forward", "reverse"}
     assert all(80 <= sample.task.arc_sweep_deg <= 100 for sample in samples)
     assert all(-100 <= start <= -80 for start in geometric_starts)
     assert all(42 <= sample.task.work_angle_deg <= 48 for sample in samples)
-    assert all(7 <= sample.task.travel_angle_deg <= 13 for sample in samples)
-    assert all(-25 <= sample.task.tool_roll_deg <= -15 for sample in samples)
+    assert all(7 <= sample.task.travel_angle_deg <= 13 for sample in forward)
+    assert all(-13 <= sample.task.travel_angle_deg <= -7 for sample in reverse)
+    assert all(-25 <= sample.task.tool_roll_deg <= -15 for sample in forward)
+    assert all(155 <= sample.task.tool_roll_deg <= 165 for sample in reverse)
     assert all(isinstance(sample.task.work_angle_deg, int) for sample in samples)
     assert all(isinstance(sample.task.travel_angle_deg, int) for sample in samples)
     assert all(isinstance(sample.task.tool_roll_deg, int) for sample in samples)
@@ -890,10 +894,32 @@ def test_initial_joint_randomization_is_bounded_and_collision_free() -> None:
         offset, attempts = simulation.randomize_joint_position(
             rng, config.randomization.joint_degs, config.randomization.max_sampling_attempts
         )
+        joint1_deg = np.degrees(simulation.mj_data.qpos[simulation.qpos_ids][0])
         assert attempts <= config.randomization.max_sampling_attempts
         assert np.any(np.abs(offset) > 5)
-        assert np.all(np.abs(offset) <= config.randomization.joint_degs)
+        assert config.randomization.initial_joint1_range_deg[0] <= joint1_deg
+        assert joint1_deg <= config.randomization.initial_joint1_range_deg[1]
+        assert np.all(np.abs(offset[1:]) <= config.randomization.joint_degs[1:])
         assert not simulation.collision
+    finally:
+        simulation.close()
+
+
+def test_expert_settles_at_seam_start_before_tracking() -> None:
+    """起焊前应短暂停稳，避免控制滞后污染第一段焊缝。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingEnv(config, camera_observations=False)
+    try:
+        seam, _ = stage_for_task(simulation, config)
+        frames = ExpertTrajectory(config, simulation.tcp_pose(), seam).frames
+        first_track = next(
+            index for index, frame in enumerate(frames) if frame.phase.value == "track"
+        )
+        settle = frames[first_track - round(0.25 * config.timing.policy_hz) : first_track]
+
+        assert len(settle) == round(0.25 * config.timing.policy_hz)
+        assert all(frame.phase.value == "approach" for frame in settle)
+        assert all(np.allclose(frame.pose.position, seam.start.position) for frame in settle)
     finally:
         simulation.close()
 
@@ -909,5 +935,52 @@ def test_l_joint_group_27_has_reachable_staging_pose() -> None:
         _, residual = stage_for_task(simulation, config)
         assert config.task.direction == "forward"
         assert residual <= 0.005
+    finally:
+        simulation.close()
+
+
+def test_pipe_bottom_reverse_group_has_continuous_plan() -> None:
+    """反向圆弧应补偿焊枪姿态，并通过完整连续轨迹预检。"""
+    base = AppConfig.load("configs/pipe_bottom.yaml")
+    base.collection.seed = 20260823
+    base.randomization.task_group_size = 10
+    base.randomization.reverse_probability = 1.0
+    config = sample_episode_task_config(base, 0)
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        sample = sample_feasible_trajectory(
+            simulation,
+            config,
+            np.random.default_rng(base.collection.seed),
+        )
+
+        assert config.task.direction == "reverse"
+        assert config.task.travel_angle_deg < 0
+        assert config.task.tool_roll_deg > 150
+        assert sample.planning_max_ik_residual_m <= 0.005
+    finally:
+        simulation.close()
+
+
+def test_pipe_top_reverse_group_has_continuous_plan() -> None:
+    """上圆整周反向任务应保持等价焊枪姿态，并通过连续轨迹预检。"""
+    base = AppConfig.load("configs/pipe_top.yaml")
+    base.collection.seed = 20260823
+    base.randomization.task_group_size = 10
+    base.randomization.reverse_probability = 1.0
+    config = sample_episode_task_config(base, 0)
+
+    assert config.task.direction == "reverse"
+    assert config.task.travel_angle_deg > 0
+    assert config.task.tool_roll_deg > 150
+
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        sample = sample_feasible_trajectory(
+            simulation,
+            config,
+            np.random.default_rng(base.collection.seed),
+        )
+        assert sample.planning_max_ik_residual_m <= 0.005
     finally:
         simulation.close()

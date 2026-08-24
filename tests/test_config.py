@@ -18,6 +18,7 @@ def test_default_config_is_valid() -> None:
     assert config.workpiece.kind == "l_joint"
     assert config.task.seam_id == "straight_fillet"
     assert config.randomization.joint_degs == [60, 20, 20, 30, 60, 60]
+    assert config.randomization.initial_joint1_range_deg == [30, 150]
     assert config.randomization.reverse_probability == 0
     assert config.policy.family == "smolvla"
     assert config.policy.action_source == "safe_command"
@@ -41,6 +42,27 @@ def test_pipe_configs_select_matching_workpiece_and_seam(path: str, seam_id: str
     if seam_id == "pipe_top":
         assert config.task.arc_sweep_deg == 360
         assert config.task.orientation_follow_ratio == 0
+
+
+def test_pipe_bottom_keeps_bidirectional_low_speed_welding() -> None:
+    """下圆弧应均衡采集双向任务，并保持已验证的低速焊接范围。"""
+    config = AppConfig.load("configs/pipe_bottom.yaml")
+
+    assert config.randomization.reverse_probability == pytest.approx(0.5)
+    assert config.randomization.speed_range_mps == pytest.approx(0.001)
+    assert config.task.speed_mps - config.randomization.speed_range_mps >= 0.003
+    assert config.task.speed_mps + config.randomization.speed_range_mps <= 0.005
+
+
+def test_pipe_top_keeps_bidirectional_moderate_speed_welding() -> None:
+    """上圆弧应均衡采集双向任务，并把焊接速度限制在 10–20 mm/s。"""
+    config = AppConfig.load("configs/pipe_top.yaml")
+
+    assert config.randomization.reverse_probability == pytest.approx(0.5)
+    assert config.task.speed_mps == pytest.approx(0.015)
+    assert config.randomization.speed_range_mps == pytest.approx(0.005)
+    assert config.task.speed_mps - config.randomization.speed_range_mps == pytest.approx(0.01)
+    assert config.task.speed_mps + config.randomization.speed_range_mps == pytest.approx(0.02)
 
 
 def test_curve_plate_config_selects_fixed_orientation_curve_task() -> None:

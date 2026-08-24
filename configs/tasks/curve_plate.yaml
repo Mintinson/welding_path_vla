@@ -12,7 +12,7 @@ task:
   curve_amplitude_m: 0.020
   curve_frequency: 1.5
   approach_speed_mps: 0.06
-  speed_mps: 0.015
+  speed_mps: 0.02
   retreat_speed_mps: 0.04
   # 整段保持起点姿态，任务只考察曲线位置执行能力。
   orientation_follow_ratio: 0.0
@@ -31,7 +31,7 @@ randomization:
   curve_amplitude_range_m: 0.010
   curve_frequency_range: 0.5
   cosine_probability: 0.5
-  speed_range_mps: 0.003
+  speed_range_mps: 0.01
   # 防止几何曲线变化同时引入姿态变化这一混杂因素。
   work_angle_range_deg: 0.0
   travel_angle_range_deg: 0.0
