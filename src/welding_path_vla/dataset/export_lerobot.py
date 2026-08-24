@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator, Sequence
+from ctypes import CDLL
 from dataclasses import asdict, dataclass, replace
+from gc import collect
 from pathlib import Path
+from sys import platform
 from time import sleep
 from typing import Any
 
@@ -293,6 +296,18 @@ def video_frame_pairs(path: Path, count: int) -> Iterator[tuple[np.ndarray, np.n
             capture.release()
 
 
+def release_encoder_memory() -> None:
+    """回收编码线程释放但 glibc 仍保留的原生堆内存。
+
+    SVT-AV1 每条 episode 都会创建新的编码线程。线程退出后，其大块工作内存会
+    留在 glibc arena 中，长时间转换时 RSS 会持续增长；Linux 下用
+    ``malloc_trim`` 把已经空闲的页归还给系统。
+    """
+    collect()
+    if platform.startswith("linux"):
+        CDLL(None).malloc_trim(0)
+
+
 def add_episode(
     dataset: Any,
     episode: EpisodeReader,
@@ -330,7 +345,10 @@ def add_episode(
                 "task": episode.metadata["instruction"],
             }
         )
-    dataset.save_episode(parallel_encoding=options.parallel_video_encoding)
+    try:
+        dataset.save_episode(parallel_encoding=options.parallel_video_encoding)
+    finally:
+        release_encoder_memory()
 
 
 def remove_video_image_tree(destination: Path) -> None:

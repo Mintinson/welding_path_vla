@@ -177,6 +177,26 @@ def test_default_video_export_uses_bounded_streaming_encoding(
     assert not (output / "images").exists()
 
 
+def test_video_export_releases_native_memory_after_each_episode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """每条视频写完后都应归还 SVT-AV1 在线程堆中保留的空闲内存。"""
+    source = tmp_path / "raw"
+    output = tmp_path / "videos"
+    write_raw_episode(source, 0)
+    write_raw_episode(source, 1)
+    releases = []
+    monkeypatch.setattr(
+        "welding_path_vla.dataset.export_lerobot.release_encoder_memory",
+        lambda: releases.append(True),
+    )
+
+    export_lerobot(source, output, "test/welding-memory", action_horizon=2)
+
+    assert releases == [True, True]
+
+
 def test_export_cli_uses_base_config_by_default(tmp_path: Path) -> None:
     """未指定配置路径时，导出任务应读取 base.yaml。"""
     source = tmp_path / "raw"
