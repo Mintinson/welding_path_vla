@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
 from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
@@ -66,19 +65,23 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     num_expert_layers: int = 16
     expert_width_multiplier: float = 0.75
     # self_attn 保留第一版逐层联合注意力；cross_attn 使用周期性 SA / CA。
-    attention_mode: Literal["self_attn", "cross_attn"] = "self_attn"
+    attention_mode: str = "self_attn"
     self_attn_every_n_layers: int = 2
+    use_geometry_branch: bool = False
+    geometry_num_queries: int = 16
+    geometry_num_heads: int = 8
 
     train_vision_encoder: bool = False
     train_token_merger: bool = True
     train_projector: bool = True
+    train_geometry_resampler: bool = True
     train_language_model: bool = False
     train_language_last_n_layers: int = 0
     train_expert: bool = True
     train_state_proj: bool = True
 
-    frozen_vision_dtype: Literal["float32", "bfloat16"] = "float32"
-    lora_target: Literal["expert", "qwen", "all"] = "expert"
+    frozen_vision_dtype: str = "float32"
+    lora_target: str = "expert"
     gradient_checkpointing_qwen: bool = False
     gradient_checkpointing_expert: bool = False
 
@@ -111,8 +114,18 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             raise ValueError("the first paired-layer version requires equal Qwen and expert depths")
         if self.attention_mode not in {"self_attn", "cross_attn"}:
             raise ValueError("attention_mode must be self_attn or cross_attn")
+        if self.frozen_vision_dtype not in {"float32", "bfloat16"}:
+            raise ValueError("frozen_vision_dtype must be float32 or bfloat16")
+        if self.lora_target not in {"expert", "qwen", "all"}:
+            raise ValueError("lora_target must be expert, qwen or all")
         if self.self_attn_every_n_layers < 1:
             raise ValueError("self_attn_every_n_layers must be positive")
+        if self.use_geometry_branch and self.attention_mode != "cross_attn":
+            raise ValueError("the geometry branch requires attention_mode=cross_attn")
+        if self.use_geometry_branch and self.self_attn_every_n_layers == 1:
+            raise ValueError("the geometry branch requires at least one cross-attention layer")
+        if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
+            raise ValueError("geometry query and head counts must be positive")
         if self.vision_patch_grid % self.token_merge_factor:
             raise ValueError("token_merge_factor must divide vision_patch_grid")
         if not 0 <= self.train_language_last_n_layers <= self.num_vlm_layers:

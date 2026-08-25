@@ -1,34 +1,53 @@
 # Trajectory-VLA Qwen
 
 该策略把 MiniVLA 的预对齐 Prismatic 视觉—语言主干与 Trajectory-VLA 的
-Flow Matching 动作生成结合起来。默认结构为：
+Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独立的稠密几何支路：
 
 ```text
-[输入图像 RGB]               [语言 Task / Prompt]            [带噪动作 Action + 状态 State]
-        │                              │                                 │
- [Prismatic 视觉双编码器]     [Qwen 文本 Tokenizer/Embedding]      [State/Action/Time 投影层]
-(DINOv2 + SigLIP 拼接)                  │                                 │
-        │                              │                                 │
- [SpatialTokenMerger]                  │                                 │
-  (局部下采样 4x 压缩)                   │                                 │
-        │                              │                                 │
- [PrismaticProjector]                  │                                 │
-(线性映射到 Qwen 维度)                   │                                 │
-        └──────────────┬───────────────┘                                 │
-                       │                                                 │
-            ┌──────────▼──────────┐                           ┌──────────▼──────────┐
-            │   Context Stream    │                           │    Expert Stream    │
-            │   (Qwen2.5 VLM)     │                           │  (Action Expert)    │
-            └──────────┬──────────┘                           └──────────┬──────────┘
-                       │                                                 │
-                       └─────────────────►[Expert Decoder]◄─────────────┘
-                                   (Paired SA 或 Interleaved SA/CA)
-                                                 │
-                                      [Flow Matching 预测动作噪声/速度]
+[双相机 RGB] ─► [DINOv2-L + SigLIP，一次视觉前向]
+                    │                         │
+              DINOv2 稠密 patch          融合视觉 patch
+            [B, camera, 256, 1024]             │
+                    │                    [TokenMerger + Projector]
+                    │                         │
+                    │                  [Qwen Context Stream]
+                    │                         │
+                    └─► [Seam Query Resampler]│
+                         16 latent + 3 readout │
+                                  │           │
+                                  └─────┬─────┘
+                                        ▼
+                             [Interleaved Expert Decoder]
+                       偶数层：Context/Action Paired SA
+                       奇数层：Action → Geometry CA
+                                        │
+                             [Flow Matching 速度场]
 ```
 
-上下文始终不能读取带噪动作；动作可以读取视觉、语言、状态和更早动作。推理时
-Context Stream 只计算一次，后续去噪步骤复用逐层 KV cache。
+上下文始终不能读取带噪动作；动作通过偶数层读取语义 Context，通过奇数层读取
+稠密几何。推理时视觉、Resampler 和 Context Stream 只计算一次，后续去噪步骤同时
+复用语义与几何的逐层 KV cache。
+
+## 稠密几何与辅助监督接口
+
+`use_geometry_branch: true` 时，每路相机的 256 个 DINO patch 不经过空间压缩，
+由第 0 个 paired layer 后的语言和状态 hidden 调制 19 个 learned query。前 16 个
+latent token 进入 Action Expert，后三个 readout token 固定对应 `SEAM`、`TANGENT`、
+`POSTURE`，本阶段不接预测头或辅助 loss。
+
+稠密 patch 设计参考 [Patch Policy](https://arxiv.org/html/2607.18236v1) 及其
+[官方 DINOv2 patch 配置](https://github.com/gaoyuezhou/patch_policy/blob/main/configs/encoder/dino_patch.yaml)；
+Task-Conditioned Seam Query 是本项目针对双相机焊缝控制增加的计算瓶颈。
+
+训练期 `forward_intermediates()` 通过 `FlowMatchingOutput.auxiliary_outputs` 暴露：
+
+- `geometry.patch_tokens` 与 `geometry.patch_mask`；
+- `geometry.latent_tokens`；
+- `geometry.readout_tokens`，顺序为 seam、tangent、posture；
+- `geometry.attention_weights`。
+
+默认 Flow Matching loss 不读取这些字段。后续可以直接在 readout token 或稠密 patch
+上增加焊缝区域、切向和焊枪姿态 head，而不改变 query 数量或 checkpoint 结构。
 
 ## Expert Attention 结构
 
@@ -37,7 +56,7 @@ Expert Decoder 提供两种可互换结构，配置名称及语义与 `trajector
 | `attention_mode` | 实现 | 注意力结构 |
 | --- | --- | --- |
 | `self_attn` | `PairedLayerDecoder` | 每层对 Context/Expert token 执行一次非对称联合 SA |
-| `cross_attn` | `InterleavedSACADecoder` | 周期性联合 SA，其余层为 Expert query 读取 Context K/V 的单向 CA |
+| `cross_attn` | `InterleavedSACADecoder` | 周期性联合 SA；启用几何支路时其余层改为 Expert query 读取 Geometry K/V |
 
 当前训练配置采用 Interleaved SA/CA，每两层用一次联合 SA：
 
@@ -46,13 +65,15 @@ policy:
   parameters:
     attention_mode: cross_attn
     self_attn_every_n_layers: 2
+    use_geometry_branch: true
+    geometry_num_queries: 16
+    geometry_num_heads: 8
 ```
 
 第 `0, 2, 4, ...` 层为联合 SA，第 `1, 3, 5, ...` 层为 Context SA 加
-Context→Expert CA。可将周期设为更大的正整数，减少联合 SA 的密度；设为 `1`
-等价于每层均使用联合 SA。第一版 checkpoint 不包含这两个字段，因此配置类默认
-仍为 `self_attn`，可保持原结构和权重形状。已有 checkpoint 不应在部署时强制切换
-模式；CA 层的 K/V 投影形状不同，切换结构后需要重新训练或显式迁移权重。
+Action→Geometry CA。关闭几何支路时恢复原 Context→Expert CA。第一版 checkpoint
+没有 `use_geometry_branch`，配置默认值为 `false`，因此旧权重仍构造原结构；当前训练
+YAML 显式开启新支路，新结构需要重新训练，不能直接加载旧 Action Expert 权重。
 
 ## 默认训练显存估算
 
@@ -72,11 +93,12 @@ Context→Expert CA。可将周期设为更大的正整数，减少联合 SA 的
 | DINOv2 ViT-L | 303.231 M | 否 | FP32 | 1.130 GiB |
 | SigLIP ViT-SO400M | 427.681 M | 否 | FP32 | 1.593 GiB |
 | 截断后的 16 层 Qwen2.5 | 374.734 M | 否 | BF16 | 0.698 GiB |
-| 16 层 Action Expert | 79.028 M | 是 | BF16 | 0.147 GiB |
+| 16 层 Action Expert | 79.863 M | 是 | BF16 | 0.149 GiB |
 | 2×2 Token Merger | 18.942 M | 是 | FP32 | 0.071 GiB |
 | Prismatic Projector | 27.552 M | 是 | FP32 | 0.103 GiB |
+| Seam Query Resampler | 5.531 M | 是 | FP32 | 0.021 GiB |
 | 状态、动作与时间投影 | 1.429 M | 是 | FP32 | 0.005 GiB |
-| **合计** | **1,232.596 M** | **126.951 M 可训练** | — | **3.746 GiB** |
+| **合计** | **1,238.964 M** | **133.318 M 可训练** | — | **3.769 GiB** |
 
 以参数个数 `N` 和每个元素的字节数 `b` 计算：
 
@@ -92,23 +114,23 @@ BF16: b = 2 bytes
 (303,230,976 + 427,680,704) × 4 / 1024³ = 2.723 GiB
 ```
 
-默认可训练参数由 `47.923 M FP32 + 79.028 M BF16` 组成，因此梯度需要：
+默认可训练参数由 `53.455 M FP32 + 79.863 M BF16` 组成，因此梯度需要：
 
 ```text
-47,923,456 × 4 + 79,027,872 × 2 = 0.326 GiB
+53,454,688 × 4 + 79,863,456 × 2 = 0.348 GiB
 ```
 
 当前 PyTorch 2.11 的标准 AdamW 为每个参数保存一阶、二阶矩；状态精度与参数
 精度相同，没有额外 FP32 master weights：
 
 ```text
-2 × (47,923,456 × 4 + 79,027,872 × 2) = 0.651 GiB
+2 × (53,454,688 × 4 + 79,863,456 × 2) = 0.696 GiB
 ```
 
 由此得到不含激活的稳态下限：
 
 ```text
-参数 3.746 + 梯度 0.326 + AdamW 状态 0.651 = 4.723 GiB
+参数 3.769 + 梯度 0.348 + AdamW 状态 0.696 ≈ 4.812 GiB
 ```
 
 ### 2. 激活与实际峰值
@@ -129,10 +151,10 @@ batch × heads × tokens² × 4 bytes
 = 13.9 MiB
 ```
 
-默认配置中的 CA 层分别计算 225-token Context SA，以及 `30 × 225` 的
-Expert→Context 注意力；因此其注意力激活小于联合 SA 层。Interleaved 结构还将
-8 个 CA 层的 Expert K/V 投影改为读取 Qwen K/V，较逐层联合 SA 版本减少约
-0.836 M 参数。
+默认配置中的几何 CA 层分别计算 225-token Context SA，以及 `30 × 16` 的
+Expert→Geometry 注意力；因此其注意力激活显著小于联合 SA 层。每路相机仍保留
+256 个 DINO patch，但它们只在一次 Resampler Cross-Attention 中出现，不进入
+Qwen 或 Action Expert 的长序列。
 
 此外还要保留 Q/K/V、Qwen 与 Expert 的 MLP 中间量、残差和反向传播状态。
 冻结 Qwen 只能省去其梯度和优化器状态；为了把梯度传回可训练的 Projector，
@@ -253,7 +275,8 @@ pixi run -e policy-sim policy-sim-deploy \
 
 ## 解冻主干
 
-默认只训练 Token Merger、Prismatic Projector、状态/动作投影与动作专家。
+默认只训练 Token Merger、Prismatic Projector、Seam Query Resampler、状态/动作投影
+与动作专家。
 所有训练边界均为 YAML 参数：
 
 ```yaml
@@ -262,6 +285,7 @@ policy:
     train_vision_encoder: false
     train_token_merger: true
     train_projector: true
+    train_geometry_resampler: true
     train_language_model: false
     train_language_last_n_layers: 0
     train_expert: true
@@ -271,7 +295,8 @@ policy:
 - 微调 Qwen 最后四层：设置 `train_language_last_n_layers: 4`；
 - 解冻全部 Qwen：设置 `train_language_model: true`；
 - 解冻 DINOv2 与 SigLIP：设置 `train_vision_encoder: true`。
-- Token Merger、Projector、动作专家和状态投影也可用各自的 `train_*` 开关独立冻结；
+- Token Merger、Projector、Geometry Resampler、动作专家和状态投影也可用各自的
+  `train_*` 开关独立冻结；
 - 动作输入、时间条件和速度输出投影始终随动作专家训练，不额外制造一组细碎开关。
 
 `DecoderAdapter` 是 Qwen 版本边界。Qwen3/Qwen3.5 应新增 adapter 处理各自的

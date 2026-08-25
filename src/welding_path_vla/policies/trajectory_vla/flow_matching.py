@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -44,6 +44,7 @@ class TokenSequence:
             True 的位置是一个新 block 的起点（如机器人状态 token 的起始处）。
             make_attention_masks 用 cumsum 把它展开为"分块因果"mask——
             每个 token 只能看到自己所在 block 及更早的 block，block 内部双向。
+        expert_context: 可选的动作专家专用条件，例如压缩前 DINO 稠密 patch。
 
     该结构贯穿整个模型：encode_context（VLM prefix）与 encode_action_tokens
     （动作 token）都返回它，predict_velocity / denoise_step 再把两者的 mask
@@ -53,6 +54,20 @@ class TokenSequence:
     embeddings: Tensor
     padding_mask: Tensor
     attention_ar: Tensor
+    expert_context: Any | None = None
+
+
+@dataclass(slots=True)
+class VelocityPrediction:
+    """动作专家的一次速度预测及可选研究输出。
+
+    Attributes:
+        velocity: 动作空间速度场，形状为 ``[B, T, action_dim]``。
+        auxiliary_outputs: 几何 query 等附加输出；为空时不改变原有训练行为。
+    """
+
+    velocity: Tensor
+    auxiliary_outputs: dict[str, Tensor] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -71,6 +86,7 @@ class FlowMatchingOutput:
         target_velocity: 解析目标速度 ``noise - actions``，即 noisy_actions 对 t 的导数。
         predicted_velocity: 动作专家预测的速度场，形状与 target_velocity 一致。
         losses: 未约简的逐时间、逐动作维 MSE，由调用方决定如何约简/加权。
+        auxiliary_outputs: 模型支路公开的中间输出，不参与默认 Flow Matching loss。
     """
 
     noise: Tensor
@@ -79,6 +95,7 @@ class FlowMatchingOutput:
     target_velocity: Tensor
     predicted_velocity: Tensor
     losses: Tensor
+    auxiliary_outputs: dict[str, Tensor] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -346,6 +363,39 @@ class TrajectoryFlowModel(nn.Module):
         # [1, L, D] → [B, L, D]：同一 batch 的每张图使用相同的边界 token
         return embedding.unsqueeze(0).expand(batch_size, -1, -1)
 
+    def embed_context_image(self, image: Tensor) -> tuple[Tensor, Any | None]:
+        """编码一张上下文图像，并允许模型变体返回额外的稠密特征。
+
+        Args:
+            image: 预处理后的 ``[B,C,H,W]`` RGB 图像。
+
+        Returns:
+            语义视觉 token，以及默认不存在的动作专家附加特征。
+        """
+        return self.vlm_with_expert.embed_image(image), None
+
+    def attach_expert_context(
+        self,
+        context: TokenSequence,
+        image_features: list[Any | None],
+        image_masks: list[Tensor],
+        language_slice: slice,
+        state_slice: slice,
+    ) -> TokenSequence:
+        """由模型变体向 Context 附加动作专家专用条件。
+
+        Args:
+            context: 已组装并补齐的语义 Context token。
+            image_features: 每路图像编码时额外返回的特征。
+            image_masks: 每路相机的有效样本 mask。
+            language_slice: 语言 token 在 Context 序列中的区间。
+            state_slice: 状态 token 在 Context 序列中的区间。
+
+        Returns:
+            默认不附加额外条件的原 Context。
+        """
+        return context
+
     def encode_context(
         self,
         images: list[Tensor],
@@ -368,6 +418,7 @@ class TrajectoryFlowModel(nn.Module):
         embeddings: list[Tensor] = []
         padding_masks: list[Tensor] = []
         attention_blocks: list[int] = []
+        image_features: list[Any | None] = []
 
         # 逐张处理相机图像：与语言/状态同属 prefix 首块（block 编号 0）
         for image, image_mask in zip(images, image_masks, strict=True):
@@ -379,7 +430,8 @@ class TrajectoryFlowModel(nn.Module):
                 attention_blocks.extend([0] * special.shape[1])
 
             # 视觉塔 + connector 输出 patch 级 token；开方缩放对齐语言 token 量纲
-            image_embedding = self.vlm_with_expert.embed_image(image)
+            image_embedding, image_feature = self.embed_context_image(image)
+            image_features.append(image_feature)
             image_embedding = image_embedding * math.sqrt(image_embedding.shape[-1])
             # image_mask: [B] 该相机是否有效 → 沿 patch 维展开成 [B, num_patches]
             mask = image_mask[:, None].expand(image.shape[0], image_embedding.shape[1])
@@ -395,13 +447,16 @@ class TrajectoryFlowModel(nn.Module):
                 attention_blocks.extend([0] * special.shape[1])
 
         # 语言指令 token 化后的 embedding，同样开方缩放保持量纲一致
+        language_start = sum(embedding.shape[1] for embedding in embeddings)
         language_embedding = self.vlm_with_expert.embed_language_tokens(language_tokens)
         language_embedding = language_embedding * math.sqrt(language_embedding.shape[-1])
         embeddings.append(language_embedding)
         padding_masks.append(language_mask)
         attention_blocks.extend([0] * language_embedding.shape[1])
+        language_slice = slice(language_start, language_start + language_embedding.shape[1])
 
         # 机器人状态经投影后作为 prefix 的最后一个部分
+        state_start = language_slice.stop
         state_embedding = self.state_proj(state)
         if state_embedding.ndim == 2:
             # 无图像/语言时可能没有时间维，补成长度 1 的序列
@@ -417,6 +472,7 @@ class TrajectoryFlowModel(nn.Module):
         # 状态 token 开启新 block（attention_ar=1）：后面的动作 token 以此
         # 为界，形成"prefix 整体 + 因果动作序列"的分块结构
         attention_blocks.extend([1] * state_embedding.shape[1])
+        state_slice = slice(state_start, state_start + state_embedding.shape[1])
 
         # 各段沿序列维拼接为完整 prefix
         merged = torch.cat(embeddings, dim=1)
@@ -432,10 +488,17 @@ class TrajectoryFlowModel(nn.Module):
             merged = pad_sequence(merged, self.config.prefix_length)
             padding = pad_sequence(padding, self.config.prefix_length)
             attention = pad_sequence(attention, self.config.prefix_length)
-        return TokenSequence(
+        context = TokenSequence(
             merged,
             padding,
             attention.expand(merged.shape[0], -1),
+        )
+        return self.attach_expert_context(
+            context,
+            image_features,
+            image_masks,
+            language_slice,
+            state_slice,
         )
 
     def encode_action_tokens(self, noisy_actions: Tensor, time: Tensor) -> TokenSequence:
@@ -465,12 +528,53 @@ class TrajectoryFlowModel(nn.Module):
         attention = torch.ones_like(mask)
         return TokenSequence(embedding, mask, attention)
 
-    def predict_velocity(
+    def backbone_forward(
+        self,
+        *,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        past_key_values: dict[int, dict[str, Tensor]] | None,
+        inputs_embeds: list[Tensor | None],
+        use_cache: bool,
+        fill_kv_cache: bool,
+        expert_context: Any | None = None,
+    ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None, dict[str, Tensor]]:
+        """统一双流主干的旧二元返回值与可选辅助输出。
+
+        Args:
+            attention_mask: 双流注意力可见性矩阵。
+            position_ids: Context 或 Action token 的位置编号。
+            past_key_values: 推理期逐层 KV cache。
+            inputs_embeds: Context 与 Action 两条流的输入 embedding。
+            use_cache: 是否启用 KV cache。
+            fill_kv_cache: 当前前向是否负责填充 Context cache。
+            expert_context: 几何支路等动作专家专用条件。
+
+        Returns:
+            双流 hidden、KV cache 和命名辅助输出。
+        """
+        kwargs = {}
+        if expert_context is not None:
+            kwargs["expert_context"] = expert_context
+        result = self.vlm_with_expert(
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            fill_kv_cache=fill_kv_cache,
+            **kwargs,
+        )
+        outputs, cache = result[:2]
+        auxiliary_outputs = result[2] if len(result) > 2 else {}
+        return outputs, cache, auxiliary_outputs
+
+    def predict_velocity_output(
         self,
         context: TokenSequence,
         action_tokens: TokenSequence,
-    ) -> Tensor:
-        """联合执行 VLM 与动作专家，输出动作空间速度场。
+    ) -> VelocityPrediction:
+        """联合执行 VLM 与动作专家，返回速度场和研究支路输出。
 
         把 context 与动作 token 拼接成一条序列送入双流 Transformer：
         - VLM 流处理 prefix，为动作专家提供理解后的上下文；
@@ -485,19 +589,29 @@ class TrajectoryFlowModel(nn.Module):
         attention = make_attention_masks(padding, attention_ar)
         # 位置编号 = 有效 token 的累计数 - 1（只给真实 token 分配位置）
         positions = torch.cumsum(padding, dim=1) - 1
-        outputs, _ = self.vlm_with_expert(
+        outputs, _, auxiliary_outputs = self.backbone_forward(
             attention_mask=attention,
             position_ids=positions,
             past_key_values=None,
             inputs_embeds=[context.embeddings, action_tokens.embeddings],
             use_cache=False,
             fill_kv_cache=False,
+            expert_context=context.expert_context,
         )
         expert_output = outputs[1]
         if expert_output is None:
             raise ValueError("action expert did not produce hidden states")
         # 只取动作轨迹段（最后 chunk_size 个位置）投影为速度场
-        return self.action_out_proj(expert_output[:, -self.config.chunk_size :].float())
+        velocity = self.action_out_proj(expert_output[:, -self.config.chunk_size :].float())
+        return VelocityPrediction(velocity, auxiliary_outputs)
+
+    def predict_velocity(
+        self,
+        context: TokenSequence,
+        action_tokens: TokenSequence,
+    ) -> Tensor:
+        """保持原公开接口，只返回动作空间速度场。"""
+        return self.predict_velocity_output(context, action_tokens).velocity
 
     def flow_matching_output(
         self,
@@ -539,7 +653,8 @@ class TrajectoryFlowModel(nn.Module):
             state,
         )
         action_tokens = self.encode_action_tokens(noisy_actions, time)
-        predicted_velocity = self.predict_velocity(context, action_tokens)
+        prediction = self.predict_velocity_output(context, action_tokens)
+        predicted_velocity = prediction.velocity
         losses = F.mse_loss(target_velocity, predicted_velocity, reduction="none")
         return FlowMatchingOutput(
             noise,
@@ -548,6 +663,7 @@ class TrajectoryFlowModel(nn.Module):
             target_velocity,
             predicted_velocity,
             losses,
+            prediction.auxiliary_outputs,
         )
 
     def forward(
@@ -589,13 +705,14 @@ class TrajectoryFlowModel(nn.Module):
         attention = make_attention_masks(context.padding_mask, context.attention_ar)
         positions = torch.cumsum(context.padding_mask, dim=1) - 1
         # 只输入 VLM 流（inputs_embeds[1] = None），专家流不参与
-        _, cache = self.vlm_with_expert(
+        _, cache, _ = self.backbone_forward(
             attention_mask=attention,
             position_ids=positions,
             past_key_values=None,
             inputs_embeds=[context.embeddings, None],
             use_cache=self.config.use_cache,
             fill_kv_cache=True,
+            expert_context=context.expert_context,
         )
         return cache
 
@@ -629,7 +746,7 @@ class TrajectoryFlowModel(nn.Module):
         # 位置编号接在 prefix 之后：offset = prefix 有效 token 数
         offsets = prefix_padding_mask.sum(dim=-1)[:, None]
         positions = offsets + torch.cumsum(tokens.padding_mask, dim=1) - 1
-        outputs, _ = self.vlm_with_expert(
+        outputs, _, _ = self.backbone_forward(
             attention_mask=attention,
             position_ids=positions,
             past_key_values=cache,
@@ -725,6 +842,7 @@ __all__ = [
     "FlowMatchingOutput",
     "TokenSequence",
     "TrajectoryFlowModel",
+    "VelocityPrediction",
     "make_attention_masks",
     "pad_sequence",
     "pad_vector",

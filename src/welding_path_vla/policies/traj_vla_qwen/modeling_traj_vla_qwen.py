@@ -11,13 +11,17 @@ from torch import Tensor
 from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import (
     TrajVLAQwenConfig,
 )
+from welding_path_vla.policies.traj_vla_qwen.prismatic import DenseGeometryContext
 from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
     QwenPromptProcessorStep,
 )
 from welding_path_vla.policies.traj_vla_qwen.qwen_with_expert import (
     PrismaticQwenWithExpert,
 )
-from welding_path_vla.policies.trajectory_vla.flow_matching import TrajectoryFlowModel
+from welding_path_vla.policies.trajectory_vla.flow_matching import (
+    TokenSequence,
+    TrajectoryFlowModel,
+)
 from welding_path_vla.policies.trajectory_vla.modeling_trajectory_vla import (
     TrajectoryVLAPolicy,
 )
@@ -29,6 +33,44 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
     def __init__(self, config: TrajVLAQwenConfig) -> None:
         backbone = PrismaticQwenWithExpert(config)
         super().__init__(config, vlm_with_expert=backbone)
+
+    def embed_context_image(self, image: Tensor) -> tuple[Tensor, Tensor | None]:
+        """启用几何支路时同时取得压缩前 DINOv2 patch。"""
+        if not self.config.use_geometry_branch:
+            return super().embed_context_image(image)
+        semantic, dense = self.vlm_with_expert.embed_image_with_geometry(image)
+        return semantic, dense
+
+    def attach_expert_context(
+        self,
+        context: TokenSequence,
+        image_features: list[Any | None],
+        image_masks: list[Tensor],
+        language_slice: slice,
+        state_slice: slice,
+    ) -> TokenSequence:
+        """把双相机 DINO patch 和 Qwen 片段 mask 附加给 Action Expert。"""
+        if not self.config.use_geometry_branch:
+            return context
+        dense_features = [feature for feature in image_features if isinstance(feature, Tensor)]
+        if len(dense_features) != len(image_features):
+            raise ValueError("the geometry branch requires dense features for every camera")
+        patch_tokens = torch.stack(dense_features, dim=1)
+        patch_mask = torch.stack(
+            [mask[:, None].expand(-1, patch_tokens.shape[2]) for mask in image_masks],
+            dim=1,
+        ) # TODO: dangerous?
+        language_mask = torch.zeros_like(context.padding_mask)
+        state_mask = torch.zeros_like(context.padding_mask)
+        language_mask[:, language_slice] = context.padding_mask[:, language_slice]
+        state_mask[:, state_slice] = context.padding_mask[:, state_slice]
+        context.expert_context = DenseGeometryContext(
+            patch_tokens,
+            patch_mask,
+            language_mask,
+            state_mask,
+        )
+        return context
 
 
 class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
@@ -129,6 +171,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             modules_to_save.append("model.vlm_with_expert.token_merger")
         if self.config.train_projector:
             modules_to_save.append("model.vlm_with_expert.projector")
+        if self.config.use_geometry_branch and self.config.train_geometry_resampler:
+            modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.lora_target == "qwen" and self.config.train_expert:
             modules_to_save.append("model.vlm_with_expert.expert")
         return {

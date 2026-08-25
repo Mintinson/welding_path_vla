@@ -20,10 +20,15 @@ policy:
     # 改为 self_attn 可恢复第一版每层联合注意力结构。
     attention_mode: cross_attn
     self_attn_every_n_layers: 2
+    # 从现有冻结 DINOv2-L 分叉 256 patch，并重采样为 16 个动作几何 token。
+    use_geometry_branch: true
+    geometry_num_queries: 16
+    geometry_num_heads: 8
     token_merge_factor: 2
     train_vision_encoder: false
     train_token_merger: true
     train_projector: true
+    train_geometry_resampler: true
     train_language_model: false
     train_language_last_n_layers: 0
     train_expert: true

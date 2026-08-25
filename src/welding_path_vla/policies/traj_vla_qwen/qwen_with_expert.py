@@ -11,6 +11,11 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from welding_path_vla.policies.traj_vla_qwen.prismatic import (
+    DenseGeometryContext,
+    SeamQueryOutput,
+    SeamQueryResampler,
+)
 from welding_path_vla.policies.transformer import expert_intermediate_size
 
 
@@ -72,6 +77,18 @@ class DecoderAdapter(ABC):
         value_input = context_value.transpose(1, 2).flatten(2)
         key = attention.k_proj(key_input.to(attention.k_proj.weight.dtype))
         value = attention.v_proj(value_input.to(attention.v_proj.weight.dtype))
+        shape = (*key.shape[:-1], -1, attention.head_dim)
+        key = key.view(shape).transpose(1, 2)
+        value = value.view(shape).transpose(1, 2)
+        key_norm = getattr(attention, "k_norm", None)
+        return (key_norm(key) if key_norm is not None else key), value
+
+    def project_hidden_kv(self, layer: Any, hidden: Tensor) -> tuple[Tensor, Tensor]:
+        """把 Expert 宽度的几何 token 投影到当前层 K/V 头空间。"""
+        attention = layer.self_attn
+        hidden = hidden.to(attention.k_proj.weight.dtype)
+        key = attention.k_proj(hidden)
+        value = attention.v_proj(hidden.to(attention.v_proj.weight.dtype))
         shape = (*key.shape[:-1], -1, attention.head_dim)
         key = key.view(shape).transpose(1, 2)
         value = value.view(shape).transpose(1, 2)
@@ -291,8 +308,8 @@ class InterleavedSACADecoder(PairedLayerDecoder):
     """交替执行联合 Self-Attention 与单向 Cross-Attention。
 
     每 ``self_attn_every_n_layers`` 层使用一次双流联合 SA，使动作 token
-    彼此通信；其余层分别更新 Qwen Context，并让 Expert query 只读取
-    Context K/V。该结构与 ``trajectory_vla`` 的 ``cross_attn`` 模式一致。
+    彼此通信；其余层继续更新 Qwen Context，并让 Expert query 读取 Context
+    或重采样后的 Geometry K/V。
     """
 
     def __init__(
@@ -301,6 +318,10 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         expert_model: Any,
         adapter: DecoderAdapter,
         self_attn_every_n_layers: int,
+        geometry_input_size: int | None = None,
+        geometry_num_cameras: int = 1,
+        geometry_num_queries: int = 16,
+        geometry_num_heads: int = 8,
         checkpoint_qwen: bool = False,
         checkpoint_expert: bool = False,
     ) -> None:
@@ -312,6 +333,18 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             checkpoint_expert,
         )
         self.self_attn_every_n_layers = self_attn_every_n_layers
+        self.geometry_resampler = (
+            SeamQueryResampler(
+                geometry_input_size,
+                language_model.config.hidden_size,
+                expert_model.config.hidden_size,
+                geometry_num_cameras,
+                geometry_num_queries,
+                geometry_num_heads,
+            )
+            if geometry_input_size is not None
+            else None
+        )
         self.configure_cross_attention()
 
     def uses_self_attention(self, layer_index: int) -> bool:
@@ -319,7 +352,9 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         return layer_index % self.self_attn_every_n_layers == 0
 
     def configure_cross_attention(self) -> None:
-        """让 CA 层的 Expert K/V 接收 Qwen Context K/V。"""
+        """未启用几何支路时，让 Expert K/V 接收 Qwen Context K/V。"""
+        if self.geometry_resampler is not None:
+            return
         for index, (context_layer, expert_layer) in enumerate(
             zip(self.language_model.layers, self.expert_model.layers, strict=True)
         ):
@@ -335,6 +370,45 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 ).to(device=original.weight.device, dtype=original.weight.dtype)
                 setattr(expert_layer.self_attn, name, projection)
 
+    def update_context_layer(
+        self,
+        layer_index: int,
+        context: Tensor | None,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+    ) -> tuple[Tensor | None, Tensor | None, Tensor | None]:
+        """执行 CA 层自身的 Qwen Context Self-Attention。"""
+        if context is None:
+            return None, None, None
+        context_layer = self.language_model.layers[layer_index]
+        context_length = context.shape[1]
+        query, key, value = self.run_checkpointed(
+            partial(self.adapter.project_qkv, context_layer),
+            context,
+            enabled=self.checkpoint_qwen,
+        )
+        query, key = self.adapter.apply_rotary(
+            query,
+            key,
+            self.language_model.rotary_emb,
+            position_ids[:, :context_length],
+        )
+        attended = self.run_checkpointed(
+            self.attention,
+            query,
+            key,
+            value,
+            attention_mask[:, :context_length, :context_length],
+            enabled=self.checkpoint_qwen,
+        )
+        updated = self.run_checkpointed(
+            partial(self.adapter.complete_layer, context_layer),
+            context,
+            attended,
+            enabled=self.checkpoint_qwen,
+        )
+        return updated, key, value
+
     def cross_attention_layer(
         self,
         layer_index: int,
@@ -346,41 +420,13 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         fill_kv_cache: bool,
     ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
         """更新 Context 自注意力，并让 Expert 单向读取 Context。"""
-        context_layer = self.language_model.layers[layer_index]
         expert_layer = self.expert_model.layers[layer_index]
-        context_key: Tensor | None = None
-        context_value: Tensor | None = None
-        updated_context: Tensor | None = None
-
-        if context is not None:
-            context_length = context.shape[1]
-            projected_context = self.run_checkpointed(
-                partial(self.adapter.project_qkv, context_layer),
-                context,
-                enabled=self.checkpoint_qwen,
-            )
-            query, key, value = projected_context
-            query, context_key = self.adapter.apply_rotary(
-                query,
-                key,
-                self.language_model.rotary_emb,
-                position_ids[:, :context_length],
-            )
-            context_value = value
-            attended = self.run_checkpointed(
-                self.attention,
-                query,
-                context_key,
-                value,
-                attention_mask[:, :context_length, :context_length],
-                enabled=self.checkpoint_qwen,
-            )
-            updated_context = self.run_checkpointed(
-                partial(self.adapter.complete_layer, context_layer),
-                context,
-                attended,
-                enabled=self.checkpoint_qwen,
-            )
+        updated_context, context_key, context_value = self.update_context_layer(
+            layer_index,
+            context,
+            attention_mask,
+            position_ids,
+        )
 
         if cache is not None:
             if fill_kv_cache:
@@ -434,6 +480,79 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         )
         return [updated_context, updated_action], cache
 
+    def geometry_cross_attention_layer(
+        self,
+        layer_index: int,
+        context: Tensor | None,
+        action: Tensor | None,
+        geometry: SeamQueryOutput | None,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        cache: dict[int, dict[str, Tensor]] | None,
+        fill_kv_cache: bool,
+    ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
+        """更新 Qwen Context，并让 Expert 只读取重采样几何 token。"""
+        expert_layer = self.expert_model.layers[layer_index]
+        updated_context, _, _ = self.update_context_layer(
+            layer_index,
+            context,
+            attention_mask,
+            position_ids,
+        )
+        geometry_key: Tensor | None = None
+        geometry_value: Tensor | None = None
+        if geometry is not None:
+            geometry_key, geometry_value = self.run_checkpointed(
+                partial(self.adapter.project_hidden_kv, expert_layer),
+                geometry.latent_tokens,
+                enabled=self.checkpoint_expert,
+            )
+
+        if cache is not None:
+            if fill_kv_cache:
+                if geometry_key is None or geometry_value is None:
+                    raise ValueError("cannot cache empty geometry tokens")
+                cache[layer_index] = {
+                    "key_states": geometry_key,
+                    "value_states": geometry_value,
+                }
+            else:
+                geometry_key = cache[layer_index]["key_states"]
+                geometry_value = cache[layer_index]["value_states"]
+
+        if action is None:
+            return [updated_context, None], cache
+        if geometry_key is None or geometry_value is None:
+            raise ValueError("Geometry Cross-Attention requires geometry key/value states")
+
+        query = self.run_checkpointed(
+            partial(self.adapter.project_query, expert_layer),
+            action,
+            enabled=self.checkpoint_expert,
+        )
+        geometry_mask = torch.ones(
+            action.shape[0],
+            action.shape[1],
+            geometry_key.shape[2],
+            dtype=torch.bool,
+            device=action.device,
+        )
+        attended = self.run_checkpointed(
+            self.attention,
+            query,
+            geometry_key,
+            geometry_value,
+            geometry_mask,
+            enabled=self.checkpoint_expert,
+        )
+        updated_action = self.run_checkpointed(
+            partial(self.adapter.complete_layer, expert_layer),
+            action,
+            attended,
+            enabled=self.checkpoint_expert,
+        )
+        return [updated_context, updated_action], cache
+
     def forward(
         self,
         attention_mask: Tensor,
@@ -442,16 +561,33 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         inputs_embeds: list[Tensor | None],
         use_cache: bool,
         fill_kv_cache: bool,
-    ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
+        expert_context: DenseGeometryContext | None = None,
+    ) -> Any:
         """按配置的周期执行 Interleaved SA/CA Layers。"""
         context, action = self.prepare_inputs(inputs_embeds)
         cache = {} if use_cache and past_key_values is None else past_key_values
+        geometry: SeamQueryOutput | None = None
         for layer_index in range(len(self.language_model.layers)):
             if self.uses_self_attention(layer_index):
                 (context, action), cache = self.paired_layer(
                     layer_index,
                     context,
                     action,
+                    attention_mask,
+                    position_ids,
+                    cache,
+                    fill_kv_cache,
+                )
+            elif self.geometry_resampler is not None:
+                if geometry is None and context is not None:
+                    if expert_context is None:
+                        raise ValueError("the geometry branch requires dense DINO context")
+                    geometry = self.geometry_resampler(context, expert_context)
+                (context, action), cache = self.geometry_cross_attention_layer(
+                    layer_index,
+                    context,
+                    action,
+                    geometry,
                     attention_mask,
                     position_ids,
                     cache,
@@ -467,7 +603,11 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                     cache,
                     fill_kv_cache,
                 )
-        return self.normalize_outputs(context, action), cache
+        outputs = self.normalize_outputs(context, action)
+        if self.geometry_resampler is None:
+            return outputs, cache
+        auxiliary = geometry.auxiliary_outputs() if geometry is not None else {}
+        return outputs, cache, auxiliary
 
 
 def make_expert_decoder(
@@ -475,6 +615,7 @@ def make_expert_decoder(
     language_model: Any,
     expert_model: Any,
     adapter: DecoderAdapter,
+    geometry_input_size: int | None = None,
 ) -> PairedLayerDecoder:
     """按统一 attention 配置构造 Qwen Action Expert decoder。"""
     common = {
@@ -488,6 +629,10 @@ def make_expert_decoder(
         return InterleavedSACADecoder(
             **common,
             self_attn_every_n_layers=config.self_attn_every_n_layers,
+            geometry_input_size=geometry_input_size if config.use_geometry_branch else None,
+            geometry_num_cameras=max(1, len(config.image_features)),
+            geometry_num_queries=config.geometry_num_queries,
+            geometry_num_heads=config.geometry_num_heads,
         )
     return PairedLayerDecoder(**common)
 
@@ -574,6 +719,7 @@ class PrismaticQwenWithExpert(nn.Module):
             self.qwen.model,
             self.expert,
             self.adapter,
+            self.vision_encoder.dino_hidden_size,
         )
         self.set_trainable_modules()
 
@@ -601,6 +747,10 @@ class PrismaticQwenWithExpert(nn.Module):
         self.vision_encoder.requires_grad_(config.train_vision_encoder)
         self.token_merger.requires_grad_(config.train_token_merger)
         self.projector.requires_grad_(config.train_projector)
+        if isinstance(self.decoder, InterleavedSACADecoder):
+            resampler = self.decoder.geometry_resampler
+            if resampler is not None:
+                resampler.requires_grad_(config.train_geometry_resampler)
         self.qwen.requires_grad_(config.train_language_model)
         if not config.train_language_model and config.train_language_last_n_layers:
             layers = self.qwen.model.layers[-config.train_language_last_n_layers :]
@@ -624,10 +774,15 @@ class PrismaticQwenWithExpert(nn.Module):
 
     def embed_image(self, image: Tensor) -> Tensor:
         """编码、压缩并投影单路相机图像。"""
-        tokens = self.vision_encoder(image)
+        return self.embed_image_with_geometry(image)[0]
+
+    def embed_image_with_geometry(self, image: Tensor) -> tuple[Tensor, Tensor]:
+        """一次视觉前向同时返回语义 token 与压缩前 DINO patch。"""
+        dino, tokens = self.vision_encoder.forward_features(image)
         tokens = self.token_merger(tokens.to(self.token_merger.projection.weight.dtype))
         tokens = self.projector(tokens.to(self.projector.projector[0].weight.dtype))
-        return tokens.to(self.qwen.get_input_embeddings().weight.dtype)
+        semantic = tokens.to(self.qwen.get_input_embeddings().weight.dtype)
+        return semantic, dino
 
     def embed_language_tokens(self, tokens: Tensor) -> Tensor:
         """将 Qwen token id 映射为 Context Stream embedding。"""
@@ -641,9 +796,10 @@ class PrismaticQwenWithExpert(nn.Module):
         inputs_embeds: list[Tensor | None],
         use_cache: bool,
         fill_kv_cache: bool,
-    ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
+        expert_context: DenseGeometryContext | None = None,
+    ) -> Any:
         """执行配置选择的双流 decoder。"""
-        return self.decoder(
+        arguments = (
             attention_mask,
             position_ids,
             past_key_values,
@@ -651,6 +807,11 @@ class PrismaticQwenWithExpert(nn.Module):
             use_cache,
             fill_kv_cache,
         )
+        if expert_context is None:
+            return self.decoder(*arguments)
+        if not isinstance(self.decoder, InterleavedSACADecoder):
+            raise ValueError("dense geometry context requires InterleavedSACADecoder")
+        return self.decoder(*arguments, expert_context=expert_context)
 
 
 __all__ = [

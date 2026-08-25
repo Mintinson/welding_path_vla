@@ -118,6 +118,8 @@ TRAJ_VLA_QWEN = LeRobotPolicySpec(
         ("prismatic_backbone", "prismatic_repo_id"),
         ("language_layers", "num_vlm_layers"),
         ("expert_layers", "num_expert_layers"),
+        ("dense_geometry", "use_geometry_branch"),
+        ("geometry_queries", "geometry_num_queries"),
     ),
 )
 
