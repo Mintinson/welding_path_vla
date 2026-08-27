@@ -24,9 +24,9 @@ from welding_path_vla.evaluation.schema import (
 )
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.rollout_diagnostics import (
+    RolloutCompletion,
     build_rollout_diagnostics,
     new_rollout_arrays,
-    rollout_completed,
 )
 from welding_path_vla.robot import SafetyMonitor, SafetyViolation
 from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
@@ -106,6 +106,7 @@ def rollout_episode(
         )
         sample_initial_tcp_offset(simulation, config, rng)
         expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
+        completion = RolloutCompletion(config.deployment, expert.post)
         safety = SafetyMonitor(config.safety, simulation.joint_ranges)
         runtime.reset()
         max_translation = config.safety.tcp_speed_limit_m_s / config.timing.policy_hz
@@ -224,7 +225,7 @@ def rollout_episode(
                 or termination_reason.startswith("safety_violation")
             ):
                 break
-            if rollout_completed(alpha, seam_distance, config.deployment):
+            if completion.update(alpha, seam_distance, next_state.tcp.position):
                 termination_reason = "completed"
                 break
 
@@ -272,6 +273,7 @@ def rollout_episode(
             seam.end.position,
             seam.start.normal,
             seam.end.normal,
+            expert.post,
             termination_reason,
             recorder is not None,
         )

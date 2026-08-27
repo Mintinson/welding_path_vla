@@ -11,7 +11,10 @@ from welding_path_vla.dataset.video import VideoRecorder
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.data import scale_uint8_images
 from welding_path_vla.policies.lerobot_training import make_train_config
-from welding_path_vla.policies.rollout_diagnostics import rollout_completed
+from welding_path_vla.policies.rollout_diagnostics import (
+    RolloutCompletion,
+    seam_endpoint_reached,
+)
 from welding_path_vla.policies.simulation_rollout import rollout_episode
 from welding_path_vla.policies.spec import ACT
 from welding_path_vla.policies.training import TrainingRequest
@@ -113,8 +116,22 @@ def test_act_rollout_completion_is_relaxed_without_changing_evaluation() -> None
     assert config.deployment.completion_progress_min == pytest.approx(0.85)
     assert config.deployment.completion_distance_m == pytest.approx(0.015)
     assert config.evaluation.pcr_min == pytest.approx(0.95)
-    assert rollout_completed(0.85, 0.015, config.deployment)
-    assert not rollout_completed(0.84, 0.015, config.deployment)
+    assert seam_endpoint_reached(0.85, 0.015, config.deployment)
+    assert not seam_endpoint_reached(0.84, 0.015, config.deployment)
+
+
+def test_rollout_does_not_finish_at_the_seam_endpoint() -> None:
+    """到达焊缝末端后仍应给策略留下执行退出动作的时间。"""
+    config = AppConfig.load("configs/traj_vla_qwen.yaml")
+    assert config.deployment.completion_progress_min == pytest.approx(0.98)
+    assert config.deployment.completion_distance_m == pytest.approx(0.01)
+    retreat_target = np.array([0.0, 0.0, 0.04])
+    completion = RolloutCompletion(config.deployment, retreat_target)
+
+    assert not completion.update(0.98, 0.005, np.zeros(3))
+    assert completion.endpoint_reached
+    assert not completion.update(1.0, 0.02, retreat_target / 2)
+    assert completion.update(1.0, 0.04, retreat_target)
 
 
 def test_act_rgb_preprocessing_scales_uint8() -> None:

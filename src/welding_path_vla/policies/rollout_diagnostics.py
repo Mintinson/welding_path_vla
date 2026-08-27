@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -61,16 +62,44 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
     }
 
 
-def rollout_completed(
+def seam_endpoint_reached(
     progress: float,
     seam_distance_m: float,
     config: DeploymentConfig,
 ) -> bool:
-    """判断策略部署是否已达到自然退出条件。"""
+    """判断 TCP 是否已走到焊缝末端，开始等待退出动作。"""
     return (
         progress >= config.completion_progress_min
         and seam_distance_m <= config.completion_distance_m
     )
+
+
+@dataclass(slots=True)
+class RolloutCompletion:
+    """先确认焊缝末端，再等待 TCP 到达专家退出目标。
+
+    Attributes:
+        config: 部署完成判定阈值。
+        retreat_target: 专家轨迹最后一个退出目标的世界坐标。
+        endpoint_reached: 当前 episode 是否曾可靠到达焊缝末端。
+    """
+
+    config: DeploymentConfig
+    retreat_target: np.ndarray
+    endpoint_reached: bool = False
+
+    def update(
+        self,
+        progress: float,
+        seam_distance_m: float,
+        tcp_position: np.ndarray,
+    ) -> bool:
+        """更新完成状态；只有退出动作执行到位后才返回 ``True``。"""
+        self.endpoint_reached |= seam_endpoint_reached(progress, seam_distance_m, self.config)
+        retreat_error = np.linalg.norm(np.asarray(tcp_position) - self.retreat_target)
+        return self.endpoint_reached and bool(
+            retreat_error <= self.config.completion_distance_m
+        )
 
 
 def finite_max(values: np.ndarray) -> float | None:
@@ -87,6 +116,7 @@ def build_rollout_diagnostics(
     seam_end: np.ndarray,
     seam_start_normal: np.ndarray,
     seam_end_normal: np.ndarray,
+    retreat_target: np.ndarray,
     termination_reason: str,
     video_recorded: bool,
 ) -> dict[str, Any]:
@@ -99,6 +129,7 @@ def build_rollout_diagnostics(
         seam_end: 有向焊缝世界坐标终点。
         seam_start_normal: 起点焊接法向；圆弧中它与终点不同。
         seam_end_normal: 终点焊接法向。
+        retreat_target: 专家轨迹最终退出目标的世界坐标。
         termination_reason: rollout 的自然退出或失败原因。
         video_recorded: 是否同步写入了双相机视频。
 
@@ -123,6 +154,7 @@ def build_rollout_diagnostics(
         trajectory["tcp_position"] - trajectory["observation_tcp_position"],
         axis=1,
     )
+    retreat_error = np.linalg.norm(trajectory["tcp_position"] - retreat_target, axis=1)
     steps = len(trajectory["timestamp"])
     return {
         "termination": {
@@ -133,12 +165,14 @@ def build_rollout_diagnostics(
         "completion_rule": {
             "progress_min": config.deployment.completion_progress_min,
             "seam_distance_max_m": config.deployment.completion_distance_m,
+            "retreat_target_distance_max_m": config.deployment.completion_distance_m,
         },
         "reference": {
             "seam_start_m": seam_start.tolist(),
             "seam_end_m": seam_end.tolist(),
             "seam_start_normal": seam_start_normal.tolist(),
             "seam_end_normal": seam_end_normal.tolist(),
+            "retreat_target_m": retreat_target.tolist(),
         },
         "tracking": {
             "frames": steps,
@@ -150,6 +184,8 @@ def build_rollout_diagnostics(
             "final_seam_distance_m": float(distance[-1]),
             "max_progress": float(np.max(progress)),
             "final_progress": float(progress[-1]),
+            "closest_retreat_target_distance_m": float(np.min(retreat_error)),
+            "final_retreat_target_distance_m": float(retreat_error[-1]),
         },
         "control": {
             "max_command_increment_m": finite_max(np.linalg.norm(command_increment, axis=1)),
@@ -174,7 +210,8 @@ def build_rollout_diagnostics(
 
 
 __all__ = [
+    "RolloutCompletion",
     "build_rollout_diagnostics",
     "new_rollout_arrays",
-    "rollout_completed",
+    "seam_endpoint_reached",
 ]

@@ -74,5 +74,6 @@ deployment:
   max_steps: 3300
   seed: 20260806
   record_video: true
-  completion_progress_min: 0.85
-  completion_distance_m: 0.015
+  # 先完整走过焊缝末端，再等待策略到达专家轨迹的退出目标。
+  completion_progress_min: 0.98
+  completion_distance_m: 0.01
