@@ -193,5 +193,8 @@ deployment:
   max_steps: 1000
   seed: 20260724
   record_video: true
+  # null 保留 checkpoint 的推理参数；部署时可用 CLI 单独覆盖，不影响训练配置。
+  action_steps: null
+  inference_steps: null
   completion_progress_min: 0.95
   completion_distance_m: 0.01

@@ -25,6 +25,15 @@ def test_default_config_is_valid() -> None:
     assert not config.real_robot.enabled
 
 
+def test_deployment_inference_overrides_must_be_positive() -> None:
+    """部署覆盖允许留空，但显式设置时必须是正整数。"""
+    config = AppConfig.load(Path("configs/default.yaml"))
+    config.deployment.action_steps = 0
+
+    with pytest.raises(ValueError, match="deployment inference counts"):
+        config.validate()
+
+
 @pytest.mark.parametrize(
     ("path", "seam_id"),
     [

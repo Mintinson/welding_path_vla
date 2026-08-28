@@ -65,7 +65,13 @@ class LeRobotPipeline:
         from welding_path_vla.policies.runtime import LeRobotRuntime
         from welding_path_vla.policies.simulation_rollout import deploy_episodes
 
-        runtime = LeRobotRuntime.from_pretrained(checkpoint, config.policy.device, self.spec)
+        runtime = LeRobotRuntime.from_pretrained(
+            checkpoint,
+            config.policy.device,
+            self.spec,
+            action_steps=config.deployment.action_steps,
+            inference_steps=config.deployment.inference_steps,
+        )
         return deploy_episodes(config, runtime)
 
 

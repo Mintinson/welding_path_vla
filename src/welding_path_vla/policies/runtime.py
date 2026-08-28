@@ -41,6 +41,36 @@ def load_policy_config(
         return parse(config_class, config_path, args=[])
 
 
+def apply_inference_overrides(
+    config: PreTrainedConfig,
+    action_steps: int | None,
+    inference_steps: int | None,
+) -> None:
+    """覆盖只影响在线部署的动作复用和 Flow Matching 步数。
+
+    Args:
+        config: 从 checkpoint 恢复的 LeRobot 策略配置。
+        action_steps: 每次预测后执行的动作数；``None`` 表示保留 checkpoint 值。
+        inference_steps: Flow Matching 去噪步数；``None`` 表示保留 checkpoint 值。
+
+    Raises:
+        ValueError: 覆盖值超出动作块长度，或策略不支持指定字段。
+    """
+    if action_steps is not None:
+        if not hasattr(config, "n_action_steps"):
+            raise ValueError("当前策略不支持 deployment.action_steps")
+        chunk_size = int(config.chunk_size)
+        if action_steps > chunk_size:
+            raise ValueError(
+                f"deployment.action_steps={action_steps} exceeds checkpoint chunk_size={chunk_size}"
+            )
+        config.n_action_steps = action_steps
+    if inference_steps is not None:
+        if not hasattr(config, "num_steps"):
+            raise ValueError("当前策略不支持 deployment.inference_steps")
+        config.num_steps = inference_steps
+
+
 @dataclass(slots=True)
 class LeRobotRuntime:
     """把项目统一观测送入任意已注册 LeRobot 策略。
@@ -67,8 +97,10 @@ class LeRobotRuntime:
         checkpoint: str | Path,
         device: str,
         spec: LeRobotPolicySpec,
+        action_steps: int | None = None,
+        inference_steps: int | None = None,
     ) -> LeRobotRuntime:
-        """加载模型、processor 和可选 PEFT adapter。"""
+        """加载模型、processor 和可选 PEFT adapter，并应用部署推理覆盖。"""
         path = resolve_checkpoint(checkpoint)
         selected = device if is_torch_device_available(device) else str(auto_select_torch_device())
         config_class = spec.config_class()
@@ -77,6 +109,7 @@ class LeRobotRuntime:
         if not isinstance(config, config_class):
             raise ValueError(f"checkpoint policy is not {spec.display_name}: {path}")
         config.device = selected
+        apply_inference_overrides(config, action_steps, inference_steps)
 
         if config.use_peft:
             from peft import PeftConfig, PeftModel
@@ -89,6 +122,9 @@ class LeRobotRuntime:
         else:
             policy = policy_class.from_pretrained(path, config=config)
         policy = policy.to(selected).eval()
+        prepare_for_inference = getattr(policy, "prepare_for_inference", None)
+        if callable(prepare_for_inference):
+            prepare_for_inference()
         preprocessor, postprocessor = make_relative_pre_post_processors(
             config,
             pretrained_path=str(path),
@@ -142,4 +178,4 @@ class LeRobotRuntime:
         return self.action_queue.popleft()
 
 
-__all__ = ["LeRobotRuntime", "load_policy_config"]
+__all__ = ["LeRobotRuntime", "apply_inference_overrides", "load_policy_config"]

@@ -61,3 +61,15 @@ A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再
 `pipe_bottom`、`pipe_top`、`curve_plate`、`trihedral_horizontal` 和 `trihedral_vertical`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
 调整工件或焊缝只修改 `tasks/*.yaml`。临时参数仍可通过 Draccus 覆盖，例如
 `--deployment.episodes=10`，无需复制整份配置。
+
+已有 checkpoint 的动作块复用数和 Flow Matching 去噪步数可只在部署时覆盖，不修改训练配置
+或 checkpoint 文件：
+
+```bash
+pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla.yaml \
+  --deployment.action_steps=16 \
+  --deployment.inference_steps=5
+```
+
+两个字段默认为 `null`，此时严格保留 checkpoint 内的 `n_action_steps` 和 `num_steps`。

@@ -11,6 +11,7 @@ from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
 from welding_path_vla.policies.data import balanced_frame_indices
+from welding_path_vla.policies.lerobot_pipeline import LeRobotPipeline
 from welding_path_vla.policies.lerobot_training import (
     apply_training_overrides,
     make_policy_config,
@@ -138,6 +139,96 @@ def test_runtime_restores_policy_features_from_checkpoint_without_type(
             isinstance(feature, PolicyFeature)
             for feature in loaded.policy.config.output_features.values()
         )
+
+
+def test_runtime_overrides_checkpoint_inference_parameters(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """部署参数必须覆盖 checkpoint 中固化的动作复用与去噪步数。"""
+    from welding_path_vla.policies import runtime as runtime_module
+
+    class FakeConfig:
+        """提供在线推理覆盖所需字段的最小策略配置。"""
+
+        use_peft = False
+        chunk_size = 30
+        n_action_steps = 8
+        num_steps = 10
+
+    class FakePolicy:
+        """记录 runtime 最终传入配置的轻量策略。"""
+
+        def __init__(self, config: Any) -> None:
+            self.config = config
+
+        @classmethod
+        def from_pretrained(cls, path: Path, *, config: Any) -> "FakePolicy":
+            return cls(config)
+
+        def to(self, device: str) -> "FakePolicy":
+            return self
+
+        def eval(self) -> "FakePolicy":
+            return self
+
+    checkpoint = tmp_path / "pretrained_model"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime_module, "load_policy_config", lambda *args: FakeConfig())
+    monkeypatch.setattr(
+        runtime_module,
+        "make_relative_pre_post_processors",
+        lambda *args, **kwargs: (object(), object()),
+    )
+    spec = SimpleNamespace(
+        config_class=lambda: FakeConfig,
+        policy_class=lambda: FakePolicy,
+        display_name="FakeSmolVLA",
+    )
+
+    loaded = LeRobotRuntime.from_pretrained(
+        checkpoint,
+        "cpu",
+        spec,
+        action_steps=16,
+        inference_steps=5,
+    )
+
+    assert loaded.policy.config.n_action_steps == 16
+    assert loaded.policy.config.num_steps == 5
+
+
+def test_deployment_passes_inference_overrides_to_runtime(monkeypatch: Any) -> None:
+    """仿真 pipeline 必须把部署覆盖传给 checkpoint 加载边界。"""
+    from welding_path_vla.policies import runtime as runtime_module
+    from welding_path_vla.policies import simulation_rollout
+
+    config = AppConfig.load("configs/smolvla.yaml")
+    config.deployment.action_steps = 16
+    config.deployment.inference_steps = 5
+    captured: dict[str, Any] = {}
+
+    def fake_load(
+        cls: type[LeRobotRuntime],
+        checkpoint: str,
+        device: str,
+        spec: Any,
+        **overrides: Any,
+    ) -> object:
+        captured.update(overrides)
+        return object()
+
+    monkeypatch.setattr(
+        runtime_module.LeRobotRuntime,
+        "from_pretrained",
+        classmethod(fake_load),
+    )
+    monkeypatch.setattr(simulation_rollout, "deploy_episodes", lambda config, runtime: runtime)
+
+    LeRobotPipeline(SMOLVLA).deploy_simulation(config, "checkpoint")
+
+    assert captured == {"action_steps": 16, "inference_steps": 5}
 
 
 def test_policy_evaluation_balances_frames_across_tasks() -> None:

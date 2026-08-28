@@ -451,6 +451,8 @@ class DeploymentConfig:
         max_steps: 每条 episode 允许的最大策略步数。
         seed: 第 0 条 episode 使用的随机种子。
         record_video: 是否记录全局与腕部相机视频。
+        action_steps: 每次动作块预测后连续执行的动作数；``None`` 保留 checkpoint 配置。
+        inference_steps: Flow Matching 去噪步数；``None`` 保留 checkpoint 配置。
         completion_progress_min: 判定自然完成所需的最小焊缝进度。
         completion_distance_m: 判定自然完成所允许的最大 TCP—焊缝距离。
     """
@@ -465,6 +467,8 @@ class DeploymentConfig:
     max_steps: int = 1_000
     seed: int = 20260724
     record_video: bool = True
+    action_steps: int | None = None
+    inference_steps: int | None = None
     completion_progress_min: float = 0.95
     completion_distance_m: float = 0.01
 
@@ -678,6 +682,14 @@ class AppConfig:
             raise ValueError("policy evaluation counts must be positive")
         if self.deployment.episodes < 1 or self.deployment.max_steps < 1:
             raise ValueError("deployment counts must be positive")
+        if any(
+            value is not None and value < 1
+            for value in (
+                self.deployment.action_steps,
+                self.deployment.inference_steps,
+            )
+        ):
+            raise ValueError("deployment inference counts must be positive")
         if not 0 <= self.deployment.completion_progress_min <= 1:
             raise ValueError("deployment.completion_progress_min must be in [0, 1]")
         if self.deployment.completion_distance_m <= 0:
