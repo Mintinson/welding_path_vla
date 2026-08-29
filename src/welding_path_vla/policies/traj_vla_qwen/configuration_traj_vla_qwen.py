@@ -70,6 +70,38 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     use_geometry_branch: bool = False
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
+    use_geometry_grounding: bool = False
+    geometry_corridor_radius_px: float = 8.0
+    geometry_aux_loss_weights: tuple[float, float, float] = (0.1, 0.05, 0.05)
+    geometry_camera_keys: tuple[str, str] = (
+        "observation.images.global",
+        "observation.images.wrist",
+    )
+    geometry_camera_fovy_deg: tuple[float, float] = (55.0, 85.0)
+    # 当前仿真标定的 world_from_global_camera 与 tcp_from_wrist_camera 位姿。
+    geometry_global_camera_pose_world: tuple[float, ...] = (
+        1.25,
+        0.0,
+        1.05,
+        0.64952979,
+        0.27948354,
+        0.27948354,
+        0.64952979,
+    )
+    geometry_wrist_camera_pose_tcp: tuple[float, ...] = (
+        -0.12672863,
+        -0.07579556,
+        0.17303227,
+        0.87218524,
+        0.05562066,
+        -0.34143130,
+        0.34586690,
+    )
+
+    use_motion_latent: bool = False
+    motion_latent_dim: int = 16
+    motion_kl_weight: float = 1e-3
+    training_stage: str = "standard"
 
     train_vision_encoder: bool = False
     train_token_merger: bool = True
@@ -124,8 +156,38 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             raise ValueError("the geometry branch requires attention_mode=cross_attn")
         if self.use_geometry_branch and self.self_attn_every_n_layers == 1:
             raise ValueError("the geometry branch requires at least one cross-attention layer")
+        if self.use_geometry_branch and self.num_vlm_layers < 2:
+            raise ValueError("the geometry branch requires at least two paired layers")
         if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
             raise ValueError("geometry query and head counts must be positive")
+        if self.use_geometry_grounding and not self.use_geometry_branch:
+            raise ValueError("geometry grounding requires use_geometry_branch=true")
+        if self.use_motion_latent and not self.use_geometry_branch:
+            raise ValueError("motion latent requires use_geometry_branch=true")
+        if self.training_stage not in {"standard", "grounding_warmup", "policy_joint"}:
+            raise ValueError("training_stage must be standard, grounding_warmup or policy_joint")
+        if self.training_stage == "grounding_warmup" and not self.use_geometry_grounding:
+            raise ValueError("grounding_warmup requires use_geometry_grounding=true")
+        if self.training_stage == "grounding_warmup" and self.use_motion_latent:
+            raise ValueError("grounding_warmup does not train motion latent")
+        if self.training_stage == "grounding_warmup" and not self.train_geometry_resampler:
+            raise ValueError("grounding_warmup requires train_geometry_resampler=true")
+        if self.training_stage == "policy_joint" and not self.use_geometry_grounding:
+            raise ValueError("policy_joint requires use_geometry_grounding=true")
+        if self.geometry_corridor_radius_px <= 0 or self.motion_latent_dim < 1:
+            raise ValueError("grounding radius and motion latent dimension must be positive")
+        if len(self.geometry_aux_loss_weights) != 3 or min(self.geometry_aux_loss_weights) < 0:
+            raise ValueError("geometry_aux_loss_weights must contain three non-negative values")
+        if len(self.geometry_camera_keys) != 2 or len(self.geometry_camera_fovy_deg) != 2:
+            raise ValueError("geometry grounding currently requires global and wrist cameras")
+        if any(not 0 < fovy < 180 for fovy in self.geometry_camera_fovy_deg):
+            raise ValueError("geometry camera vertical FOV must be in (0, 180)")
+        if len(self.geometry_global_camera_pose_world) != 7:
+            raise ValueError("global camera pose must contain xyz and wxyz")
+        if len(self.geometry_wrist_camera_pose_tcp) != 7:
+            raise ValueError("wrist camera pose must contain xyz and wxyz")
+        if self.motion_kl_weight < 0:
+            raise ValueError("motion_kl_weight must be non-negative")
         if self.vision_patch_grid % self.token_merge_factor:
             raise ValueError("token_merge_factor must divide vision_patch_grid")
         if not 0 <= self.train_language_last_n_layers <= self.num_vlm_layers:

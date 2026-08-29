@@ -1,0 +1,15 @@
+includes:
+  - traj_vla_qwen_a100.yaml
+
+policy:
+  checkpoint: outputs/train/traj_vla_qwen_grounding_stage1_a100/checkpoints/last/pretrained_model
+  parameters:
+    use_geometry_grounding: true
+    use_motion_latent: true
+    training_stage: policy_joint
+    geometry_aux_loss_weights: [0.05, 0.02, 0.02]
+    motion_latent_dim: 16
+    motion_kl_weight: 0.001
+
+training:
+  output_dir: outputs/train/traj_vla_qwen_grounding_stage2_a100

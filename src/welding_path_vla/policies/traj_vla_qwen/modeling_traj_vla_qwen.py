@@ -11,6 +11,10 @@ from torch import Tensor
 from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import (
     TrajVLAQwenConfig,
 )
+from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
+    GeometryGroundingHeads,
+    geometry_grounding_losses,
+)
 from welding_path_vla.policies.traj_vla_qwen.prismatic import DenseGeometryContext
 from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
     QwenPromptProcessorStep,
@@ -19,8 +23,11 @@ from welding_path_vla.policies.traj_vla_qwen.qwen_with_expert import (
     PrismaticQwenWithExpert,
 )
 from welding_path_vla.policies.trajectory_vla.flow_matching import (
+    FlowMatchingOutput,
     TokenSequence,
     TrajectoryFlowModel,
+    VelocityPrediction,
+    make_attention_masks,
 )
 from welding_path_vla.policies.trajectory_vla.modeling_trajectory_vla import (
     TrajectoryVLAPolicy,
@@ -33,6 +40,18 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
     def __init__(self, config: TrajVLAQwenConfig) -> None:
         backbone = PrismaticQwenWithExpert(config)
         super().__init__(config, vlm_with_expert=backbone)
+        self.geometry_grounding_heads = (
+            GeometryGroundingHeads(backbone.expert_hidden_size)
+            if config.use_geometry_grounding
+            else None
+        )
+        if config.training_stage == "grounding_warmup":
+            self.requires_grad_(False)
+            resampler = backbone.decoder.geometry_resampler
+            if resampler is None or self.geometry_grounding_heads is None:
+                raise ValueError("grounding warm-up requires Resampler and grounding heads")
+            resampler.requires_grad_(True)
+            self.geometry_grounding_heads.requires_grad_(True)
 
     def embed_context_image(self, image: Tensor) -> tuple[Tensor, Tensor | None]:
         """启用几何支路时同时取得压缩前 DINOv2 patch。"""
@@ -59,7 +78,7 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
         patch_mask = torch.stack(
             [mask[:, None].expand(-1, patch_tokens.shape[2]) for mask in image_masks],
             dim=1,
-        ) # TODO: dangerous?
+        )
         language_mask = torch.zeros_like(context.padding_mask)
         state_mask = torch.zeros_like(context.padding_mask)
         language_mask[:, language_slice] = context.padding_mask[:, language_slice]
@@ -71,6 +90,75 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             state_mask,
         )
         return context
+
+    def attach_action_context(
+        self,
+        context: TokenSequence,
+        actions: Tensor,
+        action_padding_mask: Tensor | None,
+    ) -> TokenSequence:
+        """把 clean normalized action chunk 附加给训练期 motion posterior。"""
+        if not self.config.use_motion_latent:
+            return context
+        if not isinstance(context.expert_context, DenseGeometryContext):
+            raise ValueError("motion latent requires dense geometry context")
+        context.expert_context.clean_actions = actions
+        context.expert_context.action_padding_mask = (
+            action_padding_mask
+            if action_padding_mask is not None
+            else torch.zeros(actions.shape[:2], dtype=torch.bool, device=actions.device)
+        )
+        return context
+
+    def encode_action_tokens(self, noisy_actions: Tensor, time: Tensor) -> TokenSequence:
+        """启用 motion latent 时在动作块前加入 learned motion slot。"""
+        tokens = super().encode_action_tokens(noisy_actions, time)
+        if not self.config.use_motion_latent:
+            return tokens
+        motion = self.vlm_with_expert.decoder.motion_latent
+        if motion is None:
+            raise ValueError("motion latent module was not constructed")
+        slot = motion.initial_slot(noisy_actions.shape[0], noisy_actions.device).to(
+            tokens.embeddings.dtype
+        )
+        mask = torch.ones(slot.shape[:2], dtype=torch.bool, device=slot.device)
+        return TokenSequence(
+            torch.cat((slot, tokens.embeddings), dim=1),
+            torch.cat((mask, tokens.padding_mask), dim=1),
+            torch.cat((mask, tokens.attention_ar), dim=1),
+        )
+
+    def add_grounding_predictions(self, auxiliary: dict[str, Tensor]) -> dict[str, Tensor]:
+        """启用监督头时把三个 readout prediction 加入研究输出。"""
+        if self.geometry_grounding_heads is None or not auxiliary:
+            return auxiliary
+        return {**auxiliary, **self.geometry_grounding_heads(auxiliary)}
+
+    def predict_velocity_output(
+        self,
+        context: TokenSequence,
+        action_tokens: TokenSequence,
+    ) -> VelocityPrediction:
+        """复用 Flow Matching 前向，并在训练期附加 grounding predictions。"""
+        prediction = super().predict_velocity_output(context, action_tokens)
+        return VelocityPrediction(
+            prediction.velocity,
+            self.add_grounding_predictions(prediction.auxiliary_outputs),
+        )
+
+    def grounding_intermediates(self, context: TokenSequence) -> dict[str, Tensor]:
+        """执行 Stage 1 的第 0 个 Qwen layer、Resampler 和三个监督头。"""
+        if not isinstance(context.expert_context, DenseGeometryContext):
+            raise ValueError("geometry grounding requires dense DINO context")
+        attention = make_attention_masks(context.padding_mask, context.attention_ar)
+        positions = torch.cumsum(context.padding_mask, dim=1) - 1
+        auxiliary = self.vlm_with_expert.forward_geometry(
+            attention,
+            positions,
+            context.embeddings,
+            context.expert_context,
+        )
+        return self.add_grounding_predictions(auxiliary)
 
 
 class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
@@ -145,6 +233,86 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         """只返回显式解冻的模块参数。"""
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
 
+    def prepare_for_inference(self) -> None:
+        """删除只在训练期使用的 grounding heads 与 motion posterior。"""
+        self.model.geometry_grounding_heads = None
+        motion = self.model.vlm_with_expert.decoder.motion_latent
+        if motion is not None:
+            motion.discard_posterior()
+
+    def forward_grounding_intermediates(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """返回 Stage 1 的几何 readout、预测和 patch 诊断张量。"""
+        images, masks, language, language_mask, state = self.model_inputs(batch)
+        context = self.model.encode_context(images, masks, language, language_mask, state)
+        return self.model.grounding_intermediates(context)
+
+    def reduce_auxiliary_loss(self, loss: Tensor, reduction: str) -> Tensor:
+        """保持与 Flow Matching 相同的 mean/none 训练约定。"""
+        return loss if reduction == "none" else loss.mean()
+
+    def forward(
+        self,
+        batch: dict[str, Tensor],
+        noise: Tensor | None = None,
+        time: Tensor | None = None,
+        reduction: str = "mean",
+    ) -> tuple[Tensor, dict[str, Any]]:
+        """按训练阶段组合 Flow Matching、几何辅助损失和诊断日志。"""
+        output: FlowMatchingOutput | None = None
+        if self.config.training_stage == "grounding_warmup":
+            auxiliary = self.forward_grounding_intermediates(batch)
+            flow_loss: Tensor | None = None
+        else:
+            output = self.forward_intermediates(batch, noise, time)
+            auxiliary = output.auxiliary_outputs
+            flow_loss = self.reduce_losses(output.losses, batch.get("action_is_pad"), reduction)
+
+        auxiliary_losses = (
+            geometry_grounding_losses(auxiliary, batch)
+            if self.config.use_geometry_grounding
+            else {}
+        )
+        weights = self.config.geometry_aux_loss_weights
+        if auxiliary_losses:
+            first_loss = next(iter(auxiliary_losses.values()))
+            weighted = torch.zeros_like(self.reduce_auxiliary_loss(first_loss, reduction))
+            for name, weight in zip(("seam", "tangent", "orientation"), weights, strict=True):
+                weighted = weighted + weight * self.reduce_auxiliary_loss(
+                    auxiliary_losses[name],
+                    reduction,
+                )
+        elif flow_loss is not None:
+            weighted = torch.zeros_like(flow_loss)
+        else:
+            raise ValueError("grounding warm-up did not produce auxiliary losses")
+        motion_kl = auxiliary.get("motion.kl")
+        if motion_kl is not None:
+            weighted = weighted + self.config.motion_kl_weight * self.reduce_auxiliary_loss(
+                motion_kl,
+                reduction,
+            )
+        loss = weighted if flow_loss is None else flow_loss + weighted
+        logged = loss.mean() if loss.ndim else loss
+        info: dict[str, Any] = {"loss": float(logged.detach())}
+        if flow_loss is not None and output is not None:
+            info["flow_loss"] = float((flow_loss.mean() if flow_loss.ndim else flow_loss).detach())
+            info["flow_time_mean"] = float(output.time.mean().detach())
+            info["target_velocity_norm"] = float(
+                output.target_velocity.norm(dim=-1).mean().detach()
+            )
+            info["predicted_velocity_norm"] = float(
+                output.predicted_velocity.norm(dim=-1).mean().detach()
+            )
+        info.update(
+            {
+                f"geometry_{name}_loss": float(value.mean().detach())
+                for name, value in auxiliary_losses.items()
+            }
+        )
+        if motion_kl is not None:
+            info["motion_kl_loss"] = float(motion_kl.mean().detach())
+        return loss, info
+
     def _get_default_peft_targets(self) -> dict[str, Any]:
         """按配置选择 Expert、Qwen 或两者的 LoRA attention 投影。"""
         targets = {
@@ -173,6 +341,10 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             modules_to_save.append("model.vlm_with_expert.projector")
         if self.config.use_geometry_branch and self.config.train_geometry_resampler:
             modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
+        if self.config.use_geometry_grounding:
+            modules_to_save.append("model.geometry_grounding_heads")
+        if self.config.use_motion_latent:
+            modules_to_save.append("model.vlm_with_expert.decoder.motion_latent")
         if self.config.lora_target == "qwen" and self.config.train_expert:
             modules_to_save.append("model.vlm_with_expert.expert")
         return {

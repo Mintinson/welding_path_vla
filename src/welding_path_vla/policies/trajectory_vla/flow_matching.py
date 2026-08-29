@@ -396,6 +396,15 @@ class TrajectoryFlowModel(nn.Module):
         """
         return context
 
+    def attach_action_context(
+        self,
+        context: TokenSequence,
+        actions: Tensor,
+        action_padding_mask: Tensor | None,
+    ) -> TokenSequence:
+        """允许模型变体把 clean action chunk 附加给训练期条件模块。"""
+        return context
+
     def encode_context(
         self,
         images: list[Tensor],
@@ -623,6 +632,7 @@ class TrajectoryFlowModel(nn.Module):
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
+        action_padding_mask: Tensor | None = None,
     ) -> FlowMatchingOutput:
         """返回未约简 loss 及其所有构造中间量。
 
@@ -652,6 +662,7 @@ class TrajectoryFlowModel(nn.Module):
             language_mask,
             state,
         )
+        context = self.attach_action_context(context, actions, action_padding_mask)
         action_tokens = self.encode_action_tokens(noisy_actions, time)
         prediction = self.predict_velocity_output(context, action_tokens)
         predicted_velocity = prediction.velocity
@@ -676,6 +687,7 @@ class TrajectoryFlowModel(nn.Module):
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
+        action_padding_mask: Tensor | None = None,
     ) -> Tensor:
         """兼容 LeRobot policy 的标准前向，只返回逐维 loss。
 
@@ -691,6 +703,7 @@ class TrajectoryFlowModel(nn.Module):
             actions,
             noise,
             time,
+            action_padding_mask,
         ).losses
 
     def cache_context(self, context: TokenSequence) -> dict[int, dict[str, Tensor]] | None:

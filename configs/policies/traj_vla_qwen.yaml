@@ -24,6 +24,10 @@ policy:
     use_geometry_branch: true
     geometry_num_queries: 16
     geometry_num_heads: 8
+    # XS-VLA 启发的三项增强默认关闭；使用独立 Stage 1/2 YAML 显式启用。
+    use_geometry_grounding: false
+    use_motion_latent: false
+    training_stage: standard
     token_merge_factor: 2
     train_vision_encoder: false
     train_token_merger: true

@@ -120,6 +120,9 @@ TRAJ_VLA_QWEN = LeRobotPolicySpec(
         ("expert_layers", "num_expert_layers"),
         ("dense_geometry", "use_geometry_branch"),
         ("geometry_queries", "geometry_num_queries"),
+        ("geometry_grounding", "use_geometry_grounding"),
+        ("motion_latent", "use_motion_latent"),
+        ("training_stage", "training_stage"),
     ),
 )
 

@@ -6,7 +6,7 @@ Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独�
 ```text
 [双相机 RGB] ─► [DINOv2-L + SigLIP，一次视觉前向]
                     │                         │
-              DINOv2 稠密 patch          融合视觉 patch
+             DINOv2 稠密 patch          融合视觉 patch
             [B, camera, 256, 1024]             │
                     │                    [TokenMerger + Projector]
                     │                         │
@@ -14,10 +14,13 @@ Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独�
                     │                         │
                     └─► [Seam Query Resampler]│
                          16 latent + 3 readout │
-                                  │           │
-                                  └─────┬─────┘
-                                        ▼
-                             [Interleaved Expert Decoder]
+                           │       │           │
+             可选 SEAM/TANGENT/ORIENTATION 监督 │
+                           │       └─► [Motion Prior]
+                           │                 │ z / motion token
+                           └────────┬────────┘
+                                    ▼
+                         [Interleaved Expert Decoder]
                        偶数层：Context/Action Paired SA
                        奇数层：Action → Geometry CA
                                         │
@@ -33,7 +36,8 @@ Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独�
 `use_geometry_branch: true` 时，每路相机的 256 个 DINO patch 不经过空间压缩，
 由第 0 个 paired layer 后的语言和状态 hidden 调制 19 个 learned query。前 16 个
 latent token 进入 Action Expert，后三个 readout token 固定对应 `SEAM`、`TANGENT`、
-`POSTURE`，本阶段不接预测头或辅助 loss。
+`ORIENTATION`。默认 `use_geometry_grounding: false`，因此旧训练仍不创建预测头或
+辅助 loss；显式启用后才把 readout 用作轨迹监督的几何接地。
 
 稠密 patch 设计参考 [Patch Policy](https://arxiv.org/html/2607.18236v1) 及其
 [官方 DINOv2 patch 配置](https://github.com/gaoyuezhou/patch_policy/blob/main/configs/encoder/dino_patch.yaml)；
@@ -43,11 +47,36 @@ Task-Conditioned Seam Query 是本项目针对双相机焊缝控制增加的计�
 
 - `geometry.patch_tokens` 与 `geometry.patch_mask`；
 - `geometry.latent_tokens`；
-- `geometry.readout_tokens`，顺序为 seam、tangent、posture；
+- `geometry.readout_tokens`，顺序为 seam、tangent、orientation；
 - `geometry.attention_weights`。
 
-默认 Flow Matching loss 不读取这些字段。后续可以直接在 readout token 或稠密 patch
-上增加焊缝区域、切向和焊枪姿态 head，而不改变 query 数量或 checkpoint 结构。
+Grounding 开启后还会输出 `geometry.seam_logits`、
+`geometry.tangent_prediction` 与 `geometry.orientation_6d`。常规配置仍只优化
+Flow Matching；辅助监督不会改变 query 数量、动作表示或部署输出形状。
+
+### 轨迹监督标签
+
+`GeometryGroundingTargetProcessorStep` 在 relative-action 转换和归一化之前读取当前
+TCP、future absolute `safe_command` 和 `action_is_pad`，不修改 LeRobot 数据 schema：
+
+1. 用固定 global 外参与当前 TCP 推导出的 wrist 外参投影未来轨迹；
+2. 按原始相机 FOV 投影后，使用与模型相同的非等比缩放映射到 `224×224`；
+3. 生成双相机 `16×16` patch corridor，以及当前 TCP 局部系的有向 tangent；
+4. 把第一个有效 future target 的姿态转换为相对 TCP rotation-6D。
+
+相机位姿、FOV 与 corridor 半径全部保存在 policy config 中，可在相机重新标定后覆盖。
+视野外轨迹、缺失相机和 episode 尾部 padding 均通过独立 mask 排除。
+
+### Conditional Motion Latent
+
+`use_motion_latent: true` 时，训练期两层 tiny Transformer posterior 从 clean action
+chunk 和状态预测 `q(z|A,s)`；prior 从第 0 层 Qwen task/state hidden 与 geometry
+latent 预测 `p(z|o,l,s)`。训练使用重参数采样和解析 KL，推理固定取 prior mean，
+不使用 `z=0`。
+
+动作块前增加一个 motion slot，第 0 层后注入 `z`，速度输出仍只读取最后 30 个动作
+token。Context cache 同时保存 motion token；Euler 去噪期间不会重复运行视觉编码、
+Resampler、prior 或几何投影。
 
 ## Expert Attention 结构
 
@@ -99,6 +128,20 @@ YAML 显式开启新支路，新结构需要重新训练，不能直接加载旧
 | Seam Query Resampler | 5.531 M | 是 | FP32 | 0.021 GiB |
 | 状态、动作与时间投影 | 1.429 M | 是 | FP32 | 0.005 GiB |
 | **合计** | **1,238.964 M** | **133.318 M 可训练** | — | **3.769 GiB** |
+
+上述合计对应三项增强关闭的主配置。按当前 `D_expert=672`、`D_qwen=896` 和
+`motion_latent_dim=16` 实际实例化后，可选模块的增量为：
+
+| 可选模块 | 参数量 | FP32 参数显存 | 训练/部署边界 |
+| --- | ---: | ---: | --- |
+| Geometry Grounding Heads | 0.909 M | 0.0034 GiB | 两阶段训练保留，部署删除 |
+| Conditional Motion Latent | 0.720 M | 0.0027 GiB | 部署删除 posterior，保留 prior/slot/projection |
+| **两者合计** | **1.629 M** | **0.0061 GiB** | 不改变动作 token 输出形状 |
+
+Stage 1 只有 Resampler 与 heads 共 6.440 M 参数可训练；按 FP32 参数、梯度和
+AdamW 两份状态估算，三者合计约 0.096 GiB。Stage 2 同时启用 grounding 与 motion
+时，比现有 dense policy 增加约 0.024 GiB 的 FP32 参数/梯度/AdamW 常驻量；实际峰值
+还包含 posterior Transformer 和监督 head 激活，应以 A100 训练日志为准。
 
 以参数个数 `N` 和每个元素的字节数 `b` 计算：
 
@@ -260,6 +303,23 @@ Expert 也保持完整训练；选择 `expert` 或 `all` 时，Expert 基础权�
 ```bash
 pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
 ```
+
+三项 XS-VLA 增强在主配置中默认关闭。两阶段训练使用独立配置：
+
+```bash
+# Stage 1：10k steps，仅训练 Resampler 与 grounding heads
+pixi run -e train train-policy-2gpu \
+  --config_path=configs/traj_vla_qwen_grounding_stage1_a100.yaml
+
+# Stage 2：加载 Stage 1，联合 FM、低权重 grounding 与 motion KL
+pixi run -e train train-policy-2gpu \
+  --config_path=configs/traj_vla_qwen_grounding_stage2_a100.yaml
+```
+
+Stage 1 使用 `L_seam + 0.5 L_tangent + 0.5 L_orientation`，且不运行 Action Expert；
+Stage 2 使用 `L_FM + 0.05 L_seam + 0.02 L_tangent + 0.02 L_orientation + 1e-3 L_KL`。
+启动 `policy_joint` 时会检查 checkpoint 确实包含 Stage 1 的 Resampler 与 grounding
+heads。部署运行时在加载权重后删除三个辅助 head 和 motion posterior，仅保留 prior。
 
 离线评估与仿真部署沿用项目公共入口：
 

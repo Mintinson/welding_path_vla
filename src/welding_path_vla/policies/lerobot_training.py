@@ -22,6 +22,23 @@ from welding_path_vla.policies.process import (
 from welding_path_vla.policies.spec import LeRobotPolicySpec
 
 
+def require_grounding_checkpoint(source: str) -> None:
+    """确认 Stage 2 本地 checkpoint 已包含 Stage 1 的 Resampler 与监督头。"""
+    from safetensors import safe_open
+
+    root = Path(source)
+    candidates = [root / "model.safetensors", root / "adapter_model.safetensors"]
+    model_file = next((path for path in candidates if path.exists()), None)
+    if model_file is None:
+        raise ValueError(f"policy_joint checkpoint has no safetensors weights: {root}")
+    with safe_open(model_file, framework="pt") as weights:
+        names = set(weights.keys())
+    required = ("geometry_resampler", "geometry_grounding_heads")
+    missing = [name for name in required if not any(name in key for key in names)]
+    if missing:
+        raise ValueError(f"policy_joint checkpoint is missing Stage 1 weights: {missing}")
+
+
 def pretrained_source(
     policy: PolicyConfig,
     spec: LeRobotPolicySpec,
@@ -133,6 +150,11 @@ def make_train_config(
     from lerobot.configs.default import DatasetConfig, PeftConfig, WandBConfig
     from lerobot.configs.train import TrainPipelineConfig
 
+    stage = policy.parameters.get("training_stage", "standard")
+    if stage == "policy_joint" and not policy.checkpoint and not training.resume:
+        raise ValueError("policy_joint requires a Stage 1 policy.checkpoint")
+    if stage == "policy_joint" and policy.checkpoint and not training.resume:
+        require_grounding_checkpoint(policy.checkpoint)
     if training.resume:
         return resumed_train_config(policy, training, spec)
     if policy.checkpoint and Path(policy.checkpoint).exists():
@@ -256,6 +278,7 @@ __all__ = [
     "make_policy_config",
     "make_train_config",
     "pretrained_source",
+    "require_grounding_checkpoint",
     "resumed_train_config",
     "train",
     "training_plan",

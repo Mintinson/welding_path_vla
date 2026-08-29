@@ -50,6 +50,13 @@ pi0_a100.yaml
 pi0_5_a100.yaml
 ```
 
+TrajVLA-Qwen 的可选几何接地与 motion latent 使用两个显式阶段入口，主配置仍默认关闭：
+
+```text
+traj_vla_qwen_grounding_stage1_a100.yaml   10k-step geometry warm-up
+traj_vla_qwen_grounding_stage2_a100.yaml   加载 Stage 1 后联合策略训练
+```
+
 A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再按当前 3,674,023 个训练帧
 重新计算约一轮数据所需 step。支持的 VLA 同时启用 `torch.compile`；π0 / π0.5 默认保留
 梯度检查点，确保 40 GiB 型号也有合理的显存余量。需要固定 optimizer update 数量的实验，

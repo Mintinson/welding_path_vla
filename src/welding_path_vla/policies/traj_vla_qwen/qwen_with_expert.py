@@ -11,6 +11,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from welding_path_vla.policies.traj_vla_qwen.motion_latent import ConditionalMotionLatent
 from welding_path_vla.policies.traj_vla_qwen.prismatic import (
     DenseGeometryContext,
     SeamQueryOutput,
@@ -322,6 +323,8 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         geometry_num_cameras: int = 1,
         geometry_num_queries: int = 16,
         geometry_num_heads: int = 8,
+        motion_action_size: int | None = None,
+        motion_latent_size: int = 16,
         checkpoint_qwen: bool = False,
         checkpoint_expert: bool = False,
     ) -> None:
@@ -343,6 +346,16 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 geometry_num_heads,
             )
             if geometry_input_size is not None
+            else None
+        )
+        self.motion_latent = (
+            ConditionalMotionLatent(
+                motion_action_size,
+                language_model.config.hidden_size,
+                expert_model.config.hidden_size,
+                motion_latent_size,
+            )
+            if motion_action_size is not None
             else None
         )
         self.configure_cross_attention()
@@ -567,6 +580,8 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         context, action = self.prepare_inputs(inputs_embeds)
         cache = {} if use_cache and past_key_values is None else past_key_values
         geometry: SeamQueryOutput | None = None
+        motion_auxiliary: dict[str, Tensor] = {}
+        motion_injected = False
         for layer_index in range(len(self.language_model.layers)):
             if self.uses_self_attention(layer_index):
                 (context, action), cache = self.paired_layer(
@@ -583,6 +598,27 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                     if expert_context is None:
                         raise ValueError("the geometry branch requires dense DINO context")
                     geometry = self.geometry_resampler(context, expert_context)
+                if self.motion_latent is not None and not motion_injected:
+                    motion_token: Tensor | None = None
+                    if geometry is not None and context is not None and expert_context is not None:
+                        motion = self.motion_latent(context, expert_context, geometry)
+                        motion_token = motion.token
+                        motion_auxiliary = motion.auxiliary_outputs
+                        if cache is not None and fill_kv_cache:
+                            cache[-1] = {
+                                "motion_token": motion.token,
+                                "prior_mean": motion.auxiliary_outputs["motion.prior_mean"],
+                            }
+                    elif cache is not None and -1 in cache:
+                        motion_token = cache[-1]["motion_token"]
+                    if action is not None:
+                        if motion_token is None:
+                            raise ValueError("motion latent requires a prior or cached token")
+                        action = torch.cat(
+                            (action[:, :1] + motion_token[:, None].to(action.dtype), action[:, 1:]),
+                            dim=1,
+                        )
+                    motion_injected = True
                 (context, action), cache = self.geometry_cross_attention_layer(
                     layer_index,
                     context,
@@ -607,7 +643,32 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         if self.geometry_resampler is None:
             return outputs, cache
         auxiliary = geometry.auxiliary_outputs() if geometry is not None else {}
+        auxiliary.update(motion_auxiliary)
         return outputs, cache, auxiliary
+
+    def forward_geometry(
+        self,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        context_embedding: Tensor,
+        expert_context: DenseGeometryContext,
+    ) -> dict[str, Tensor]:
+        """只运行第 0 个 Qwen layer 与 Resampler，供 grounding warm-up 使用。"""
+        if self.geometry_resampler is None:
+            raise ValueError("geometry-only forward requires the dense geometry branch")
+        context, _ = self.prepare_inputs([context_embedding, None])
+        (context, _), _ = self.paired_layer(
+            0,
+            context,
+            None,
+            attention_mask,
+            position_ids,
+            None,
+            False,
+        )
+        if context is None:
+            raise ValueError("geometry-only forward requires Context embeddings")
+        return self.geometry_resampler(context, expert_context).auxiliary_outputs()
 
 
 def make_expert_decoder(
@@ -633,6 +694,8 @@ def make_expert_decoder(
             geometry_num_cameras=max(1, len(config.image_features)),
             geometry_num_queries=config.geometry_num_queries,
             geometry_num_heads=config.geometry_num_heads,
+            motion_action_size=config.max_action_dim if config.use_motion_latent else None,
+            motion_latent_size=config.motion_latent_dim,
         )
     return PairedLayerDecoder(**common)
 
@@ -812,6 +875,23 @@ class PrismaticQwenWithExpert(nn.Module):
         if not isinstance(self.decoder, InterleavedSACADecoder):
             raise ValueError("dense geometry context requires InterleavedSACADecoder")
         return self.decoder(*arguments, expert_context=expert_context)
+
+    def forward_geometry(
+        self,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        context_embedding: Tensor,
+        expert_context: DenseGeometryContext,
+    ) -> dict[str, Tensor]:
+        """执行 Stage 1 所需的最短 Context→Resampler 路径。"""
+        if not isinstance(self.decoder, InterleavedSACADecoder):
+            raise ValueError("geometry grounding requires InterleavedSACADecoder")
+        return self.decoder.forward_geometry(
+            attention_mask,
+            position_ids,
+            context_embedding,
+            expert_context,
+        )
 
 
 __all__ = [

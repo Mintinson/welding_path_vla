@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-GEOMETRY_READOUT_NAMES = ("seam", "tangent", "posture")
+GEOMETRY_READOUT_NAMES = ("seam", "tangent", "orientation")
 
 
 @dataclass(slots=True)
@@ -20,12 +20,16 @@ class DenseGeometryContext:
         patch_mask: ``[B,C,P]``，标记真实相机对应的 patch。
         language_mask: ``[B,L]``，标记 Qwen Context 中的语言 token。
         state_mask: ``[B,L]``，标记 Qwen Context 中的状态 token。
+        clean_actions: 可选的归一化 expert action chunk，仅供训练期 posterior。
+        action_padding_mask: ``[B,H]``，标记 action chunk 的 episode 尾部 padding。
     """
 
     patch_tokens: Tensor
     patch_mask: Tensor
     language_mask: Tensor
     state_mask: Tensor
+    clean_actions: Tensor | None = None
+    action_padding_mask: Tensor | None = None
 
 
 @dataclass(slots=True)

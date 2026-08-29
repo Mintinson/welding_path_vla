@@ -7,12 +7,28 @@ from lerobot.configs import PreTrainedConfig
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.factory import get_policy_pipeline
+from welding_path_vla.policies.lerobot_training import require_grounding_checkpoint
 from welding_path_vla.policies.spec import TRAJ_VLA_QWEN
 from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import (
     TrajVLAQwenConfig,
 )
+from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
+    ORIENTATION_TARGET,
+    ORIENTATION_VALID,
+    SEAM_LABELS,
+    SEAM_VALID,
+    TANGENT_TARGET,
+    TANGENT_VALID,
+    GeometryGroundingHeads,
+    GeometryGroundingTargetProcessorStep,
+    geometry_grounding_losses,
+)
 from welding_path_vla.policies.traj_vla_qwen.modeling_traj_vla_qwen import (
     TrajVLAQwenPolicy,
+)
+from welding_path_vla.policies.traj_vla_qwen.motion_latent import (
+    ConditionalMotionLatent,
+    diagonal_gaussian_kl,
 )
 from welding_path_vla.policies.traj_vla_qwen.prismatic import (
     DenseGeometryContext,
@@ -36,6 +52,7 @@ def make_tiny_paired_decoder(
     checkpoint_expert: bool = False,
     attention_mode: str = "self_attn",
     use_geometry_branch: bool = False,
+    use_motion_latent: bool = False,
     num_layers: int = 2,
 ) -> PairedLayerDecoder:
     """构造无需下载权重的两层 Qwen2.5 双流网络。"""
@@ -72,6 +89,8 @@ def make_tiny_paired_decoder(
             geometry_num_cameras=2,
             geometry_num_queries=4,
             geometry_num_heads=4,
+            motion_action_size=32 if use_motion_latent else None,
+            motion_latent_size=8,
         )
     return PairedLayerDecoder(**common)
 
@@ -100,7 +119,69 @@ def test_qwen_config_and_policy_are_registered() -> None:
     assert config.policy.parameters["use_geometry_branch"] is True
     assert config.policy.parameters["geometry_num_queries"] == 16
     assert config.policy.parameters["geometry_num_heads"] == 8
+    assert not config.policy.parameters["use_geometry_grounding"]
+    assert not config.policy.parameters["use_motion_latent"]
+    assert config.policy.parameters["training_stage"] == "standard"
     assert get_policy_pipeline("traj_vla_qwen").spec is TRAJ_VLA_QWEN
+
+
+def test_two_stage_a100_profiles_enable_features_in_order() -> None:
+    """Stage 1 只做接地预热，Stage 2 再加载其权重并启用 motion latent。"""
+    stage1 = AppConfig.load("configs/traj_vla_qwen_grounding_stage1_a100.yaml")
+    stage2 = AppConfig.load("configs/traj_vla_qwen_grounding_stage2_a100.yaml")
+    assert stage1.policy.parameters["training_stage"] == "grounding_warmup"
+    assert stage1.policy.parameters["geometry_aux_loss_weights"] == [1.0, 0.5, 0.5]
+    assert stage1.training.steps == 10_000
+    assert stage2.policy.parameters["training_stage"] == "policy_joint"
+    assert stage2.policy.parameters["use_motion_latent"]
+    assert stage2.policy.parameters["geometry_aux_loss_weights"] == [0.05, 0.02, 0.02]
+    assert stage2.policy.checkpoint and "grounding_stage1" in stage2.policy.checkpoint
+
+
+def test_policy_joint_requires_grounding_weights(tmp_path: Path) -> None:
+    """Stage 2 可随机初始化 motion，但不能静默丢失 Stage 1 grounding 权重。"""
+    from safetensors.torch import save_file
+
+    path = tmp_path / "model.safetensors"
+    save_file({"model.action_out_proj.weight": torch.ones(1)}, path)
+    with pytest.raises(ValueError, match="Stage 1 weights"):
+        require_grounding_checkpoint(str(tmp_path))
+    save_file(
+        {
+            "model.vlm_with_expert.decoder.geometry_resampler.latent_queries": torch.ones(1),
+            "model.geometry_grounding_heads.tangent.weight": torch.ones(1),
+        },
+        path,
+    )
+    require_grounding_checkpoint(str(tmp_path))
+
+
+def test_inference_preparation_discards_training_only_modules() -> None:
+    """部署裁剪应删除 grounding heads/posterior，同时保留 motion prior。"""
+
+    class FakeDecoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.motion_latent = ConditionalMotionLatent(32, 32, 24, 8)
+
+    class FakeBackbone(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.decoder = FakeDecoder()
+
+    class FakeFlow(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.geometry_grounding_heads = GeometryGroundingHeads(24)
+            self.vlm_with_expert = FakeBackbone()
+
+    policy = TrajVLAQwenPolicy.__new__(TrajVLAQwenPolicy)
+    torch.nn.Module.__init__(policy)
+    policy.model = FakeFlow()
+    policy.prepare_for_inference()
+    assert policy.model.geometry_grounding_heads is None
+    assert policy.model.vlm_with_expert.decoder.motion_latent.posterior is None
+    assert policy.model.vlm_with_expert.decoder.motion_latent.prior is not None
 
 
 def test_qwen_config_rejects_unpaired_depth() -> None:
@@ -147,6 +228,44 @@ def test_geometry_config_round_trip(tmp_path: Path) -> None:
     assert restored.geometry_num_queries == 12
     assert restored.geometry_num_heads == 4
     assert not restored.train_geometry_resampler
+
+
+def test_xsvla_features_default_off_and_validate_dependencies(tmp_path: Path) -> None:
+    """旧 checkpoint 默认不创建 grounding、motion 或两阶段训练结构。"""
+    config = TrajVLAQwenConfig(device="cpu")
+    assert not config.use_geometry_grounding
+    assert not config.use_motion_latent
+    assert config.training_stage == "standard"
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert isinstance(restored, TrajVLAQwenConfig)
+    assert not restored.use_geometry_grounding
+    assert not restored.use_motion_latent
+
+    enabled_path = tmp_path / "enabled"
+    enabled = TrajVLAQwenConfig(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        use_geometry_grounding=True,
+        use_motion_latent=True,
+        training_stage="policy_joint",
+        motion_latent_dim=12,
+        device="cpu",
+    )
+    enabled.save_pretrained(enabled_path)
+    enabled_restored = PreTrainedConfig.from_pretrained(enabled_path)
+    assert isinstance(enabled_restored, TrajVLAQwenConfig)
+    assert enabled_restored.use_geometry_grounding
+    assert enabled_restored.use_motion_latent
+    assert enabled_restored.motion_latent_dim == 12
+    assert enabled_restored.training_stage == "policy_joint"
+
+    with pytest.raises(ValueError, match="geometry grounding"):
+        TrajVLAQwenConfig(use_geometry_grounding=True)
+    with pytest.raises(ValueError, match="motion latent"):
+        TrajVLAQwenConfig(use_motion_latent=True)
+    with pytest.raises(ValueError, match="grounding_warmup"):
+        TrajVLAQwenConfig(training_stage="grounding_warmup")
 
 
 def test_trainable_vision_rejects_frozen_bfloat16_setting() -> None:
@@ -203,6 +322,151 @@ def test_seam_query_resampler_conditions_and_masks_dense_patches() -> None:
     changed.state_mask = torch.tensor([[False, True, False], [True, False, False]])
     state_conditioned = resampler(context, changed)
     assert not torch.allclose(conditioned.latent_tokens, state_conditioned.latent_tokens)
+
+
+def test_grounding_targets_align_two_cameras_and_ignore_padding() -> None:
+    """在线标签应投影到双相机 patch，并从有效 future targets 生成局部姿态。"""
+    processor = GeometryGroundingTargetProcessorStep(
+        camera_keys=("observation.images.global", "observation.images.wrist"),
+        camera_fovy_deg=(90.0, 90.0),
+        global_camera_pose_world=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+        wrist_camera_pose_tcp=(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+        corridor_radius_px=2,
+    )
+    state = torch.tensor(
+        [[0, 0, 0, 0, 0, 0, 0, 0, -1, 1, 0, 0, 0]],
+        dtype=torch.float32,
+    )
+    identity = [1, 0, 0, 0, 1, 0]
+    actions = torch.tensor(
+        [[[0.1, 0, -1, *identity], [0.2, 0, -1, *identity], [9, 9, -1, *identity]]],
+        dtype=torch.float32,
+    )
+    targets = processor.targets(
+        state,
+        actions,
+        torch.tensor([[False, False, True]]),
+        [(480, 640), (480, 640)],
+    )
+    assert targets[SEAM_LABELS].shape == (1, 2, 256)
+    assert torch.all(targets[SEAM_VALID])
+    torch.testing.assert_close(targets[TANGENT_TARGET], torch.tensor([[1.0, 0, 0]]))
+    torch.testing.assert_close(
+        targets[ORIENTATION_TARGET],
+        torch.tensor([identity], dtype=torch.float32),
+    )
+    assert targets[TANGENT_VALID].item()
+    assert targets[ORIENTATION_VALID].item()
+    assert targets[SEAM_LABELS].sum() < 40  # padding 的远端目标不能拉长 corridor。
+
+
+def test_grounding_heads_and_losses_are_masked_and_differentiable() -> None:
+    """三个 readout head 应输出稳定形状，并把监督梯度传回 query/patch。"""
+    torch.manual_seed(5)
+    heads = GeometryGroundingHeads(8)
+    patches = torch.randn(2, 2, 4, 8, requires_grad=True)
+    readout = torch.randn(2, 3, 8, requires_grad=True)
+    auxiliary = {
+        "geometry.patch_tokens": patches,
+        "geometry.patch_mask": torch.ones(2, 2, 4, dtype=torch.bool),
+        "geometry.readout_tokens": readout,
+    }
+    auxiliary.update(heads(auxiliary))
+    batch = {
+        SEAM_LABELS: torch.zeros(2, 2, 4),
+        SEAM_VALID: torch.tensor([[True, True], [False, False]]),
+        TANGENT_TARGET: auxiliary["geometry.tangent_prediction"].detach(),
+        TANGENT_VALID: torch.tensor([True, False]),
+        ORIENTATION_TARGET: auxiliary["geometry.orientation_6d"].detach(),
+        ORIENTATION_VALID: torch.tensor([True, False]),
+    }
+    losses = geometry_grounding_losses(auxiliary, batch)
+    assert auxiliary["geometry.seam_logits"].shape == (2, 2, 4)
+    assert losses["seam"].shape == (2,)
+    assert losses["tangent"][0] < 1e-5
+    assert losses["tangent"][1] == 0
+    assert losses["orientation"][1] == 0
+    sum(loss.mean() for loss in losses.values()).backward()
+    assert patches.grad is not None
+    assert readout.grad is not None
+
+
+def test_grounding_losses_prefer_matching_geometry() -> None:
+    """正确 corridor、方向和姿态的三项损失都应低于相反预测。"""
+    identity = torch.tensor([[1, 0, 0, 0, 1, 0]], dtype=torch.float32)
+    matched_auxiliary = {
+        "geometry.seam_logits": torch.tensor([[[6.0, -6.0]]]),
+        "geometry.patch_mask": torch.ones(1, 1, 2, dtype=torch.bool),
+        "geometry.tangent_prediction": torch.tensor([[1.0, 0, 0]]),
+        "geometry.orientation_6d": identity,
+    }
+    matched_batch = {
+        SEAM_LABELS: torch.tensor([[[1.0, 0]]]),
+        SEAM_VALID: torch.ones(1, 1, dtype=torch.bool),
+        TANGENT_TARGET: torch.tensor([[1.0, 0, 0]]),
+        TANGENT_VALID: torch.ones(1, dtype=torch.bool),
+        ORIENTATION_TARGET: identity,
+        ORIENTATION_VALID: torch.ones(1, dtype=torch.bool),
+    }
+    wrong_auxiliary = {
+        **matched_auxiliary,
+        "geometry.seam_logits": -matched_auxiliary["geometry.seam_logits"],
+        "geometry.tangent_prediction": -matched_auxiliary["geometry.tangent_prediction"],
+        "geometry.orientation_6d": torch.tensor([[-1, 0, 0, 0, -1, 0.0]]),
+    }
+    matched = geometry_grounding_losses(matched_auxiliary, matched_batch)
+    wrong = geometry_grounding_losses(wrong_auxiliary, matched_batch)
+    assert all(matched[name].item() < wrong[name].item() for name in matched)
+
+
+def test_conditional_motion_latent_uses_posterior_only_in_training() -> None:
+    """训练 posterior 应随 action 改变，推理则确定性使用 conditional prior mean。"""
+    torch.manual_seed(13)
+    module = ConditionalMotionLatent(32, 32, 24, 8)
+    context = torch.randn(2, 3, 32)
+    geometry_context = make_geometry_context(batch_size=2)
+    geometry_context.clean_actions = torch.randn(2, 5, 32)
+    geometry_context.action_padding_mask = torch.tensor(
+        [[False, False, False, True, True], [False, False, False, False, True]]
+    )
+    geometry = SeamQueryResampler(12, 32, 24, 2, num_queries=4, num_heads=4)(
+        context,
+        geometry_context,
+    )
+    module.train()
+    first = module(context, geometry_context, geometry)
+    original_actions = geometry_context.clean_actions.clone()
+    geometry_context.clean_actions[geometry_context.action_padding_mask] += 20
+    padding_changed = module(context, geometry_context, geometry)
+    torch.testing.assert_close(
+        first.auxiliary_outputs["motion.posterior_mean"],
+        padding_changed.auxiliary_outputs["motion.posterior_mean"],
+    )
+    geometry_context.clean_actions = original_actions + 2
+    second = module(context, geometry_context, geometry)
+    assert not torch.allclose(
+        first.auxiliary_outputs["motion.posterior_mean"],
+        second.auxiliary_outputs["motion.posterior_mean"],
+    )
+    assert first.auxiliary_outputs["motion.kl"].shape == (2,)
+    zeros = torch.zeros(2, 8)
+    torch.testing.assert_close(diagonal_gaussian_kl(zeros, zeros, zeros, zeros), torch.zeros(2))
+
+    module.eval()
+    inferred = module(context, geometry_context, geometry)
+    repeated = module(context, geometry_context, geometry)
+    torch.testing.assert_close(inferred.token, repeated.token)
+    torch.testing.assert_close(
+        inferred.auxiliary_outputs["motion.latent"],
+        inferred.auxiliary_outputs["motion.prior_mean"],
+    )
+    task_changed = context.clone()
+    task_changed[:, 0] += 2
+    changed_prior = module(task_changed, geometry_context, geometry)
+    assert not torch.allclose(
+        inferred.auxiliary_outputs["motion.prior_mean"],
+        changed_prior.auxiliary_outputs["motion.prior_mean"],
+    )
 
 
 class FakePatchFeaturizer(torch.nn.Module):
@@ -316,6 +580,19 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
     mask = make_attention_masks(padding, blocks)
     positions = torch.arange(5).unsqueeze(0)
 
+    expert_calls: list[None] = []
+    decoder.expert_model.layers[0].self_attn.q_proj.register_forward_hook(
+        lambda module, inputs, output: expert_calls.append(None)
+    )
+    geometry_only = decoder.forward_geometry(
+        torch.ones(1, 3, 3, dtype=torch.bool),
+        positions[:, :3],
+        context,
+        geometry,
+    )
+    assert geometry_only["geometry.readout_tokens"].shape == (1, 3, 24)
+    assert expert_calls == []
+
     full, _, auxiliary = decoder(
         mask,
         positions,
@@ -401,6 +678,82 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
     assert torch.allclose(full[1], round_trip[1], atol=1e-5)
 
 
+def test_motion_decoder_is_asymmetric_and_cache_equivalent() -> None:
+    """Motion prior 只影响 Expert，并在 Context cache 后不重复计算。"""
+    torch.manual_seed(19)
+    decoder = make_tiny_paired_decoder(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        use_motion_latent=True,
+        num_layers=4,
+    ).eval()
+    assert isinstance(decoder, InterleavedSACADecoder)
+    context = torch.randn(1, 3, 32)
+    action = torch.randn(1, 3, 24)  # motion slot + 两个动作 token
+    geometry = make_geometry_context()
+    padding = torch.ones(1, 6, dtype=torch.bool)
+    blocks = torch.tensor([[False, False, False, True, True, True]])
+    mask = make_attention_masks(padding, blocks)
+    positions = torch.arange(6).unsqueeze(0)
+
+    full, _, auxiliary = decoder(
+        mask,
+        positions,
+        None,
+        [context, action],
+        False,
+        False,
+        expert_context=geometry,
+    )
+    assert "motion.prior_mean" in auxiliary
+    assert decoder.motion_latent is not None
+    prior_output = decoder.motion_latent.prior[-1]
+    assert isinstance(prior_output, torch.nn.Linear)
+    original_bias = prior_output.bias.detach().clone()
+    with torch.no_grad():
+        prior_output.bias.add_(2)
+    changed_motion, _, _ = decoder(
+        mask,
+        positions,
+        None,
+        [context, action],
+        False,
+        False,
+        expert_context=geometry,
+    )
+    torch.testing.assert_close(full[0], changed_motion[0], atol=1e-5, rtol=1e-5)
+    assert not torch.allclose(full[1], changed_motion[1])
+    with torch.no_grad():
+        prior_output.bias.copy_(original_bias)
+
+    prior_calls: list[None] = []
+    decoder.motion_latent.prior.register_forward_hook(
+        lambda module, inputs, output: prior_calls.append(None)
+    )
+    _, cache, _ = decoder(
+        torch.ones(1, 3, 3, dtype=torch.bool),
+        positions[:, :3],
+        None,
+        [context, None],
+        True,
+        True,
+        expert_context=geometry,
+    )
+    assert cache is not None and -1 in cache
+    calls_after_cache = len(prior_calls)
+    cached, _, cached_auxiliary = decoder(
+        mask[:, 3:],
+        positions[:, 3:],
+        cache,
+        [None, action],
+        True,
+        False,
+    )
+    torch.testing.assert_close(full[1], cached[1], atol=1e-5, rtol=1e-5)
+    assert cached_auxiliary == {}
+    assert len(prior_calls) == calls_after_cache
+
+
 @pytest.mark.parametrize("attention_mode", ["self_attn", "cross_attn"])
 def test_paired_layer_checkpointing_preserves_gradients(attention_mode: str) -> None:
     """两种 Expert 结构的 checkpoint 重算都应保持输出和梯度。"""
@@ -456,6 +809,10 @@ def test_lora_targets_can_select_qwen_or_expert() -> None:
     policy.config = TrajVLAQwenConfig(
         attention_mode="cross_attn",
         use_geometry_branch=True,
+        use_geometry_grounding=True,
+        use_motion_latent=True,
     )
     targets = policy._get_default_peft_targets()
     assert "model.vlm_with_expert.decoder.geometry_resampler" in targets["modules_to_save"]
+    assert "model.geometry_grounding_heads" in targets["modules_to_save"]
+    assert "model.vlm_with_expert.decoder.motion_latent" in targets["modules_to_save"]

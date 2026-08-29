@@ -138,6 +138,7 @@ class TrajectoryVLAPolicy(PreTrainedPolicy):
             self.prepare_action(batch),
             noise,
             time,
+            batch.get("action_is_pad"),
         )
 
     @torch.no_grad()
