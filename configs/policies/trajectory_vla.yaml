@@ -6,9 +6,16 @@ policy:
   action_horizon: 30
   action_steps: 8
   action_source: safe_command
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
   parameters:
     # 权重来自官方 SmolVLA，网络与 flow matching 在本项目内实现。
     pretrained_model: lerobot/smolvla_base
+    tokenizer_max_length: 160
     # resize_imgs_with_padding: [256, 256]
     # num_steps: 5
     use_amp: true

@@ -9,10 +9,14 @@ checkpoint 格式。项目层只负责统一焊接 observation、relative action
 - 13D 状态：6 个关节角、TCP 位置和 `wxyz` 四元数；
 - 9D 动作：TCP 局部系平移与 rotation-6D future target；
 - 英文任务：LeRobot `task`；
+- 任务条件：`task.direction` 和 `task.parameters`，由公共 `WeldingPromptBuilder` 在运行时按需
+  转为方向、速度和工具角文本；
 - 频率：30 Hz，默认预测 30 帧并执行 8 帧后重新规划。
 
 LeRobot Parquet 中保留世界系 absolute target；共享 processor 在归一化前转换为预测时刻 TCP
 坐标系下的 relative chunk。训练、评估和部署必须使用 checkpoint 内保存的同一组 processor。
+`configs/policies/smolvla.yaml` 的 `policy.welding_prompt_fields` 可逐字段消融，空列表恢复原始
+任务文本；这属于项目公共预处理，不修改 SmolVLM 或官方 SmolVLA 模型源码。
 
 检查数据：
 

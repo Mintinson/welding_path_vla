@@ -14,6 +14,11 @@ from draccus.options import config_type
 from lerobot.configs import PreTrainedConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
 
+from welding_path_vla.dataset.task_parameters import (
+    DIRECTION_CODES,
+    TASK_DIRECTION,
+    TASK_PARAMETERS,
+)
 from welding_path_vla.policies.action_processors import make_relative_pre_post_processors
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
@@ -154,6 +159,18 @@ class LeRobotRuntime:
             )
         if self.spec.language:
             sample["task"] = observation.instruction
+        if observation.direction is not None:
+            sample[TASK_DIRECTION] = torch.tensor(
+                DIRECTION_CODES[observation.direction], dtype=torch.int64
+            )
+        parameter_values = (
+            observation.welding_speed_mps,
+            observation.work_angle_deg,
+            observation.travel_angle_deg,
+            observation.tool_roll_deg,
+        )
+        if all(value is not None for value in parameter_values):
+            sample[TASK_PARAMETERS] = torch.tensor(parameter_values, dtype=torch.float32)
         if self.spec.processor_adds_batch:
             return sample
         batched = {

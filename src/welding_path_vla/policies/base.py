@@ -12,6 +12,11 @@ class Observation:
     images: dict[str, np.ndarray]
     state: np.ndarray
     instruction: str
+    direction: str | None = None
+    welding_speed_mps: float | None = None
+    work_angle_deg: float | None = None
+    travel_angle_deg: float | None = None
+    tool_roll_deg: float | None = None
 
 
 class Policy(Protocol):

@@ -8,6 +8,11 @@ checkpoint 格式。项目名 `pi0_5` 对应 LeRobot 内部类型 `pi05`。
 π0 和 π0.5 与其他策略读取相同的双相机、13D 状态、英文任务和 9D relative action chunk。
 π0.5 使用分位数归一化，因此数据集 `meta/stats.json` 必须包含对应 action/state quantile。
 
+两者也读取 `task.direction` 和 `task.parameters`。公共 `WeldingPromptBuilder` 先生成焊接方向、
+速度和工具角文本，随后才进入 π0 / π0.5 自己的 PaliGemma prompt、状态离散化与 tokenizer。
+字段由 `policy.welding_prompt_fields` 独立选择，空列表可用于原始任务文本基线；该配置不是
+PaliGemma 或 π 模型参数。
+
 训练和部署都通过项目公共 processor 将世界系 absolute target 与 TCP 局部系 relative chunk
 互相转换。旧 LeRobot checkpoint 可能没有顶层 policy `type`；运行时会按所选策略的具体配置类
 用 Draccus 恢复 `PolicyFeature`，不应手工修改 checkpoint JSON。

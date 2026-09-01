@@ -12,6 +12,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetad
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
 from welding_path_vla.dataset.actions import ABSOLUTE_ACTION_NAMES
+from welding_path_vla.dataset.task_parameters import TASK_DIRECTION, TASK_PARAMETERS
 
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 
@@ -64,7 +65,12 @@ def metadata(training: TrainingConfig) -> LeRobotDatasetMetadata:
 def validate_dataset(training: TrainingConfig, policy: PolicyConfig) -> PolicyDataReport:
     """确认数据 schema 与 relative action 训练契约一致。"""
     meta = metadata(training)
-    required = (*CAMERA_KEYS, "observation.state", "action")
+    prompt_fields = policy.welding_prompt_fields
+    prompt_features = (
+        *((TASK_DIRECTION,) if "direction" in prompt_fields else ()),
+        *((TASK_PARAMETERS,) if set(prompt_fields).difference({"direction"}) else ()),
+    )
+    required = (*CAMERA_KEYS, "observation.state", "action", *prompt_features)
     missing = [key for key in required if key not in meta.features]
     if missing:
         raise ValueError(f"policy dataset is missing features: {missing}")

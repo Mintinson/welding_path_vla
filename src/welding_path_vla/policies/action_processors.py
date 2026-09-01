@@ -23,6 +23,7 @@ from welding_path_vla.core.geometry import (
     absolute_ee_actions_from_relative,
     relative_ee_actions_from_absolute,
 )
+from welding_path_vla.policies.welding_prompt import configure_welding_prompt_builder
 
 RELATIVE_PROCESSOR = "welding_relative_ee_actions"
 ABSOLUTE_PROCESSOR = "welding_absolute_ee_actions"
@@ -146,6 +147,7 @@ def make_relative_pre_post_processors(
     policy_cfg: Any,
     pretrained_path: str | None = None,
     require_saved: bool = False,
+    welding_prompt_fields: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """调用 LeRobot 官方工厂，再接入项目的 SE(3) relative action 语义。"""
@@ -155,12 +157,13 @@ def make_relative_pre_post_processors(
         policy_cfg, pretrained_path=pretrained_path, **kwargs
     )
     connect_relative_processors(preprocessor, postprocessor, require_saved)
+    configure_welding_prompt_builder(preprocessor, welding_prompt_fields)
     return preprocessor, postprocessor
 
 
 @contextmanager
-def relative_processor_factory() -> Iterator[None]:
-    """仅在官方训练调用期间替换其 processor 工厂入口。"""
+def relative_processor_factory(welding_prompt_fields: tuple[str, ...] = ()) -> Iterator[None]:
+    """在官方训练期间接入 relative action 与 VLM 无关的焊接 prompt。"""
     import lerobot.scripts.lerobot_train as train_module
 
     original = train_module.make_pre_post_processors
@@ -168,6 +171,7 @@ def relative_processor_factory() -> Iterator[None]:
     def factory(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
         preprocessor, postprocessor = original(*args, **kwargs)
         connect_relative_processors(preprocessor, postprocessor, require_saved=False)
+        configure_welding_prompt_builder(preprocessor, welding_prompt_fields)
         return preprocessor, postprocessor
 
     train_module.make_pre_post_processors = factory

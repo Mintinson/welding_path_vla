@@ -125,6 +125,11 @@ def rollout_episode(
                     (state.joint_position, state.tcp.position, state.tcp.quaternion_wxyz)
                 ).astype(np.float32),
                 config.task.instruction,
+                config.task.direction,
+                config.task.speed_mps,
+                config.task.work_angle_deg,
+                config.task.travel_angle_deg,
+                config.task.tool_roll_deg,
             )
             action = runtime.select_action(observation)
             command_position = np.full(3, np.nan)

@@ -5,9 +5,17 @@ policy:
   action_horizon: 30
   action_steps: 8
   action_source: safe_command
+  # VLM 无关的运行时 prompt 消融；设为 [] 即只使用原始 task。
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
   parameters:
     language_model_family: qwen2_5
     language_model_name: Qwen/Qwen2.5-0.5B
+    tokenizer_max_length: 160
     prismatic_repo_id: Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b
     prismatic_checkpoint_file: checkpoints/step-020792-epoch-01-loss=0.5268.pt
     load_prismatic_weights: true

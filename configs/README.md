@@ -29,6 +29,26 @@ pixi run -e policy-sim policy-sim-deploy \
   --deployment.run_all_tasks=true
 ```
 
+## 焊接参数 Prompt
+
+所有语言策略共用项目级 `WeldingPromptBuilder`。配置写在 `policy` 下，不属于任何 VLM 的模型
+参数：
+
+```yaml
+policy:
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
+```
+
+可以删除任意字段做消融；`welding_prompt_fields: []` 表示只使用 LeRobot 原始 `task`。
+SmolVLA、Trajectory-VLA、TrajVLA-Qwen、π0 和 π0.5 的主配置默认全部启用。长 prompt 需要为
+SmolVLM、Qwen 和 π0 保留至少 160 个 token；π0.5 还会拼接离散状态，默认保留 200 个 token。
+新训练 checkpoint 会保存 builder 及字段列表，评估和部署从 checkpoint 恢复同一处理链。
+
 策略和任务是两个正交模块。例如 π0.5 训练、双 A100 训练和三个任务部署分别为：
 
 ```bash

@@ -6,8 +6,15 @@ policy:
   action_horizon: 30
   action_steps: 8
   action_source: safe_command
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
   parameters:
     pretrained_model: lerobot/pi0_base
+    tokenizer_max_length: 160
     dtype: bfloat16
     num_inference_steps: 5
     gradient_checkpointing: true

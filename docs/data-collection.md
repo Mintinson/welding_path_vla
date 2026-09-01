@@ -347,6 +347,8 @@ LeRobot exporter 只接受 `valid_success` 和 `valid_recovery`。失败 episode
 | `observation.images.wrist` | video `[480, 640, 3]` | RGB，腕部相机 |
 | `observation.state` | `float32 [13]` | `joint_1…joint_6, tcp_x, tcp_y, tcp_z, tcp_qw, tcp_qx, tcp_qy, tcp_qz` |
 | `action` | `float32 [9]` | `x, y, z, r1x, r1y, r1z, r2x, r2y, r2z` |
+| `task.direction` | `int64 [1]` | `0=forward, 1=reverse` |
+| `task.parameters` | `float32 [4]` | `welding_speed_mps, work_angle_deg, travel_angle_deg, tool_roll_deg` |
 
 `action` 的前三维是世界系绝对位置，后六维是目标旋转矩阵的前两行。rotation-6D 避免了四元数
 `q` 与 `-q` 表示同一姿态造成的不连续，也可以通过 Gram–Schmidt 恢复合法旋转矩阵。
@@ -364,10 +366,11 @@ LeRobot 自动增加以下索引列：
 任务文本不会在每行重复保存。`meta/tasks.parquet` 保存 `task_index → task` 映射，读取样本时由
 LeRobot 恢复 `task` 字段，这样可以减少重复字符串占用。
 
-当前 exporter 不把 raw `task_parameters` 展开成 LeRobot feature；精确速度、角度、圆弧范围和
-工件位姿仍只存在 raw `metadata.json`。因此现有模型可以按稳定英文任务区分任务类别，但不能从
-LeRobot 行中显式读取某条 episode 的目标速度。如果后续要研究技术参数条件控制，应新增明确的
-结构化 feature 或文本模板，并建立新的数据集 schema 版本。
+当前 exporter 会把 raw `task_parameters` 中的执行方向、速度和三类工具角映射到上述两个
+LeRobot feature；圆弧范围、曲线参数和工件位姿仍只存在 raw `metadata.json`。训练时公共
+`WeldingPromptBuilder` 根据 `policy.welding_prompt_fields` 动态把选中的结构化数值追加到稳定
+英文 `task`，而不是把大量重复长文本写回数据集。旧 LeRobot 数据集可使用
+`migrate-task-parameters` 原地补齐这两个 feature。
 
 以上名称描述当前 exporter。历史数据集如果仍显示 `state_0…state_12` 或 `dx, dy, dz`，只代表
 旧版 metadata 名称，不应据此推断当前字段顺序或动作存储语义。

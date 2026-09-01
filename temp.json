@@ -157,3 +157,23 @@
 }
 
 
+pixi run -e data export-lerobot \
+  --config_path=configs/smolvla.yaml \
+  --dataset_glob='/run/media/mintinson/DataDiskD/welding_path_vla/datasets/*_raw_v2' \
+  --output=/run/media/mintinson/DataDiskD/welding_path_vla/datasets/lerobot/weldpath_lerobot_relative_v1 \
+  --repo_id=mintinson/weldpath_relative_v1
+
+pixi run -e data export-lerobot \
+  --config_path=configs/smolvla.yaml \
+  --dataset=/run/media/mintinson/DataDiskD/welding_path_vla/datasets/trihedral_vertical_raw_v2 \
+  --output=/run/media/mintinson/DataDiskD/welding_path_vla/datasets/lerobot/weldpath_lerobot_relative_v2 \
+  --lerobot_export.incremental=true
+
+  HF_XET_HIGH_PERFORMANCE=1 pixi run -e data upload-lerobot \
+  --dataset=/run/media/mintinson/DataDiskD/welding_path_vla/datasets/lerobot/weldpath_lerobot_relative_v2 \
+  --repo_id=mintinson/weldpath_relative_v2
+
+pixi run -e data export-lerobot \
+  --config_path=configs/smolvla.yaml \
+  --dataset_glob='datasetss/*_raw_v2' \
+  --output=datasetss/weldpath_lerobot_relative_v2 

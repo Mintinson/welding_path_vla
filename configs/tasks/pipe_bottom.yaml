@@ -7,14 +7,14 @@ task:
   seam_id: pipe_bottom
   direction: forward
   # 真实可达工作区内的前侧四分之一圆弧；可按实验需要覆盖修改。
-  arc_start_deg: -90.0
+  arc_start_deg: 0.0
   arc_sweep_deg: 90.0
   # 接近阶段继承 60 mm/s；焊接阶段降为 4 mm/s。
   speed_mps: 0.004
   tcp_clearance_m: 0.002
 
 randomization:
-  xy_m: 0.02
+  xy_m: 0.2
   yaw_deg: 15.0
   # 前侧圆弧的几何起点和最大扫掠角均随 episode 改变。
   arc_start_range_deg: 10.0

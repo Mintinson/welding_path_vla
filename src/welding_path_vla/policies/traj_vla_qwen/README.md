@@ -296,6 +296,27 @@ Expert 也保持完整训练；选择 `expert` 或 `all` 时，Expert 基础权�
 从已经训练过的 TrajVLA-Qwen checkpoint 继续微调，而不适合作为首次训练默认值。
 仅设置 `lora_target` 不会启用 PEFT，必须同时提供非空的 `training.peft`。
 
+## 焊接参数 Prompt
+
+TrajVLA-Qwen 不维护专用的焊接 prompt 逻辑。项目公共 `WeldingPromptBuilder` 在 Qwen chat
+template 之前读取 `task.direction` 和 `task.parameters`，与 SmolVLA、Trajectory-SmolVLM、
+π0 和 π0.5 共用同一实现。字段级消融配置位于模型参数之外：
+
+```yaml
+policy:
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
+  parameters:
+    tokenizer_max_length: 160
+```
+
+将列表设为 `[]` 即只保留原始任务文本。builder 会随 preprocessor 写入 checkpoint，部署时不应
+另外手工拼接指令。
+
 ## 运行
 
 首次训练会下载约 2.6 GB 的 Prismatic checkpoint：

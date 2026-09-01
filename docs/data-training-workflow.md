@@ -44,6 +44,25 @@ episode_000000/
 初始关节、TCP 偏移和恢复扰动仍逐条变化。英文 `task.instruction` 在同一任务内保持固定；具体
 速度、方向和几何变化写入 `task_parameters`，避免语言标签随样本产生无意义的细碎变化。
 
+### 2.1 结构化参数与运行时 Prompt
+
+LeRobot 数据集不复制每条样本的长自然语言。它保存稳定的 `task`，并把 raw
+`task_parameters` 中模型需要的部分映射为：
+
+```text
+task.direction   int64 [1]   0=forward, 1=reverse
+task.parameters  float32 [4] welding_speed_mps, work_angle_deg,
+                              travel_angle_deg, tool_roll_deg
+```
+
+公共 `WeldingPromptBuilder` 在 batch 已建立、各 VLM 的 chat template 或 tokenizer 尚未运行时
+拼接文本，因此不依赖 SmolVLM、Qwen 或 PaliGemma。默认完整文本包含方向、焊接速度、工作角、
+行走角和工具滚转角。字段选择位于 `policy.welding_prompt_fields`；设置为空列表可得到只使用原始
+任务文本的对照实验。未选中的结构化字段不会进入 prompt，数据集本身不需要重新导出。
+
+训练保存的 `policy_preprocessor.json` 会记录 builder 和字段列表。离线评估及部署必须加载同一
+checkpoint processor；旧 checkpoint 没有 builder，仍保持旧任务文本语义。
+
 当前任务及数据目录见[工件与焊缝任务](simulation/workpieces.md)。调整随机性时遵循两条规则：
 
 1. 先保证完整轨迹可达、无碰撞，再扩大范围；

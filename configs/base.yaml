@@ -57,7 +57,7 @@ safety:
   tip_contact_force_limit_n: 3.0
 
 randomization:
-  xy_m: 0.05
+  xy_m: 0.2
   z_m: 0.0
   yaw_deg: 15.0
   # staging 构型附近六个关节的最大独立偏移（度）。

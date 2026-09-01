@@ -6,9 +6,16 @@ policy:
   action_horizon: 30
   action_steps: 8
   action_source: safe_command
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    - work_angle
+    - travel_angle
+    - tool_roll
   parameters:
     # 使用官方完整 SmolVLA 权重，而不是仅加载 VLM 后随机初始化动作专家。
     pretrained_model: lerobot/smolvla_base
+    tokenizer_max_length: 160
     # 256² 将双相机视觉 token 的显存控制在 RTX 4060 8GB 可训练范围。
     # resize_imgs_with_padding: [256, 256]
     # num_steps: 5

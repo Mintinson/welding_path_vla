@@ -74,6 +74,12 @@ scripts/
 
 `sim view` 显示 YAML 中的真实 home 关节姿态；`sim collect` 默认每 10 个 episode 编号采样一组焊枪姿态、执行方向、速度以及圆管起点和扫掠角，工件位姿和机器人初始状态仍逐条变化。录制前会对接近、跟踪和退出的完整轨迹执行连续 IK、关节限位、速度连续性和碰撞预检；不可行时在 `randomization.max_sampling_attempts` 内重采场景与初态，而不是录制一条已知失败的长视频。实际任务参数仅写入 `task_parameters`，instruction 保持任务 YAML 中的固定文本。
 
+导出后，稳定任务文本仍由 LeRobot `task` 保存，逐 episode 参数写入 `task.direction` 和
+`task.parameters`。训练与部署共用的 `WeldingPromptBuilder` 会在运行时把选中的方向、速度和角度
+追加到任务文本，再交给各 VLM 自己的语言模板和 tokenizer。该步骤适用于 SmolVLA、
+Trajectory-SmolVLM、Qwen、π0 和 π0.5；字段由各策略 YAML 的
+`policy.welding_prompt_fields` 控制，设为 `[]` 即恢复只使用原始 `task` 的消融基线。
+
 ## 常用命令
 
 ```bash

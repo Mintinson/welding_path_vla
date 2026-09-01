@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import httpx
 import numpy as np
+import pyarrow.parquet as pq
 import pytest
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -16,6 +17,7 @@ from welding_path_vla.dataset.export_lerobot import (
     upload_lerobot_dataset,
     valid_episode_paths,
 )
+from welding_path_vla.dataset.migrate_task_parameters import migrate_task_parameters
 
 
 def write_video(path: Path, frame_count: int, value: int) -> None:
@@ -52,6 +54,14 @@ def write_raw_episode(root: Path, index: int, valid: bool = True) -> Path:
     )
     metadata = {
         "instruction": "Weld along the test seam.",
+        "direction": "reverse" if index % 2 else "forward",
+        "task_parameters": {
+            "direction": "reverse" if index % 2 else "forward",
+            "speed_mps": 0.02 + index * 0.001,
+            "work_angle_deg": 45 + index,
+            "travel_angle_deg": 10 + index,
+            "tool_roll_deg": -20 + index,
+        },
         "quality": {"status": "valid_success" if valid else "invalid_simulation"},
         "resolved_config": {
             "camera": {"height": 24, "width": 32},
@@ -142,6 +152,89 @@ def test_image_storage_is_explicit_opt_in(tmp_path: Path) -> None:
     info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     assert info["features"]["observation.images.global"]["dtype"] == "image"
     assert not (output / "videos").exists()
+
+
+def test_export_preserves_numeric_task_parameters(tmp_path: Path) -> None:
+    """新导出应保留方向和焊接参数，同时维持原有语言任务语义。"""
+    source = tmp_path / "raw"
+    output = tmp_path / "lerobot"
+    write_raw_episode(source, 0)
+    export_lerobot(source, output, "test/welding-parameters", action_horizon=2)
+
+    info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
+    assert info["features"]["task.direction"] == {
+        "dtype": "int64",
+        "shape": [1],
+        "names": ["direction"],
+    }
+    assert info["features"]["task.parameters"]["names"] == [
+        "welding_speed_mps",
+        "work_angle_deg",
+        "travel_angle_deg",
+        "tool_roll_deg",
+    ]
+
+    dataset = LeRobotDataset("test/welding-parameters", root=output)
+    sample = dataset.hf_dataset[0]
+    assert int(sample["task.direction"]) == 0
+    np.testing.assert_allclose(sample["task.parameters"], [0.02, 45, 10, -20])
+    assert dataset.meta.tasks.index.tolist() == ["Weld along the test seam."]
+
+
+def strip_task_parameters(root: Path) -> None:
+    """把测试导出退化成迁移前的旧 LeRobot schema。"""
+    for path in (root / "data").rglob("*.parquet"):
+        table = pq.read_table(path).drop(["task.direction", "task.parameters"])
+        pq.write_table(table, path, compression="snappy")
+    for path in (root / "meta/episodes").rglob("*.parquet"):
+        table = pq.read_table(path)
+        columns = [name for name in table.column_names if name.startswith("stats/task.")]
+        pq.write_table(table.drop(columns), path, compression="snappy")
+    for filename, parent in (("info.json", "features"), ("stats.json", None)):
+        path = root / "meta" / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        values = document[parent] if parent else document
+        values.pop("task.direction")
+        values.pop("task.parameters")
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_existing_dataset_can_add_task_parameters_in_place(tmp_path: Path) -> None:
+    """旧数据应只重写 Parquet 和元数据，不重新编码视频或替换语言任务。"""
+    source = tmp_path / "raw"
+    output = tmp_path / "lerobot"
+    write_raw_episode(source, 0)
+    write_raw_episode(source, 1)
+    (source / "dataset.json").write_text(
+        json.dumps({"dataset": "test", "format": "raw_v1", "seed": 7}),
+        encoding="utf-8",
+    )
+    export_lerobot(source, output, "test/welding-migration", action_horizon=2)
+    videos_before = {path: path.stat().st_mtime_ns for path in (output / "videos").rglob("*.mp4")}
+    strip_task_parameters(output)
+
+    report = migrate_task_parameters(output, [source])
+    verified = migrate_task_parameters(output, [source], verify_only=True)
+
+    dataset = LeRobotDataset("test/welding-migration", root=output)
+    forward = dataset.hf_dataset[0]
+    reverse_index = next(
+        index
+        for index, episode_index in enumerate(dataset.hf_dataset["episode_index"])
+        if episode_index == 1
+    )
+    reverse = dataset.hf_dataset[reverse_index]
+    assert report.episodes == 2
+    assert report.data_files_changed == 1
+    assert report.metadata_files_changed == 1
+    assert verified.data_files_changed == 0
+    assert int(forward["task.direction"]) == 0
+    assert int(reverse["task.direction"]) == 1
+    np.testing.assert_allclose(reverse["task.parameters"], [0.021, 46, 11, -19])
+    assert dataset.meta.tasks.index.tolist() == ["Weld along the test seam."]
+    assert videos_before == {
+        path: path.stat().st_mtime_ns for path in (output / "videos").rglob("*.mp4")
+    }
 
 
 def test_default_video_export_uses_bounded_streaming_encoding(

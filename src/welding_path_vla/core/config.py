@@ -346,6 +346,7 @@ class PolicyConfig:
         action_steps: 一次预测后实际执行的动作数量。
         action_stride: chunk 中相邻 target 的数据帧间隔。
         action_source: 原始数据中用于监督的绝对目标来源。
+        welding_prompt_fields: 运行时追加到 task 的焊接参数字段，用于消融实验。
     """
 
     family: str = "smolvla"
@@ -356,6 +357,7 @@ class PolicyConfig:
     action_stride: int = 1
     action_representation: str = "relative_action"
     action_source: str = "safe_command"
+    welding_prompt_fields: tuple[str, ...] = ()
     parameters: dict[str, Any] = field(default_factory=dict)
 
 

@@ -27,6 +27,7 @@ from welding_path_vla.dataset.actions import (
     build_absolute_actions,
 )
 from welding_path_vla.dataset.raw_schema import METADATA_FILE, EpisodeReader
+from welding_path_vla.dataset.task_parameters import TASK_FEATURES, task_feature_values
 
 GLOBAL_IMAGE = "observation.images.global"
 WRIST_IMAGE = "observation.images.wrist"
@@ -211,6 +212,7 @@ def features(camera: dict[str, Any], save_images: bool) -> dict[str, dict[str, o
             "shape": (9,),
             "names": list(ABSOLUTE_ACTION_NAMES),
         },
+        **{key: dict(value) for key, value in TASK_FEATURES.items()},
     }
 
 
@@ -231,6 +233,9 @@ def validate_existing_dataset(
         raise ValueError(f"existing dataset fps={info['fps']} does not match source fps={fps}")
     if info["features"]["action"].get("names") != list(ABSOLUTE_ACTION_NAMES):
         raise ValueError("现有数据集不是 absolute EE storage, 不能增量写入 relative_action 数据")
+    for key, expected in TASK_FEATURES.items():
+        if info["features"].get(key) != {**expected, "shape": list(expected["shape"])}:
+            raise ValueError(f"现有数据集缺少或不兼容 {key}; 请先运行 migrate-task-parameters")
 
 
 def rgb_encoder(options: LeRobotExportConfig, info: dict[str, Any] | None = None) -> Any:
@@ -327,6 +332,7 @@ def add_episode(
     ).astype(np.float32)
     action_source = episode.metadata["resolved_config"]["policy"]["action_source"]
     actions = build_absolute_actions(episode, source=action_source)
+    task_values = task_feature_values(episode.metadata)
     frames = tqdm(
         video_frame_pairs(episode.path, count),
         total=count,
@@ -342,6 +348,7 @@ def add_episode(
                 WRIST_IMAGE: wrist_frame,
                 "observation.state": states[index],
                 "action": actions[index],
+                **task_values,
                 "task": episode.metadata["instruction"],
             }
         )

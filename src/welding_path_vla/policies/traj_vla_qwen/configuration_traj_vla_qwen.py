@@ -34,7 +34,7 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     max_action_dim: int = 32
     resize_imgs_with_padding: tuple[int, int] = (224, 224)
     empty_cameras: int = 0
-    tokenizer_max_length: int = 96
+    tokenizer_max_length: int = 160
     pad_language_to: str = "max_length"
 
     num_steps: int = 10

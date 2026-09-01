@@ -16,6 +16,9 @@ processor_trajectory_vla.py      tokenizer 及 feature 处理
 
 训练、运行时、离线评估和 robosuite rollout 复用上一级 `policies/` 公共模块。模型差异集中
 声明在 `policies/spec.py` 的 `TRAJECTORY_VLA`，算法目录不复制生命周期代码。
+结构化 `task.direction`、`task.parameters` 到自然语言的转换同样由公共
+`WeldingPromptBuilder` 完成，并在 SmolVLM tokenizer 之前运行。消融字段配置位于
+`policy.welding_prompt_fields`，不属于本地模型结构参数。
 
 ## 研究接口
 

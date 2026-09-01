@@ -232,6 +232,7 @@ def training_plan(
         "mixed_precision": training.amp_dtype,
         "peft": training.peft,
         "parameters": policy.parameters,
+        "welding_prompt_fields": list(policy.welding_prompt_fields),
     }
     for label, attribute in spec.plan_fields:
         plan[label] = getattr(config.policy, attribute)
@@ -267,7 +268,7 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
         lerobot_config_argument(resume_config),
         lerobot_training_log(Path(training.output_dir) / "train.log"),
         synchronized_lerobot_config_validation(config, accelerator),
-        relative_processor_factory(),
+        relative_processor_factory(policy.welding_prompt_fields),
     ):
         lerobot_train(config, accelerator=accelerator)
     return Path(training.output_dir)
