@@ -38,6 +38,7 @@ class LeRobotPolicySpec:
     language: bool = True
     processor_adds_batch: bool = False
     return_uint8: bool = True
+    use_imagenet_stats: bool = True
     explicit_mixed_precision: bool = True
     implementation: str = "official"
     evaluation_values: tuple[str, ...] = ()
@@ -155,8 +156,30 @@ PI05 = LeRobotPolicySpec(
     plan_fields=PI0.plan_fields,
 )
 
+XVLA = LeRobotPolicySpec(
+    family="xvla",
+    policy_type="xvla",
+    display_name="X-VLA",
+    config_class_path="lerobot.policies.xvla.configuration_xvla.XVLAConfig",
+    policy_class_path="lerobot.policies.xvla.modeling_xvla.XVLAPolicy",
+    config_mode="pretrained",
+    pretrained_model="lerobot/xvla-base",
+    processor_adds_batch=True,
+    # X-VLA processor 已自行执行 ImageNet normalization；避免 LeRobot 0.6.0
+    # 对缺少内存图像统计项的数据集再次覆写并触发 KeyError。
+    use_imagenet_stats=False,
+    explicit_mixed_precision=False,
+    plan_fields=(
+        ("image_resolution", "resize_imgs_with_padding"),
+        ("inference_steps", "num_denoising_steps"),
+        ("action_mode", "action_mode"),
+        ("image_views", "num_image_views"),
+    ),
+)
+
 POLICY_SPECS = {
-    spec.family: spec for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, TRAJ_VLA_QWEN, PI0, PI05)
+    spec.family: spec
+    for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, TRAJ_VLA_QWEN, PI0, PI05, XVLA)
 }
 
 
@@ -176,6 +199,7 @@ __all__ = [
     "SMOLVLA",
     "TRAJECTORY_VLA",
     "TRAJ_VLA_QWEN",
+    "XVLA",
     "LeRobotPolicySpec",
     "get_policy_spec",
 ]
