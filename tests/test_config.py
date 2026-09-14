@@ -177,6 +177,15 @@ def test_frequency_layers_must_be_integral() -> None:
         TimingConfig(physics_hz=500, control_hz=120, policy_hz=20).validate()
 
 
+def test_training_task_filters_cannot_overlap() -> None:
+    """同一任务不能同时包含和排除。"""
+    config = AppConfig()
+    config.training.include_tasks = ["pipe top"]
+    config.training.exclude_tasks = ["pipe top"]
+    with pytest.raises(ValueError, match="task filters overlap"):
+        config.validate()
+
+
 @pytest.mark.parametrize(
     ("path", "steps"),
     [

@@ -277,6 +277,19 @@ pixi run -e train train-policy \
   --training.resume=false
 ```
 
+使用 LeRobot 原生 episode 子集训练单一任务：
+
+```bash
+pixi run -e data lerobot-info --config_path=configs/smolvla.yaml
+pixi run -e train train-policy \
+  --config_path=configs/smolvla.yaml \
+  --training.include_tasks='["Weld along the circular seam around the top rim of the pipe."]'
+```
+
+`training.include_tasks` 与 `training.exclude_tasks` 精确匹配 `lerobot-info` 输出的任务名称。
+筛选先转换为 LeRobot `DatasetConfig.episodes`，再由官方 factory 对所选 episode 建立
+train/eval 划分；训练集的状态与 relative EE action 统计也会按筛选结果重算。
+
 训练日志写入 `<training.output_dir>/train.log`；W&B 默认以 offline 模式写入同目录的 `wandb/`。
 联网后使用 `wandb sync` 上传。训练中断后保持原 `training.output_dir`：
 

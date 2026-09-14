@@ -10,7 +10,14 @@ import torch
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
-from welding_path_vla.policies.data import balanced_frame_indices
+from welding_path_vla.policies import data as policy_data
+from welding_path_vla.policies.data import (
+    balanced_frame_indices,
+    dataset_task_summaries,
+    filtered_episode_indices,
+    filtered_training_stats,
+    held_out_episode_indices,
+)
 from welding_path_vla.policies.lerobot_pipeline import LeRobotPipeline
 from welding_path_vla.policies.lerobot_training import (
     apply_training_overrides,
@@ -51,6 +58,65 @@ def test_smolvla_uses_lerobot_training_config() -> None:
     assert training.batch_size == 16
     assert training.wandb.enable
     assert training.wandb.mode == "offline"
+
+
+def test_task_filter_uses_lerobot_episode_subset(monkeypatch: Any) -> None:
+    """任务名称过滤应解析为完整 episode，并在官方切分前写入 DatasetConfig。"""
+
+    class TaskTable:
+        def iterrows(self) -> Any:
+            return iter(
+                [
+                    ("Task A", SimpleNamespace(task_index=0)),
+                    ("Task B", SimpleNamespace(task_index=1)),
+                ]
+            )
+
+    meta = SimpleNamespace(
+        tasks=TaskTable(),
+        episodes=[
+            {"episode_index": 0, "tasks": ["Task A"], "length": 10},
+            {"episode_index": 1, "tasks": ["Task B"], "length": 20},
+            {"episode_index": 2, "tasks": ["Task A"], "length": 30},
+        ],
+    )
+    monkeypatch.setattr(policy_data, "metadata", lambda training: meta)
+    config = AppConfig.load("configs/smolvla.yaml")
+    training_config = replace(config.training, include_tasks=["Task A"], resume=False)
+
+    assert filtered_episode_indices(training_config) == [0, 2]
+    assert [(item.name, item.episodes, item.frames) for item in dataset_task_summaries(training_config)] == [
+        ("Task A", 2, 40),
+        ("Task B", 1, 20),
+    ]
+    train_config = make_train_config(config.policy, training_config, SMOLVLA)
+    assert train_config.dataset.episodes == [0, 2]
+    assert held_out_episode_indices(training_config, 1) == [2]
+
+
+def test_filtered_training_stats_use_only_selected_rows() -> None:
+    """单任务训练的状态和 relative action 统计不能继续使用完整数据集。"""
+    states = np.zeros((4, 13), dtype=np.float32)
+    states[:, 6] = [0.0, 0.1, 1.0, 1.1]
+    states[:, 9] = 1.0
+    actions = np.tile([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], (4, 1)).astype(
+        np.float32
+    )
+    actions[:, 0] = [0.1, 0.2, 1.1, 1.2]
+    dataset = SimpleNamespace(
+        hf_dataset={
+            "observation.state": states,
+            "action": actions,
+            "episode_index": [0, 0, 1, 1],
+        },
+        meta=SimpleNamespace(stats={}),
+    )
+    config = AppConfig.load("configs/smolvla.yaml")
+    policy = replace(config.policy, action_horizon=2, action_stride=1)
+    stats = filtered_training_stats(cast(Any, dataset), policy)
+
+    np.testing.assert_allclose(stats["observation.state"]["mean"][6], 0.55)
+    assert int(stats["action"]["count"][0]) == 4
 
 
 def test_smolvla_command_uses_pretrained_path() -> None:

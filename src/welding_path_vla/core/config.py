@@ -303,6 +303,12 @@ class QualityConfig:
 
 @dataclass(slots=True)
 class EvaluationConfig:
+    # 闭环主表只报告有效覆盖、方向一致、CTE P95 和成功率。
+    coverage_tolerance_m: float = 0.005
+    coverage_ratio_min: float = 0.90
+    coverage_bins: int = 100
+    coverage_max_step_m: float = 0.015
+    report_detailed_metrics: bool = False
     pcr_min: float = 0.95
     direction_ratio_min: float = 0.90
     tracking_band_m: float = 0.01
@@ -397,6 +403,8 @@ class TrainingConfig:
     steps: int = 100_000
     num_workers: int = 4
     video_backend: str = "torchcodec"
+    include_tasks: list[str] = field(default_factory=list)
+    exclude_tasks: list[str] = field(default_factory=list)
     eval_split: float = 0.1
     eval_steps: int = 2_000
     max_eval_samples: int = 1_000
@@ -670,6 +678,14 @@ class AppConfig:
             raise ValueError("collection counts must be positive")
         if not 0 <= self.evaluation.pcr_min <= 1:
             raise ValueError("evaluation.pcr_min must be in [0, 1]")
+        if (
+            self.evaluation.coverage_tolerance_m <= 0
+            or self.evaluation.coverage_bins < 2
+            or self.evaluation.coverage_max_step_m <= 0
+        ):
+            raise ValueError("evaluation coverage tolerance/bins/max step must be positive")
+        if not 0 <= self.evaluation.coverage_ratio_min <= 1:
+            raise ValueError("evaluation.coverage_ratio_min must be in [0, 1]")
         if not 0 <= self.evaluation.direction_ratio_min <= 1:
             raise ValueError("evaluation.direction_ratio_min must be in [0, 1]")
         if self.evaluation.tracking_band_m <= 0:
@@ -711,6 +727,9 @@ class AppConfig:
             raise ValueError("training.amp_dtype must be float16 or bfloat16")
         if self.training.wandb_mode not in {"online", "offline", "disabled"}:
             raise ValueError("training.wandb_mode must be online, offline, or disabled")
+        overlap = set(self.training.include_tasks) & set(self.training.exclude_tasks)
+        if overlap:
+            raise ValueError(f"training task filters overlap: {sorted(overlap)}")
         if (
             self.policy_evaluation.batch_size < 1
             or self.policy_evaluation.num_workers < 0
