@@ -436,6 +436,8 @@ class LeRobotExportConfig:
     """LeRobot 转换、增量写入与视频编码参数。
 
     Attributes:
+        video_passthrough: 是否直接把 raw H.264 packet 重封装进 LeRobot，跳过
+            视频解码和重编码。仅适用于项目采集的 H.264、无 B 帧 raw 视频。
         streaming_encoding: 是否边解码边编码。默认直接写入视频，避免 PNG
             落盘和二次读取；每路编码器由有界队列限制内存。
         parallel_video_encoding: 是否由 LeRobot 并行编码同一 episode 的多路相机。
@@ -452,6 +454,7 @@ class LeRobotExportConfig:
     hub_upload_attempts: int = 5
     hub_retry_wait_s: float = 30.0
     save_images: bool = False
+    video_passthrough: bool = False
     streaming_encoding: bool = True
     parallel_video_encoding: bool = True
     image_writer_processes: int = 0

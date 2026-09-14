@@ -13,9 +13,11 @@ from sys import platform
 from time import sleep
 from typing import Any
 
+import av
 import cv2
 import httpx
 import numpy as np
+from lerobot.datasets.compute_stats import RunningQuantileStats
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from tqdm import tqdm
 
@@ -191,6 +193,24 @@ def write_manifest(destination: Path, manifest: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def select_video_storage(
+    manifest: dict[str, Any], options: LeRobotExportConfig, existing_count: int
+) -> None:
+    if options.video_passthrough and options.save_images:
+        raise ValueError("video_passthrough and save_images cannot both be enabled")
+    recorded = manifest.get("video_storage", {}).get("mode")
+    if options.save_images:
+        requested = "images"
+    else:
+        requested = "h264_passthrough" if options.video_passthrough else "encoded"
+
+    if recorded is not None and recorded != requested:
+        raise ValueError(f"目标数据集视频模式为 {recorded}, 不能用 {requested} 模式继续写入")
+    if existing_count and recorded is None and options.video_passthrough:
+        raise ValueError("旧目标数据集没有 passthrough 标记, 不能安全追加 H.264 packet")
+    manifest.setdefault("video_storage", {"mode": requested})
+
+
 def features(camera: dict[str, Any], save_images: bool) -> dict[str, dict[str, object]]:
     """创建视频或图片模式的 LeRobot feature schema。"""
     visual_dtype = "image" if save_images else "video"
@@ -301,6 +321,145 @@ def video_frame_pairs(path: Path, count: int) -> Iterator[tuple[np.ndarray, np.n
             capture.release()
 
 
+def remux_h264_frames(source: Path, destination: Path, frame_count: int, fps: int) -> None:
+    """把 H.264 的前 N 个 packet 原样重封装为独立 MP4。
+
+    Args:
+        source: raw episode 中的相机 MP4。
+        destination: 交给 LeRobot writer 的临时 MP4。
+        frame_count: 与动作对齐的目标帧数；raw 末尾状态帧不会写入。
+        fps: 数据集策略频率，用于校验视频时间基。
+
+    Raises:
+        ValueError: 输入不是项目 passthrough 契约要求的 H.264、无 B 帧视频，
+            或 packet 数不足。
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    presentation_ordered = True
+    with av.open(str(source), "r") as input_video:
+        stream = input_video.streams.video[0]
+        if stream.codec_context.codec.canonical_name != "h264":
+            raise ValueError(f"video_passthrough requires H.264 input: {source}")
+        if stream.base_rate is None or int(stream.base_rate) != fps:
+            raise ValueError(
+                f"video fps={stream.base_rate} does not match dataset fps={fps}: {source}"
+            )
+
+        with av.open(str(destination), "w", options={"movflags": "faststart"}) as output_video:
+            output_stream = output_video.add_stream_from_template(stream, opaque=True)
+            output_stream.time_base = stream.time_base
+            previous_pts = None
+            for packet in input_video.demux(stream):
+                # 跳过没有解码时间戳的 packet，通常是 flush 包或无效包。
+                if packet.dts is None:
+                    continue
+                if written == frame_count:
+                    break
+                reordered = (
+                    packet.pts is not None
+                    and previous_pts is not None
+                    and packet.pts <= previous_pts
+                )
+                if reordered:
+                    presentation_ordered = False
+                previous_pts = packet.pts
+                packet.stream = output_stream
+                output_video.mux(packet)
+                written += 1
+    if not presentation_ordered:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"video_passthrough requires H.264 without B-frames: {source}")
+    if written != frame_count:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"video has only {written}/{frame_count} packets: {source}")
+
+
+class PassthroughEpisodeEncoder:
+    """把已重封装的视频接入 LeRobot streaming writer 的轻量适配器。"""
+
+    def __init__(self, videos: dict[str, Path]) -> None:
+        self.videos = videos
+
+    def finish_episode(self) -> dict[str, tuple[Path, None]]:
+        """返回 LeRobot 所需的临时视频及空视觉统计。"""
+        return {key: (path, None) for key, path in self.videos.items()}
+
+    def cancel_episode(self) -> None:
+        """兼容 LeRobot 清理接口；文件由 writer 或调用方清理。"""
+
+    def close(self) -> None:
+        """passthrough 没有常驻编码线程需要关闭。"""
+
+
+def passthrough_episode_buffer(
+    dataset: Any,
+    episode: EpisodeReader,
+    states: np.ndarray,
+    actions: np.ndarray,
+    task_values: dict[str, Any],
+) -> dict[str, Any]:
+    """直接构造 LeRobot episode buffer，避免为视频调用逐帧接口。"""
+    writer = dataset.writer
+    count = episode.action_count
+    buffer = writer._create_episode_buffer()
+    buffer["size"] = count
+    buffer["task"] = [episode.metadata["instruction"]] * count
+    buffer["frame_index"] = list(range(count))
+    buffer["timestamp"] = [index / dataset.meta.fps for index in range(count)]
+    # 视频列不填真实帧，而是用 None 占位。
+    # 因为视频不会走逐帧编码，而是由 PassthroughEpisodeEncoder 直接提供 MP4 文件。
+    buffer[GLOBAL_IMAGE] = [None] * count
+    buffer[WRIST_IMAGE] = [None] * count
+    buffer["observation.state"] = list(states)
+    buffer["action"] = list(actions)
+    for key, value in task_values.items():
+        buffer[key] = [value] * count
+    return buffer
+
+
+def add_passthrough_episode(
+    dataset: Any,
+    episode: EpisodeReader,
+    states: np.ndarray,
+    actions: np.ndarray,
+    task_values: dict[str, Any],
+) -> None:
+    """不解码像素，把 raw H.264 packet 接入 LeRobot 的数据与元数据写入流程。"""
+    episode_index = dataset.meta.total_episodes
+    # 为当前 episode 创建两个临时输出路径
+    videos = {
+        key: dataset.root / f".passthrough-{episode_index:06d}-{name}" / "episode.mp4"
+        for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))
+    }
+    # 重封装两个相机视频
+    try:
+        for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE)):
+            remux_h264_frames(
+                episode.path / f"{name}.mp4",
+                videos[key],
+                episode.action_count,
+                dataset.meta.fps,
+            )
+        # 临时替换 LeRobot writer 的 encoder
+        writer = dataset.writer
+        previous_encoder = writer._streaming_encoder
+        writer._streaming_encoder = PassthroughEpisodeEncoder(videos)
+        try:
+            dataset.save_episode(
+                passthrough_episode_buffer(dataset, episode, states, actions, task_values),
+                parallel_encoding=False,  # 禁用并行编码，因为这里不需要编码，视频已经准备好。
+            )
+
+        finally:
+            writer._streaming_encoder = previous_encoder
+    finally:
+        for path in videos.values():
+            path.unlink(missing_ok=True)
+            if path.parent.exists():
+                path.parent.rmdir()
+
+
 def release_encoder_memory() -> None:
     """回收编码线程释放但 glibc 仍保留的原生堆内存。
 
@@ -333,6 +492,9 @@ def add_episode(
     action_source = episode.metadata["resolved_config"]["policy"]["action_source"]
     actions = build_absolute_actions(episode, source=action_source)
     task_values = task_feature_values(episode.metadata)
+    if options.video_passthrough:
+        add_passthrough_episode(dataset, episode, states, actions, task_values)
+        return
     frames = tqdm(
         video_frame_pairs(episode.path, count),
         total=count,
@@ -372,7 +534,7 @@ def remove_video_image_tree(destination: Path) -> None:
 
 
 def update_episode_stats(
-    statistics: Any,
+    statistics: RunningQuantileStats,
     actions: list[list[float]],
     states: list[list[float]],
     action_horizon: int,
@@ -403,7 +565,6 @@ def recompute_relative_action_stats(
 ) -> None:
     """按训练时的共享锚点定义重算 action normalization statistics。"""
     import pyarrow.dataset as arrow_dataset
-    from lerobot.datasets.compute_stats import RunningQuantileStats
 
     files = sorted((destination / "data").rglob("*.parquet"))
     parquet = arrow_dataset.dataset([str(path) for path in files], format="parquet")
@@ -470,6 +631,7 @@ def export_lerobot(
         action_horizon,
         action_stride,
     )
+    select_video_storage(manifest, options, existing_count)
     exported_names = set(manifest["sources"].get(source, []))
     pending = [path for path in selected if path.name not in exported_names]
     if not pending:
