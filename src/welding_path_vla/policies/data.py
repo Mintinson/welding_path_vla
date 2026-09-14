@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Generator, cast
 
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
@@ -48,6 +50,17 @@ class PolicyDataReport:
     action_stride: int
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetTaskSummary:
+    """LeRobot metadata 中一个语言任务的数据规模。"""
+
+    task_index: int
+    name: str
+    episodes: int
+    frames: int
+    episode_indices: tuple[int, ...]
+
+
 def metadata(training: TrainingConfig) -> LeRobotDatasetMetadata:
     """用 LeRobot 官方元数据读取器打开本地数据集。
 
@@ -60,6 +73,50 @@ def metadata(training: TrainingConfig) -> LeRobotDatasetMetadata:
     if not training.dataset_repo_id or not training.dataset_root:
         raise ValueError("training requires dataset_repo_id and dataset_root")
     return LeRobotDatasetMetadata(training.dataset_repo_id, root=training.dataset_root)
+
+
+def dataset_task_summaries(training: TrainingConfig) -> list[DatasetTaskSummary]:
+    """只读取 metadata，按任务汇总 episode 和帧数。"""
+    meta = metadata(training)
+    indices = {str(name): int(row.task_index) for name, row in meta.tasks.iterrows()}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for raw_episode in meta.episodes:
+        episode = cast(dict[str, Any], raw_episode)
+        task = str(episode["tasks"][0]) if episode["tasks"] else ""
+        grouped.setdefault(task, []).append(episode)
+    return [
+        DatasetTaskSummary(
+            indices[name],
+            name,
+            len(episodes),
+            sum(int(episode["length"]) for episode in episodes),
+            tuple(int(episode["episode_index"]) for episode in episodes),
+        )
+        for name, episodes in grouped.items()
+    ]
+
+
+def filtered_episode_indices(training: TrainingConfig) -> list[int] | None:
+    """把任务名称过滤器解析为 LeRobot 原生 episode 子集。"""
+    if not training.include_tasks and not training.exclude_tasks:
+        return None
+    summaries = dataset_task_summaries(training)
+    available = {summary.name for summary in summaries}
+    requested = set(training.include_tasks) | set(training.exclude_tasks)
+    unknown = sorted(requested - available)
+    if unknown:
+        raise ValueError(f"unknown LeRobot tasks: {unknown}; available={sorted(available)}")
+    selected = set(training.include_tasks) if training.include_tasks else available
+    selected -= set(training.exclude_tasks)
+    episodes = [
+        episode
+        for summary in summaries
+        if summary.name in selected
+        for episode in summary.episode_indices
+    ]
+    if not episodes:
+        raise ValueError("training task filters selected no episodes")
+    return sorted(episodes)
 
 
 def validate_dataset(training: TrainingConfig, policy: PolicyConfig) -> PolicyDataReport:
@@ -98,12 +155,19 @@ def validate_dataset(training: TrainingConfig, policy: PolicyConfig) -> PolicyDa
     )
     if actual != expected:
         raise ValueError(f"动作契约不匹配: policy={expected}, dataset={actual}")
-    tasks = len(meta.tasks)
+    selected = filtered_episode_indices(training)
+    selected_set = set(selected) if selected is not None else None
+    episodes = [
+        cast(dict[str, Any], episode)
+        for episode in meta.episodes
+        if selected_set is None or int(episode["episode_index"]) in selected_set
+    ]
+    tasks = len({episode["tasks"][0] for episode in episodes if episode["tasks"]})
     if tasks < 1:
         raise ValueError("policy dataset must contain at least one task")
     return PolicyDataReport(
-        meta.total_episodes,
-        meta.total_frames,
+        len(episodes),
+        sum(int(episode["length"]) for episode in episodes),
         meta.fps,
         state_dimension,
         action_dimension,
@@ -126,13 +190,17 @@ def held_out_episode_indices(training: TrainingConfig, count: int) -> list[int]:
         按 episode 索引排序的留出集；任务数不整除时，前面的任务多取一条。
     """
     meta = metadata(training)
+    selected = filtered_episode_indices(training)
+    selected_set = set(selected) if selected is not None else None
     groups: dict[str, list[int]] = {}
     for raw_episode in meta.episodes:
         episode = cast(dict[str, Any], raw_episode)
+        if selected_set is not None and int(episode["episode_index"]) not in selected_set:
+            continue
         tasks = episode["tasks"]
         task = tasks[0] if tasks else ""
         groups.setdefault(task, []).append(int(episode["episode_index"]))
-    count = min(count, meta.total_episodes)
+    count = min(count, sum(len(episodes) for episodes in groups.values()))
     base, remainder = divmod(count, len(groups))
     selected: list[int] = []
     for index, episodes in enumerate(groups.values()):
@@ -188,6 +256,66 @@ def make_dataset(
     )
 
 
+def filtered_training_stats(dataset: LeRobotDataset, policy: PolicyConfig) -> dict[str, Any]:
+    """用筛选后的训练 episode 重算状态和 relative EE action 统计。"""
+    from lerobot.datasets.compute_stats import RunningQuantileStats, get_feature_stats
+
+    from welding_path_vla.core.geometry import relative_ee_actions_from_absolute
+
+    states = np.asarray(dataset.hf_dataset["observation.state"], dtype=np.float32)
+    actions = np.asarray(dataset.hf_dataset["action"], dtype=np.float32)
+    episode_indices = np.asarray(dataset.hf_dataset["episode_index"])
+    stats = deepcopy(dataset.meta.stats)
+    stats["observation.state"] = get_feature_stats(states, axis=0, keepdims=False)
+
+    # 动作统计容器
+    action_stats = RunningQuantileStats()
+    offsets = np.arange(policy.action_horizon) * policy.action_stride
+    sampled = False
+    for episode in np.unique(episode_indices):
+        # 该 episode 所有帧在全局数据集中的行索引
+        rows = np.flatnonzero(episode_indices == episode)
+        sample_count = len(rows) - int(offsets[-1])
+        for start in range(0, max(sample_count, 0), 1024):
+            starts = np.arange(start, min(start + 1024, sample_count))
+            chunks = actions[rows[starts[:, None] + offsets]]
+            relative = relative_ee_actions_from_absolute(
+                chunks,
+                states[rows[starts], 6:9],
+                states[rows[starts], 9:13],
+            )
+            action_stats.update(relative.reshape(-1, actions.shape[1]))
+            sampled = True
+    if not sampled:
+        raise ValueError("filtered training episodes contain no complete action chunks")
+    stats["action"] = action_stats.get_statistics()
+    return stats
+
+
+@contextmanager
+def lerobot_task_filter(policy: PolicyConfig) -> Generator[None, None, None]:
+    """保留 LeRobot 数据集工厂，只为 episode 子集提供训练集统计。"""
+    from lerobot.scripts import lerobot_train
+
+    make_datasets = lerobot_train.make_train_eval_datasets
+
+    def make_filtered_datasets(config: Any) -> tuple[Any, Any]:
+        train_dataset, eval_dataset = make_datasets(config)
+        if config.dataset.episodes is None:
+            return train_dataset, eval_dataset
+        stats = filtered_training_stats(train_dataset, policy)
+        train_dataset.meta.stats = stats
+        if eval_dataset is not None:
+            eval_dataset.meta.stats = deepcopy(stats)
+        return train_dataset, eval_dataset
+
+    lerobot_train.make_train_eval_datasets = make_filtered_datasets
+    try:
+        yield
+    finally:
+        lerobot_train.make_train_eval_datasets = make_datasets
+
+
 def scale_uint8_images(batch: dict[str, Any]) -> dict[str, Any]:
     """把 LeRobot 的 uint8 RGB 转为策略 processor 使用的 ``[0, 1]``。"""
     import torch
@@ -202,9 +330,14 @@ def scale_uint8_images(batch: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CAMERA_KEYS",
+    "DatasetTaskSummary",
     "PolicyDataReport",
     "balanced_frame_indices",
+    "dataset_task_summaries",
+    "filtered_episode_indices",
+    "filtered_training_stats",
     "held_out_episode_indices",
+    "lerobot_task_filter",
     "make_dataset",
     "metadata",
     "scale_uint8_images",
