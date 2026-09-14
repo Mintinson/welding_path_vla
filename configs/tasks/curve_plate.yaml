@@ -14,8 +14,7 @@ task:
   approach_speed_mps: 0.06
   speed_mps: 0.02
   retreat_speed_mps: 0.04
-  # 整段保持起点姿态，任务只考察曲线位置执行能力。
-  orientation_follow_ratio: 0.0
+  orientation_follow_ratio: 1.0
   work_angle_deg: 0.0
   travel_angle_deg: 0.0
   tool_roll_deg: -20.0
@@ -26,17 +25,18 @@ task:
   tcp_clearance_m: 0.002
 
 randomization:
-  xy_m: 0.03
+  xy_m: 0.2
   yaw_deg: 10.0
   curve_amplitude_range_m: 0.010
   curve_frequency_range: 0.5
   cosine_probability: 0.5
   speed_range_mps: 0.01
-  # 防止几何曲线变化同时引入姿态变化这一混杂因素。
+  # 平板法向固定，完整跟随只改变切向对应的焊枪滚转。
   work_angle_range_deg: 0.0
   travel_angle_range_deg: 0.0
   tool_roll_range_deg: 0.0
   orientation_follow_range: 0.0
+  reverse_probability: 0.5
 
 collection:
   dataset_root: datasets/weldpath_curve_plate_raw_v2

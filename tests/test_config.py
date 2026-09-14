@@ -19,7 +19,8 @@ def test_default_config_is_valid() -> None:
     assert config.task.seam_id == "straight_fillet"
     assert config.randomization.joint_degs == [60, 20, 20, 30, 60, 60]
     assert config.randomization.initial_joint1_range_deg == [30, 150]
-    assert config.randomization.reverse_probability == 0
+    assert config.randomization.reverse_probability == pytest.approx(0.5)
+    assert config.randomization.xy_m == pytest.approx(0.2)
     assert config.policy.family == "smolvla"
     assert config.policy.action_source == "safe_command"
     assert not config.real_robot.enabled
@@ -50,7 +51,7 @@ def test_pipe_configs_select_matching_workpiece_and_seam(path: str, seam_id: str
     assert config.task.approach_speed_mps > config.task.speed_mps
     if seam_id == "pipe_top":
         assert config.task.arc_sweep_deg == 360
-        assert config.task.orientation_follow_ratio == 0
+        assert config.task.orientation_follow_ratio == 1
 
 
 def test_pipe_bottom_keeps_bidirectional_low_speed_welding() -> None:
@@ -74,13 +75,13 @@ def test_pipe_top_keeps_bidirectional_moderate_speed_welding() -> None:
     assert config.task.speed_mps + config.randomization.speed_range_mps == pytest.approx(0.02)
 
 
-def test_curve_plate_config_selects_fixed_orientation_curve_task() -> None:
-    """曲线平板入口应同时选定工件、焊缝和固定姿态约束。"""
+def test_curve_plate_config_selects_full_orientation_curve_task() -> None:
+    """曲线平板入口应同时选定工件、焊缝和完整姿态跟随。"""
     config = AppConfig.load("configs/curve_plate.yaml")
     assert config.workpiece.kind == "curve_plate"
     assert config.task.seam_id == "curve_seam"
     assert config.task.curve_kind == "sine"
-    assert config.task.orientation_follow_ratio == 0
+    assert config.task.orientation_follow_ratio == 1
     assert config.collection.dataset_root.endswith("weldpath_curve_plate_raw_v2")
 
 
@@ -99,9 +100,33 @@ def test_trihedral_horizontal_config_selects_continuous_pair() -> None:
     config = AppConfig.load("configs/trihedral_horizontal.yaml")
     assert config.workpiece.kind == "trihedral_corner"
     assert config.task.seam_id == "horizontal_pair"
+    assert config.task.speed_mps - config.randomization.speed_range_mps == pytest.approx(0.006)
+    assert config.task.speed_mps + config.randomization.speed_range_mps == pytest.approx(0.007)
     assert config.task.direction == "forward"
     assert config.randomization.seam_length_range_m == 0.010
     assert config.collection.dataset_root.endswith("weldpath_trihedral_horizontal_raw_v2")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
+        "configs/trihedral_vertical.yaml",
+    ],
+)
+def test_collection_randomizes_only_welding_speed_and_keeps_full_orientation(path: str) -> None:
+    """所有工件固定接近/退出速度和完整姿态跟随，仅随机焊接速度。"""
+    config = AppConfig.load(path)
+    assert config.task.orientation_follow_ratio == 1
+    assert config.randomization.orientation_follow_range == 0
+    assert config.randomization.approach_speed_range_mps == 0
+    assert config.randomization.retreat_speed_range_mps == 0
+    assert config.randomization.reverse_probability == pytest.approx(0.5)
+    assert config.randomization.xy_m == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize(

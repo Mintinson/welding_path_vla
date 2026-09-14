@@ -25,6 +25,8 @@ SEAM_PENDING_RGBA = np.array([0.005, 0.005, 0.005, 1.0])
 SEAM_WELDED_RGBA = np.array([1.0, 1.0, 1.0, 1.0])
 SEAM_VISUAL_RADIUS_M = 0.0025
 SEAM_VISUAL_SEGMENT_M = 0.005
+WORKPIECE_TEXTURE = "workpiece_metal_texture"
+WORKPIECE_MATERIAL = "workpiece_metal_material"
 
 
 def append_geom_pair(body: ET.Element, attributes: dict[str, str]) -> None:
@@ -45,6 +47,7 @@ def append_geom_pair(body: ET.Element, attributes: dict[str, str]) -> None:
     visual.set("conaffinity", "0")
     visual.set("mass", "1e-8")
     visual.set("rgba", attributes.get("rgba", PLATE_RGBA))
+    visual.set("material", WORKPIECE_MATERIAL)
     body.append(visual)
 
 
@@ -96,6 +99,32 @@ class WorkpieceObject(MujocoObject):
         self.config = config
         self._name = "workpiece"
         self.weld_visual_names: list[str] = []
+        ET.SubElement(
+            self.asset,
+            "texture",
+            {
+                "name": WORKPIECE_TEXTURE,
+                "type": "2d",
+                "builtin": "checker",
+                "width": "128",
+                "height": "128",
+                "rgb1": "0.92 0.92 0.92",
+                "rgb2": "1 1 1",
+            },
+        )
+        ET.SubElement(
+            self.asset,
+            "material",
+            {
+                "name": WORKPIECE_MATERIAL,
+                "texture": WORKPIECE_TEXTURE,
+                "texrepeat": "6 6",
+                "texuniform": "true",
+                "specular": "0.35",
+                "shininess": "0.35",
+                "reflectance": "0.08",
+            },
+        )
         builders = {
             "l_joint": self.build_l_joint,
             "pipe_on_plate": self.build_pipe_on_plate,
@@ -352,7 +381,9 @@ class WorkpieceObject(MujocoObject):
         """
         task = task or self.config.task
         workpiece = self.config.workpiece
-        work_angle = np.radians(task.work_angle_deg)
+        # reverse 中 work angle 的符号只负责补偿有向切向；工件上的物理 TCP
+        # 净空和焊接侧必须与正向一致，因此几何位置使用角度绝对值。
+        work_angle = np.radians(abs(task.work_angle_deg))
         if workpiece.kind == "l_joint":
             half_thickness = workpiece.l_joint_thickness_m / 2
             normal_local = np.array([np.sin(work_angle), 0, np.cos(work_angle)])
@@ -368,6 +399,7 @@ class WorkpieceObject(MujocoObject):
                 position + rotation @ start_local,
                 position + rotation @ end_local,
                 rotation @ normal_local,
+                rotation @ np.array([0.0, 0.0, 1.0]),
             )
 
         if workpiece.kind == "curve_plate":
@@ -407,8 +439,13 @@ class WorkpieceObject(MujocoObject):
             }
             normals = {
                 "vertical_corner": np.array([np.cos(work_angle), np.sin(work_angle), 0.0]),
-                "floor_x": np.array([0.0, np.sin(work_angle), np.cos(work_angle)]),
+                "floor_x": np.array([0.0, -np.sin(work_angle), np.cos(work_angle)]),
                 "floor_y": np.array([np.sin(work_angle), 0.0, np.cos(work_angle)]),
+            }
+            work_references = {
+                "vertical_corner": np.array([1.0, 0.0, 0.0]),
+                "floor_x": np.array([0.0, 0.0, 1.0]),
+                "floor_y": np.array([0.0, 0.0, 1.0]),
             }
             direction = directions[task.seam_id]
             normal_local = normals[task.seam_id]
@@ -425,6 +462,7 @@ class WorkpieceObject(MujocoObject):
                 position + rotation @ start_local,
                 position + rotation @ end_local,
                 rotation @ normal_local,
+                rotation @ work_references[task.seam_id],
             )
 
         plate_half_height = workpiece.pipe_plate_size_m[2] / 2

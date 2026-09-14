@@ -18,6 +18,10 @@ class StagingPoseError(RuntimeError):
     """IK 求解失败或预置位姿发生碰撞。"""
 
 
+class TaskSamplingError(RuntimeError):
+    """Raised when no reachable collision-free staging scene can be sampled."""
+
+
 class TrajectoryPlanningError(RuntimeError):
     """完整参考轨迹不存在连续、可达且无碰撞的关节解。"""
 
@@ -55,12 +59,17 @@ class TrajectorySample:
     initial_tcp_offset_applied: bool
 
 
-def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig:
+def sample_task_config(
+    config: AppConfig,
+    rng: np.random.Generator,
+    direction: str | None = None,
+) -> AppConfig:
     """采样一组经过量化的任务参数。
 
     姿态参数围绕 YAML 标称值均匀变化。圆管反向执行时同时把起点移动到
     同一几何圆弧的另一端，因此方向变化不会意外改变所覆盖的焊缝区域。
-    角度取整到度，速度保留三位小数，姿态跟随比例保留两位小数。
+    角度取整到度，焊接速度保留三位小数。接近、退出速度和姿态跟随比例
+    固定为 YAML 标称值，避免把与策略输入无关的变量混入数据分布。
 
     Args:
         config: 只读的实验基准配置。
@@ -105,27 +114,15 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
         config.task.travel_angle_deg, randomization.travel_angle_range_deg
     )
     task.tool_roll_deg = sample_angle(config.task.tool_roll_deg, randomization.tool_roll_range_deg)
-    task.orientation_follow_ratio = sample_value(
-        config.task.orientation_follow_ratio, randomization.orientation_follow_range, 2, 0.0, 1.0
-    )
-    task.approach_speed_mps = sample_value(
-        config.task.approach_speed_mps,
-        randomization.approach_speed_range_mps,
-        3,
-        0.001,
-    )
+    task.orientation_follow_ratio = 1.0
+    task.approach_speed_mps = config.task.approach_speed_mps
     task.speed_mps = sample_value(
         config.task.speed_mps,
         randomization.speed_range_mps,
         3,
         0.001,
     )
-    task.retreat_speed_mps = sample_value(
-        config.task.retreat_speed_mps,
-        randomization.retreat_speed_range_mps,
-        3,
-        0.001,
-    )
+    task.retreat_speed_mps = config.task.retreat_speed_mps
 
     if sampled.workpiece.kind == "trihedral_corner":
         size_fields = (
@@ -153,7 +150,11 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
             seam_limit,
         )
 
-    if randomization.reverse_probability > 0:
+    if direction is not None:
+        if direction not in {"forward", "reverse"}:
+            raise ValueError(f"unsupported task direction: {direction}")
+        task.direction = direction
+    elif randomization.reverse_probability > 0:
         task.direction = (
             "reverse" if rng.random() < randomization.reverse_probability else "forward"
         )
@@ -169,14 +170,9 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
             config.task.arc_start_deg,
             randomization.arc_start_range_deg,
         )
-        task.arc_start_deg = round(
+        task.arc_start_deg = wrap_angle(
             geometric_start + task.arc_sweep_deg if task.direction == "reverse" else geometric_start
         )
-        if task.direction == "reverse":
-            # 切向反转会让局部 XY 轴绕焊枪 Z 轴翻转 180°。同步反转行走角并
-            # 补偿滚转角，可让上下圆缝都保持物理焊枪姿态，只改变执行方向。
-            task.travel_angle_deg = -task.travel_angle_deg
-            task.tool_roll_deg = wrap_angle(task.tool_roll_deg - 180)
     if sampled.workpiece.kind == "curve_plate":
         task.curve_amplitude_m = sample_value(
             config.task.curve_amplitude_m,
@@ -193,7 +189,39 @@ def sample_task_config(config: AppConfig, rng: np.random.Generator) -> AppConfig
             3.0,
         )
         task.curve_kind = "cosine" if rng.random() < randomization.cosine_probability else "sine"
+    if task.direction == "reverse":
+        # 有向切向反转后，同时补偿 work、travel 和 roll，才能让反向任务在
+        # 每个几何点保持与正向完全相同的物理焊枪姿态。
+        task.work_angle_deg = -task.work_angle_deg
+        task.travel_angle_deg = -task.travel_angle_deg
+        task.tool_roll_deg = wrap_angle(task.tool_roll_deg - 180)
     return sampled
+
+
+def sample_grouped_task_config(
+    config: AppConfig,
+    episode_index: int,
+    seed: int,
+    group_size: int,
+    balance_directions: bool = False,
+) -> AppConfig:
+    """按给定种子和分组大小采样任务参数。
+
+    Args:
+        config: 只读的任务基准配置。
+        episode_index: 当前流程内的 episode 编号。
+        seed: 任务参数随机流的基础种子。
+        group_size: 连续共享一组参数的 episode 数。
+        balance_directions: 启用后，相邻组交替覆盖 forward/reverse。
+
+    Returns:
+        本组 episode 共用的任务配置。
+    """
+    group = episode_index // group_size
+    direction = None
+    if balance_directions and config.randomization.reverse_probability > 0:
+        direction = "reverse" if group % 2 else "forward"
+    return sample_task_config(config, np.random.default_rng(seed + group), direction)
 
 
 def sample_episode_task_config(config: AppConfig, episode_index: int) -> AppConfig:
@@ -206,9 +234,12 @@ def sample_episode_task_config(config: AppConfig, episode_index: int) -> AppConf
     Returns:
         同一组内完全一致、不同组间可复现变化的任务配置。
     """
-    group = episode_index // config.randomization.task_group_size
-    rng = np.random.default_rng(config.collection.seed + group)
-    return sample_task_config(config, rng)
+    return sample_grouped_task_config(
+        config,
+        episode_index,
+        config.collection.seed,
+        config.randomization.task_group_size,
+    )
 
 
 def stage_for_task(
@@ -217,7 +248,8 @@ def stage_for_task(
 ) -> tuple[SeamPath, float]:
     """求解无碰撞预置位姿并返回焊缝几何。"""
     seam = simulation.active_seam()
-    draft = ExpertTrajectory(config, simulation.tcp_pose(), seam)
+    # staging 只使用预接近关键位姿，不应为每次拒绝采样重复离散数千帧轨迹。
+    draft = ExpertTrajectory(config, simulation.tcp_pose(), seam, build_frames=False)
     solution, residual = simulation.solve_ik(Pose(draft.above_pre, draft.welding_quaternion))
     if residual > 0.005:
         raise StagingPoseError(f"cannot solve collision-free staging pose: residual={residual:.6f}")
@@ -248,7 +280,7 @@ def sample_collision_free_task(
             last_error = error
             continue
         return seam, residual, attempt
-    raise RuntimeError(
+    raise TaskSamplingError(
         "cannot sample a reachable, collision-free task after "
         f"{config.randomization.max_sampling_attempts} attempts: {last_error}"
     ) from last_error
@@ -382,6 +414,7 @@ __all__ = [
     "sample_collision_free_task",
     "sample_episode_task_config",
     "sample_feasible_trajectory",
+    "sample_grouped_task_config",
     "sample_initial_tcp_offset",
     "sample_task_config",
     "stage_for_task",

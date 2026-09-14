@@ -23,10 +23,10 @@ task:
   tcp_clearance_m: 0.0015
 
 randomization:
+  xy_m: 0.2
   # L 型工件使用旧数据验证过的宽关节范围，增加不同轴 1 初始构型的覆盖。
   joint_degs: [60, 20, 20, 30, 60, 60]
-  # 当前反向焊枪姿态超出 Elfin5-Pro 可达范围，避免整组 staging IK 连续失败。
-  reverse_probability: 0.0
+  reverse_probability: 0.5
 
 collection:
   dataset_root: datasets/weldpath_raw_v2

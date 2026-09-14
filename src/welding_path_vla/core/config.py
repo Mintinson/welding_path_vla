@@ -211,6 +211,8 @@ class RandomizationConfig:
         xy_m: 工件在桌面 XY 方向的最大平移。
         z_m: 工件沿 Z 方向的最大平移。
         yaw_deg: 工件偏航角的最大变化。
+        trihedral_camera_margin_deg: 三面角开口内的相机视线与任一立板的最小
+            水平夹角；三面角 yaw 围绕朝向全局相机的开口角平分线采样。
         joint_degs: 六个关节相对 staging 构型的最大变化。
         initial_joint1_range_deg: 初始轴 1 的绝对均匀采样范围。
         max_sampling_attempts: 不可达或碰撞时的最大重采样次数。
@@ -221,7 +223,7 @@ class RandomizationConfig:
         work_angle_range_deg: 工作角相对任务标称值的采样半径。
         travel_angle_range_deg: 行走角相对任务标称值的采样半径。
         tool_roll_range_deg: 工具滚转角相对任务标称值的采样半径。
-        orientation_follow_range: 姿态跟随比例相对标称值的采样半径。
+        orientation_follow_range: 已弃用；姿态跟随比例固定为 1.0。
         arc_start_range_deg: 圆弧几何起点相对标称值的采样半径。
         arc_sweep_range_deg: 圆弧扫掠角相对标称值的采样半径。
         approach_speed_range_mps: 接近速度相对标称值的采样半径。
@@ -234,11 +236,19 @@ class RandomizationConfig:
         cosine_probability: 将平板焊缝采样为余弦曲线的概率。
         reverse_probability: 将任务采样为反向执行的概率。
         task_group_size: 连续多少个 episode 编号共享一组任务参数。
+        workpiece_color_jitter: 工件金属基色的最大相关扰动。
+        workpiece_finish_jitter: 工件表面明暗纹理的最大局部扰动。
+        lighting_intensity_range: 场景灯光强度乘数的均匀采样范围。
+        lighting_count_range: 每个 episode 启用的场景顶灯数量范围。
+        lighting_azimuth_range_deg: 顶灯方向相对标称方位角的采样半径。
+        lighting_elevation_range_deg: 顶灯方向相对标称俯角的采样半径。
+        background_color_jitter: 桌面和地面中性色的最大扰动。
     """
 
     xy_m: float = 0.05
     z_m: float = 0.0
     yaw_deg: float = 15.0
+    trihedral_camera_margin_deg: float = 20.0
     joint_degs: list[float] = field(default_factory=lambda: [40.0, 20.0, 10.0, 15.0, 25.0, 30.0])
     initial_joint1_range_deg: list[float] = field(default_factory=lambda: [30.0, 150.0])
     max_sampling_attempts: int = 10
@@ -262,6 +272,13 @@ class RandomizationConfig:
     cosine_probability: float = 0.5
     reverse_probability: float = 0.5
     task_group_size: int = 10
+    workpiece_color_jitter: float = 0.10
+    workpiece_finish_jitter: float = 0.06
+    lighting_intensity_range: list[float] = field(default_factory=lambda: [0.75, 1.25])
+    lighting_count_range: list[int] = field(default_factory=lambda: [1, 2])
+    lighting_azimuth_range_deg: float = 30.0
+    lighting_elevation_range_deg: float = 10.0
+    background_color_jitter: float = 0.08
 
 
 @dataclass(slots=True)
@@ -600,6 +617,8 @@ class AppConfig:
             raise ValueError("reverse_probability must be in [0, 1]")
         if not 0 <= self.randomization.cosine_probability <= 1:
             raise ValueError("cosine_probability must be in [0, 1]")
+        if not 0 < self.randomization.trihedral_camera_margin_deg < 45:
+            raise ValueError("trihedral_camera_margin_deg must be in (0, 45)")
         task_randomization_ranges = (
             self.randomization.work_angle_range_deg,
             self.randomization.travel_angle_range_deg,
@@ -617,6 +636,23 @@ class AppConfig:
         )
         if any(value < 0 for value in task_randomization_ranges):
             raise ValueError("task randomization ranges must be non-negative")
+        appearance_ranges = (
+            self.randomization.workpiece_color_jitter,
+            self.randomization.workpiece_finish_jitter,
+            self.randomization.background_color_jitter,
+        )
+        if any(not 0 <= value <= 0.25 for value in appearance_ranges):
+            raise ValueError("appearance color jitter must be in [0, 0.25]")
+        lighting = self.randomization.lighting_intensity_range
+        if len(lighting) != 2 or lighting[0] <= 0 or lighting[0] > lighting[1]:
+            raise ValueError("lighting_intensity_range must contain two increasing positive values")
+        light_count = self.randomization.lighting_count_range
+        if len(light_count) != 2 or light_count[0] < 1 or light_count[0] > light_count[1]:
+            raise ValueError("lighting_count_range must contain two increasing positive values")
+        if not 0 <= self.randomization.lighting_azimuth_range_deg <= 180:
+            raise ValueError("lighting_azimuth_range_deg must be in [0, 180]")
+        if not 0 <= self.randomization.lighting_elevation_range_deg <= 89:
+            raise ValueError("lighting_elevation_range_deg must be in [0, 89]")
         if len(self.randomization.joint_degs) != 6 or any(
             value < 0 for value in self.randomization.joint_degs
         ):

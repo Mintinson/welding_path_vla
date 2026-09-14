@@ -1,9 +1,10 @@
 workpiece:
   kind: trihedral_corner
   # 三块板分别使用 XYZ 全尺寸；薄边对应各自法向轴。
-  trihedral_floor_size_m: [0.23, 0.21, 0.005]
-  trihedral_wall_x_size_m: [0.005, 0.19, 0.17]
-  trihedral_wall_y_size_m: [0.22, 0.005, 0.16]
+  # 紧凑板件减少有效焊缝以外的空白；保留 5 mm 板厚和原有焊接路径。
+  trihedral_floor_size_m: [0.18, 0.17, 0.005]
+  trihedral_wall_x_size_m: [0.005, 0.17, 0.145]
+  trihedral_wall_y_size_m: [0.18, 0.005, 0.145]
   # 真实枪嘴无法进入三块板的数学交点，保留 12 mm 工艺起点余量。
   trihedral_corner_margin_m: 0.012
   # 与水平任务共享相同的可视焊缝转角，保证任务切换时工件外观一致。
@@ -33,24 +34,26 @@ task:
   tcp_clearance_m: 0.002
 
 randomization:
-  xy_m: 0.02
-  yaw_deg: 6.0
+  xy_m: 0.2
+  # 开口角平分线朝向全局相机；在 20° 可见性边界内使用接近最大范围的偏航，
+  # 让数据同时覆盖近正视与明显左右旋转的工件姿态。
+  trihedral_camera_margin_deg: 20.0
+  yaw_deg: 24.0
   # 完整轨迹预检会拒绝不可行初态，因此可安全使用与其他任务相同的宽关节范围。
   joint_degs: [60, 20, 20, 30, 60, 60]
-  max_sampling_attempts: 15
+  max_sampling_attempts: 30
   initial_tcp_m: 0.015
   work_angle_range_deg: 2.0
   travel_angle_range_deg: 2.0
   tool_roll_range_deg: 2.0
   orientation_follow_range: 0.0
-  approach_speed_range_mps: 0.004
+  approach_speed_range_mps: 0.0
   speed_range_mps: 0.01
-  retreat_speed_range_mps: 0.004
+  retreat_speed_range_mps: 0.0
   # 每个任务组只小幅改变板件尺寸和有效焊缝长度。
   trihedral_size_range_m: 0.008
   seam_length_range_m: 0.010
-  # 当前任务固定自下而上，避免方向反转同时改变竖焊枪颈的避碰姿态。
-  reverse_probability: 0.0
+  reverse_probability: 0.5
 
 collection:
   dataset_root: datasets/weldpath_trihedral_vertical_raw_v2

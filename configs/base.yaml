@@ -65,7 +65,7 @@ randomization:
   # 轴 1 使用绝对角度均匀采样，使初始 TCP 覆盖工作区左右两侧。
   initial_joint1_range_deg: [30, 150]
   # 对不可达或发生碰撞的随机工件位姿进行确定性重采样。
-  max_sampling_attempts: 10
+  max_sampling_attempts: 30
   initial_tcp_m: 0.03
   recovery_probability: 0.25
   recovery_position_m: 0.003
@@ -74,13 +74,23 @@ randomization:
   work_angle_range_deg: 3.0
   travel_angle_range_deg: 3.0
   tool_roll_range_deg: 5.0
-  orientation_follow_range: 0.05
+  # 模型不读取该比例，所有任务固定完整跟随。
+  orientation_follow_range: 0.0
   arc_start_range_deg: 0.0
   arc_sweep_range_deg: 0.0
   # 速度以 m/s 采样并保留三位小数。
-  approach_speed_range_mps: 0.005
+  approach_speed_range_mps: 0.0
   speed_range_mps: 0.01
-  retreat_speed_range_mps: 0.005
+  retreat_speed_range_mps: 0.0
+  # 仅在常见钢材色域和中性车间条件内做视觉域随机化。
+  workpiece_color_jitter: 0.10
+  workpiece_finish_jitter: 0.06
+  lighting_intensity_range: [0.75, 1.25]
+  # 每个 episode 使用 1–2 盏顶灯，并在标称方向附近改变入射角。
+  lighting_count_range: [1, 2]
+  lighting_azimuth_range_deg: 30.0
+  lighting_elevation_range_deg: 10.0
+  background_color_jitter: 0.08
   reverse_probability: 0.5
   # 每 10 个 episode 编号共享方向、姿态、圆弧和速度参数。
   task_group_size: 10

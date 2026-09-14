@@ -1,3 +1,4 @@
+from copy import deepcopy
 from itertools import pairwise
 
 import mujoco
@@ -20,6 +21,7 @@ from welding_path_vla.simulation.robosuite_compat import MujocoEnv, make
 from welding_path_vla.simulation.task_sampling import (
     sample_collision_free_task,
     sample_episode_task_config,
+    sample_grouped_task_config,
     sample_feasible_trajectory,
     sample_task_config,
     stage_for_task,
@@ -459,23 +461,25 @@ def test_pipe_task_randomization_is_bounded_and_reproducible() -> None:
     repeated = sample_task_config(config, np.random.default_rng(7))
     assert first.as_dict() == repeated.as_dict()
     assert config.task.direction == "forward"
-    assert config.task.arc_start_deg == -90
+    assert config.task.arc_start_deg == 0
     assert config.task.arc_sweep_deg == 90
     assert first.task.instruction == config.task.instruction
 
     samples = [sample_task_config(config, np.random.default_rng(seed)) for seed in range(32)]
     directions = {sample.task.direction for sample in samples}
     geometric_starts = [
-        sample.task.arc_start_deg
+        (sample.task.arc_start_deg
         - (sample.task.arc_sweep_deg if sample.task.direction == "reverse" else 0)
+        + 180) % 360 - 180
         for sample in samples
     ]
     forward = [sample for sample in samples if sample.task.direction == "forward"]
     reverse = [sample for sample in samples if sample.task.direction == "reverse"]
     assert directions == {"forward", "reverse"}
-    assert all(80 <= sample.task.arc_sweep_deg <= 100 for sample in samples)
-    assert all(-100 <= start <= -80 for start in geometric_starts)
-    assert all(42 <= sample.task.work_angle_deg <= 48 for sample in samples)
+    assert all(70 <= sample.task.arc_sweep_deg <= 110 for sample in samples)
+    assert all(-30 <= start <= 30 for start in geometric_starts)
+    assert all(42 <= sample.task.work_angle_deg <= 48 for sample in forward)
+    assert all(-48 <= sample.task.work_angle_deg <= -42 for sample in reverse)
     assert all(7 <= sample.task.travel_angle_deg <= 13 for sample in forward)
     assert all(-13 <= sample.task.travel_angle_deg <= -7 for sample in reverse)
     assert all(-25 <= sample.task.tool_roll_deg <= -15 for sample in forward)
@@ -487,6 +491,118 @@ def test_pipe_task_randomization_is_bounded_and_reproducible() -> None:
     assert all(isinstance(sample.task.arc_sweep_deg, int) for sample in samples)
     assert all(0.003 <= sample.task.speed_mps <= 0.005 for sample in samples)
     assert all(round(sample.task.speed_mps, 3) == sample.task.speed_mps for sample in samples)
+    assert all(sample.task.orientation_follow_ratio == 1 for sample in samples)
+    assert all(
+        sample.task.approach_speed_mps == config.task.approach_speed_mps for sample in samples
+    )
+    assert all(sample.task.retreat_speed_mps == config.task.retreat_speed_mps for sample in samples)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
+        "configs/trihedral_vertical.yaml",
+    ],
+)
+def test_reverse_compensation_preserves_physical_torch_orientation(config_path: str) -> None:
+    """反转有向切向并补偿 work/travel/roll 后，物理焊枪姿态应逐点相同。"""
+    forward = AppConfig.load(config_path)
+    reverse = deepcopy(forward)
+    reverse.task.direction = "reverse"
+    if reverse.workpiece.kind == "pipe_on_plate":
+        reverse.task.arc_start_deg = (
+            reverse.task.arc_start_deg + reverse.task.arc_sweep_deg + 180
+        ) % 360 - 180
+    reverse.task.work_angle_deg *= -1
+    reverse.task.travel_angle_deg *= -1
+    reverse.task.tool_roll_deg = (reverse.task.tool_roll_deg - 180 + 180) % 360 - 180
+
+    forward_seam = WorkpieceObject(forward).seam(np.zeros(3), np.eye(3))
+    reverse_seam = WorkpieceObject(reverse).seam(np.zeros(3), np.eye(3))
+    forward_expert = ExpertTrajectory.__new__(ExpertTrajectory)
+    reverse_expert = ExpertTrajectory.__new__(ExpertTrajectory)
+    forward_expert.config = forward
+    reverse_expert.config = reverse
+    for progress in np.linspace(0, 1, 9):
+        forward_frame = forward_seam.sample(progress)
+        reverse_frame = reverse_seam.sample(1 - progress)
+        np.testing.assert_allclose(forward_frame.position, reverse_frame.position, atol=1e-9)
+        np.testing.assert_allclose(
+            forward_expert.approach_direction(forward_frame),
+            reverse_expert.approach_direction(reverse_frame),
+            atol=1e-9,
+        )
+        forward_rotation = quaternion_to_matrix(
+            forward_expert.geometric_welding_orientation(forward_frame)
+        )
+        reverse_rotation = quaternion_to_matrix(
+            reverse_expert.geometric_welding_orientation(reverse_frame)
+        )
+        np.testing.assert_allclose(forward_rotation, reverse_rotation, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
+        "configs/trihedral_vertical.yaml",
+    ],
+)
+def test_workpiece_randomization_stays_on_table_and_uses_plausible_appearance(
+    config_path: str,
+) -> None:
+    """扩大 XY 后工件仍完整落在桌上，金属和场景随机化保持在受控范围。"""
+    config = AppConfig.load(config_path)
+    simulation = WeldingEnv(config, camera_observations=False)
+    try:
+        simulation.randomize_workpiece(np.random.default_rng(17))
+        position = simulation.mj_model.body_pos[simulation.workpiece_id]
+        center = np.asarray(config.scene.table_center_m)
+        half = np.asarray(config.scene.table_half_size_m)
+        radius = simulation.workpiece.horizontal_radius
+        assert np.all(position[:2] - radius >= center[:2] - half[:2])
+        assert np.all(position[:2] + radius <= center[:2] + half[:2])
+        table_top = center[2] + half[2]
+        assert position[2] + simulation.workpiece.bottom_offset[2] >= table_top - 1e-9
+        colors = simulation.mj_model.geom_rgba[simulation.workpiece_visual_geom_ids, :3]
+        assert np.all((0.18 <= colors) & (colors <= 0.72))
+        assert simulation.scene_randomization_parameters["light_scale"] >= 0.75
+        assert simulation.scene_randomization_parameters["light_scale"] <= 1.25
+        assert 1 <= simulation.scene_randomization_parameters["light_count"] <= 2
+    finally:
+        simulation.close()
+
+
+def test_lighting_randomizes_count_and_downward_direction() -> None:
+    """顶灯数量和角度应变化，同时始终向下照射工作台。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingEnv(config, camera_observations=False)
+    counts: set[int] = set()
+    directions: set[tuple[float, ...]] = set()
+    try:
+        for seed in range(12):
+            simulation.randomize_appearance(np.random.default_rng(seed))
+            parameters = simulation.scene_randomization_parameters
+            counts.add(parameters["light_count"])
+            directions.add(tuple(np.round(simulation.mj_model.light_dir.ravel(), 5)))
+            np.testing.assert_allclose(
+                np.linalg.norm(simulation.mj_model.light_dir, axis=1), 1.0, atol=1e-7
+            )
+            assert np.all(simulation.mj_model.light_dir[:, 2] <= -np.sin(np.radians(45)))
+            assert np.count_nonzero(simulation.mj_model.light_active) == parameters["light_count"]
+        assert counts == {1, 2}
+        assert len(directions) == 12
+    finally:
+        simulation.close()
 
 
 def test_task_parameters_change_once_per_ten_episode_indices() -> None:
@@ -499,6 +615,41 @@ def test_task_parameters_change_once_per_ten_episode_indices() -> None:
     assert all(sample.task == first_parameters for sample in first_group)
     assert second_group.task != first_parameters
     assert all(sample.task.instruction == config.task.instruction for sample in first_group)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/default.yaml",
+        "configs/pipe_bottom.yaml",
+        "configs/pipe_top.yaml",
+        "configs/curve_plate.yaml",
+        "configs/trihedral_horizontal.yaml",
+        "configs/trihedral_vertical.yaml",
+    ],
+)
+def test_rollout_task_groups_cover_both_directions(config_path: str) -> None:
+    """默认五条 rollout 应以两条一组稳定覆盖正反方向。"""
+    config = AppConfig.load(config_path)
+    samples = [
+        sample_grouped_task_config(
+            config,
+            episode,
+            config.deployment.seed,
+            config.deployment.task_group_size,
+            config.deployment.balance_directions,
+        )
+        for episode in range(5)
+    ]
+    assert [sample.task.direction for sample in samples] == [
+        "forward",
+        "forward",
+        "reverse",
+        "reverse",
+        "forward",
+    ]
+    assert samples[0].task == samples[1].task
+    assert samples[2].task == samples[3].task
 
 
 @pytest.mark.parametrize(
@@ -925,15 +1076,18 @@ def test_expert_settles_at_seam_start_before_tracking() -> None:
 
 
 def test_l_joint_group_27_has_reachable_staging_pose() -> None:
-    """L 型工件不应采样已知不可达的反向预置姿态。"""
+    """L 型宽随机位姿应通过拒绝采样找到可达的双向预置姿态。"""
     base = AppConfig.load("configs/default.yaml")
     config = sample_episode_task_config(base, 270)
     seed = base.collection.seed + 270
     simulation = WeldingEnv(config, seed, camera_observations=False)
     try:
-        simulation.randomize_workpiece(np.random.default_rng(seed))
-        _, residual = stage_for_task(simulation, config)
-        assert config.task.direction == "forward"
+        _, residual, attempts = sample_collision_free_task(
+            simulation,
+            config,
+            np.random.default_rng(seed),
+        )
+        assert attempts <= config.randomization.max_sampling_attempts
         assert residual <= 0.005
     finally:
         simulation.close()

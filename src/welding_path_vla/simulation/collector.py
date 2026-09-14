@@ -260,6 +260,7 @@ def collect_episode(config: AppConfig, episode_index: int, seed: int) -> Path:
             "workpiece_quaternion_wxyz": simulation.mj_model.body_quat[
                 simulation.workpiece_id
             ].tolist(),
+            "scene_randomization": simulation.scene_randomization_parameters,
             # 轨迹质量指标
             "quality": report.as_dict(),
         }

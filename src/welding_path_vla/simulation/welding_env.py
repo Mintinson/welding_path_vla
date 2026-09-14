@@ -20,6 +20,8 @@ from welding_path_vla.core.geometry import (
 from welding_path_vla.simulation.models import (
     SEAM_PENDING_RGBA,
     SEAM_WELDED_RGBA,
+    WORKPIECE_MATERIAL,
+    WORKPIECE_TEXTURE,
     Elfin5ProRobotModel,
     WeldingArena,
     WorkpieceObject,
@@ -151,6 +153,26 @@ class WeldingEnv(MujocoEnv):
             for geom_id in range(self.mj_model.ngeom)
             if self.mj_model.geom_bodyid[geom_id] == self.workpiece_id
         }
+        self.workpiece_visual_geom_ids = np.asarray(
+            [
+                geom_id
+                for geom_id in self.workpiece_geom_ids
+                if (self.mj_model.geom(geom_id).name or "").endswith("_visual")
+            ],
+            dtype=np.int32,
+        )
+        self.table_visual_id = self.name_id(mujoco.mjtObj.mjOBJ_GEOM, "table")
+        self.floor_visual_id = self.name_id(mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self.nominal_table_rgba = self.mj_model.geom_rgba[self.table_visual_id].copy()
+        self.nominal_floor_rgba = self.mj_model.geom_rgba[self.floor_visual_id].copy()
+        self.nominal_light_diffuse = self.mj_model.light_diffuse.copy()
+        self.nominal_light_pos = self.mj_model.light_pos.copy()
+        self.nominal_light_dir = self.mj_model.light_dir.copy()
+        self.nominal_headlight_ambient = self.mj_model.vis.headlight.ambient.copy()
+        self.nominal_headlight_diffuse = self.mj_model.vis.headlight.diffuse.copy()
+        self.workpiece_material_id = self.name_id(mujoco.mjtObj.mjOBJ_MATERIAL, WORKPIECE_MATERIAL)
+        self.workpiece_texture_id = self.name_id(mujoco.mjtObj.mjOBJ_TEXTURE, WORKPIECE_TEXTURE)
+        self.scene_randomization_parameters: dict[str, Any] = {}
         self.weld_visual_geom_ids = np.asarray(
             [
                 self.name_id(mujoco.mjtObj.mjOBJ_GEOM, name)
@@ -421,18 +443,42 @@ class WeldingEnv(MujocoEnv):
         }
 
     def randomize_workpiece(self, rng: np.random.Generator) -> None:
-        """在 YAML 配置范围内随机化工件位置和偏航角。
+        """随机化工件位姿、金属外观、背景和光照。
+
+        XY 采样范围与桌面安全边界取交集，使用工件水平包围圆处理任意 yaw，
+        因此即使 ``xy_m=0.2`` 也不会让工件悬出桌沿。
 
         Args:
             rng: episode 专用随机数生成器。
         """
         randomization = self.config.randomization
         position = np.asarray(self.config.scene.workpiece_position_m, dtype=np.float64).copy()
-        position += rng.uniform(
-            [-randomization.xy_m, -randomization.xy_m, -randomization.z_m],
-            [randomization.xy_m, randomization.xy_m, randomization.z_m],
-        )
-        yaw = np.radians(rng.uniform(-randomization.yaw_deg, randomization.yaw_deg))
+        table_center = np.asarray(self.config.scene.table_center_m, dtype=np.float64)
+        table_half = np.asarray(self.config.scene.table_half_size_m, dtype=np.float64)
+        radius = self.workpiece.horizontal_radius + 0.01
+        table_low = table_center[:2] - table_half[:2] + radius
+        table_high = table_center[:2] + table_half[:2] - radius
+        desired_low = position[:2] - randomization.xy_m
+        desired_high = position[:2] + randomization.xy_m
+        sample_low = np.maximum(desired_low, table_low)
+        sample_high = np.minimum(desired_high, table_high)
+        if np.any(sample_low > sample_high):
+            raise ValueError("workpiece does not fit on the configured table")
+        position[:2] = rng.uniform(sample_low, sample_high)
+        position[2] += rng.uniform(-randomization.z_m, randomization.z_m)
+        table_top = table_center[2] + table_half[2]
+        position[2] = max(position[2], table_top - self.workpiece.bottom_offset[2])
+        yaw_center = 0.0
+        yaw_radius = np.radians(randomization.yaw_deg)
+        if self.config.workpiece.kind == "trihedral_corner":
+            # 两块立板分别位于局部 X=0、Y=0，开放内角为 +X/+Y 象限。
+            # 位置随机化后重新朝向真实全局相机，避免只约束世界 yaw 而侧视遮缝。
+            camera_id = self.name_id(mujoco.mjtObj.mjOBJ_CAMERA, self.config.camera.global_name)
+            camera_offset = self.mj_data.cam_xpos[camera_id, :2] - position[:2]
+            yaw_center = np.arctan2(camera_offset[1], camera_offset[0]) - np.pi / 4
+            view_margin = np.radians(randomization.trihedral_camera_margin_deg)
+            yaw_radius = min(yaw_radius, np.pi / 4 - view_margin)
+        yaw = yaw_center + rng.uniform(-yaw_radius, yaw_radius)
         self.mj_model.body_pos[self.workpiece_id] = position
         self.mj_model.body_quat[self.workpiece_id] = [
             np.cos(yaw / 2),
@@ -440,7 +486,126 @@ class WeldingEnv(MujocoEnv):
             0,
             np.sin(yaw / 2),
         ]
+        self.randomize_appearance(rng)
         self.robosuite_sim.forward()
+
+    def randomize_appearance(self, rng: np.random.Generator) -> None:
+        """在常见钢材和中性车间环境范围内随机化渲染参数。"""
+        randomization = self.config.randomization
+        metal_palette = np.asarray(
+            [
+                [0.32, 0.34, 0.36],  # 冷轧钢
+                [0.42, 0.41, 0.38],  # 普通低碳钢
+                [0.48, 0.50, 0.52],  # 浅色拉丝钢
+                [0.35, 0.30, 0.25],  # 轻微氧化钢
+            ]
+        )
+        metal = metal_palette[int(rng.integers(len(metal_palette)))]
+        metal += rng.uniform(
+            -randomization.workpiece_color_jitter,
+            randomization.workpiece_color_jitter,
+            size=3,
+        )
+        finish = rng.uniform(
+            -randomization.workpiece_finish_jitter,
+            randomization.workpiece_finish_jitter,
+            size=len(self.workpiece_visual_geom_ids),
+        )
+        colors = np.clip(metal + finish[:, None], 0.18, 0.72)
+        self.mj_model.geom_rgba[self.workpiece_visual_geom_ids, :3] = colors
+        material = self.workpiece_material_id
+        specular = float(rng.uniform(0.20, 0.55))
+        shininess = float(rng.uniform(0.20, 0.60))
+        reflectance = float(rng.uniform(0.02, 0.16))
+        self.mj_model.mat_specular[material] = specular
+        self.mj_model.mat_shininess[material] = shininess
+        self.mj_model.mat_reflectance[material] = reflectance
+
+        texture = self.workpiece_texture_id
+        width = int(self.mj_model.tex_width[texture])
+        height = int(self.mj_model.tex_height[texture])
+        address = int(self.mj_model.tex_adr[texture])
+        xx = np.indices((height, width))[1]
+        phase = rng.uniform(0, 2 * np.pi)
+        grain = 0.94 + 0.035 * np.sin(2 * np.pi * xx / rng.uniform(14, 28) + phase)
+        grain += rng.normal(0, 0.012, size=(height, width))
+        pixels = np.repeat(np.clip(grain[..., None] * 255, 210, 255), 3, axis=2).astype(np.uint8)
+        self.mj_model.tex_data[address : address + pixels.size] = pixels.reshape(-1)
+
+        background_jitter = randomization.background_color_jitter
+        table_shift = rng.uniform(-background_jitter, background_jitter)
+        floor_shift = rng.uniform(-background_jitter, background_jitter)
+        self.mj_model.geom_rgba[self.table_visual_id, :3] = np.clip(
+            self.nominal_table_rgba[:3] + table_shift, 0.15, 0.65
+        )
+        self.mj_model.geom_rgba[self.floor_visual_id, :3] = np.clip(
+            self.nominal_floor_rgba[:3] + floor_shift, 0.08, 0.45
+        )
+
+        light_low, light_high = randomization.lighting_intensity_range
+        light_scale = float(rng.uniform(light_low, light_high))
+        color_temperature = float(rng.uniform(-0.08, 0.08))
+        tint = np.array([1 + color_temperature, 1.0, 1 - color_temperature])
+        self.mj_model.light_diffuse[:] = np.clip(
+            self.nominal_light_diffuse * light_scale * tint,
+            0.05,
+            1.0,
+        )
+        self.mj_model.light_pos[:] = self.nominal_light_pos + rng.uniform(
+            [-0.08, -0.08, -0.05], [0.08, 0.08, 0.08], size=self.nominal_light_pos.shape
+        )
+        count_low, count_high = randomization.lighting_count_range
+        light_count = min(int(rng.integers(count_low, count_high + 1)), self.mj_model.nlight)
+        self.mj_model.light_active[:] = False
+        self.mj_model.light_active[:light_count] = True
+        nominal_azimuth = np.arctan2(self.nominal_light_dir[:, 1], self.nominal_light_dir[:, 0])
+        nominal_elevation = np.arctan2(
+            -self.nominal_light_dir[:, 2],
+            np.linalg.norm(self.nominal_light_dir[:, :2], axis=1),
+        )
+        azimuth_offsets = rng.uniform(
+            -randomization.lighting_azimuth_range_deg,
+            randomization.lighting_azimuth_range_deg,
+            size=self.mj_model.nlight,
+        )
+        elevation_offsets = rng.uniform(
+            -randomization.lighting_elevation_range_deg,
+            randomization.lighting_elevation_range_deg,
+            size=self.mj_model.nlight,
+        )
+        azimuth = nominal_azimuth + np.radians(azimuth_offsets)
+        elevation = np.clip(
+            nominal_elevation + np.radians(elevation_offsets),
+            np.radians(45.0),
+            np.radians(89.0),
+        )
+        self.mj_model.light_dir[:] = np.column_stack(
+            (
+                np.cos(elevation) * np.cos(azimuth),
+                np.cos(elevation) * np.sin(azimuth),
+                -np.sin(elevation),
+            )
+        )
+        self.mj_model.vis.headlight.ambient[:] = np.clip(
+            self.nominal_headlight_ambient * light_scale, 0.1, 0.6
+        )
+        self.mj_model.vis.headlight.diffuse[:] = np.clip(
+            self.nominal_headlight_diffuse * light_scale * tint, 0.2, 1.0
+        )
+        self.scene_randomization_parameters = {
+            "workpiece_rgb": metal.tolist(),
+            "workpiece_finish_offsets": finish.tolist(),
+            "material_specular": specular,
+            "material_shininess": shininess,
+            "material_reflectance": reflectance,
+            "table_color_shift": table_shift,
+            "floor_color_shift": floor_shift,
+            "light_scale": light_scale,
+            "light_count": light_count,
+            "light_azimuth_offsets_deg": azimuth_offsets.tolist(),
+            "light_elevation_offsets_deg": elevation_offsets.tolist(),
+            "light_color_temperature": color_temperature,
+        }
 
     def site_position(self, name: str) -> np.ndarray:
         """返回指定 site 的世界坐标位置。"""

@@ -30,6 +30,7 @@
 | `export-lerobot` | `export_lerobot.py` | 单源或多源导出 LeRobot Dataset v3 |
 | `upload-lerobot` | `upload_lerobot_dataset.py` | 上传已经完成的 LeRobot 数据集 |
 | `policy-data-check` | `check_policy_data.py` | 检查数据 schema、规模和策略输入契约 |
+| `lerobot-info` | `inspect_lerobot_dataset.py` | 按任务汇总 LeRobot episode 和帧数 |
 | `train-policy` | `train_policy.py` | 单进程训练、恢复训练或命令预览 |
 | `train-policy-2gpu` | `train_policy.py` | 用 Accelerate 启动两个 DDP 进程 |
 | `policy-evaluate` | `evaluate_policy.py` | 在 LeRobot 留出数据上评估 checkpoint |

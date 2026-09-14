@@ -17,11 +17,22 @@ class SeamFrame:
         position: TCP 参考位置，世界坐标，单位为米。
         tangent: 沿任务执行方向的单位切向。
         normal: 焊枪接近侧的单位法向。
+        work_reference_normal: ``work_angle=0`` 时的参考法向；工作角按右手定则
+            绕有向切向从该向量旋转。
     """
 
     position: np.ndarray
     tangent: np.ndarray
     normal: np.ndarray
+    work_reference_normal: np.ndarray | None = None
+
+    @property
+    def work_reference(self) -> np.ndarray:
+        """返回工作角为零时的单位参考法向。"""
+        reference = (
+            self.normal if self.work_reference_normal is None else self.work_reference_normal
+        )
+        return normalize(reference)
 
     @property
     def rotation(self) -> np.ndarray:
@@ -85,6 +96,7 @@ class StraightSeamPath(SeamPath):
         start: np.ndarray,
         end: np.ndarray,
         normal: np.ndarray,
+        work_reference_normal: np.ndarray | None = None,
     ) -> None:
         """创建有向直线。
 
@@ -93,6 +105,7 @@ class StraightSeamPath(SeamPath):
             start: 世界坐标起点。
             end: 世界坐标终点。
             normal: 世界坐标焊接法向。
+            work_reference_normal: 工作角为零时的世界坐标参考法向。
         """
         self.seam_id = seam_id
         self.start_position = np.asarray(start, dtype=np.float64)
@@ -101,6 +114,8 @@ class StraightSeamPath(SeamPath):
         self.length_m = float(np.linalg.norm(self.vector))
         self.tangent = self.vector / self.length_m
         self.normal = normalize(np.asarray(normal, dtype=np.float64))
+        reference = normal if work_reference_normal is None else work_reference_normal
+        self.work_reference_normal = normalize(np.asarray(reference, dtype=np.float64))
 
     def sample(self, progress: float) -> SeamFrame:
         """在线段上按进度插值位置。"""
@@ -109,6 +124,7 @@ class StraightSeamPath(SeamPath):
             self.start_position + alpha * self.vector,
             self.tangent.copy(),
             self.normal.copy(),
+            self.work_reference_normal.copy(),
         )
 
     def project(
@@ -121,7 +137,12 @@ class StraightSeamPath(SeamPath):
         raw = float(np.dot(position - self.start_position, self.vector) / self.length_m**2)
         progress = float(np.clip(raw, 0, 1))
         closest = self.sample(progress).position
-        return SeamProjection(progress, raw, closest, float(np.linalg.norm(position - closest)))
+        return SeamProjection(
+            progress=progress,
+            raw_progress=raw,
+            position=closest,
+            distance_m=float(np.linalg.norm(position - closest)),
+        )
 
 
 class RoundedCornerSeamPath(SeamPath):
@@ -198,7 +219,7 @@ class RoundedCornerSeamPath(SeamPath):
             position = np.array([offset, radius + line_distance, height])
             tangent = np.array([0.0, 1.0, 0.0])
             normal = np.array([work_sin, 0.0, work_cos])
-        return SeamFrame(position, tangent, normal)
+        return SeamFrame(position, tangent, normal, np.array([0.0, 0.0, 1.0]))
 
     def sample(self, progress: float) -> SeamFrame:
         """按总弧长进度采样位置，并保持圆角处切向和法向连续。"""
@@ -210,6 +231,7 @@ class RoundedCornerSeamPath(SeamPath):
             self.center + self.workpiece_rotation @ local.position,
             normalize(direction * self.workpiece_rotation @ local.tangent),
             normalize(self.workpiece_rotation @ local.normal),
+            normalize(self.workpiece_rotation @ local.work_reference),
         )
 
     def project(
@@ -335,6 +357,7 @@ class SinusoidalSeamPath(SeamPath):
         return SeamFrame(
             self.center + self.workpiece_rotation @ local_position,
             normalize(self.workpiece_rotation @ local_tangent),
+            normalize(self.workpiece_rotation @ np.array([0.0, 0.0, 1.0])),
             normalize(self.workpiece_rotation @ np.array([0.0, 0.0, 1.0])),
         )
 
@@ -477,6 +500,7 @@ class CircularSeamPath(SeamPath):
             self.center + self.workpiece_rotation @ local_position,
             normalize(self.workpiece_rotation @ tangent),
             normalize(self.workpiece_rotation @ normal),
+            normalize(self.workpiece_rotation @ np.array([0.0, 0.0, 1.0])),
         )
 
     def project(
