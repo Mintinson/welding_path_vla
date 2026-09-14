@@ -236,9 +236,10 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
     def prepare_for_inference(self) -> None:
         """删除只在训练期使用的 grounding heads 与 motion posterior。"""
         self.model.geometry_grounding_heads = None
-        motion = self.model.vlm_with_expert.decoder.motion_latent
-        if motion is not None:
-            motion.discard_posterior()
+        if hasattr(self.model.vlm_with_expert.decoder, "motion_latent"):
+            motion = self.model.vlm_with_expert.decoder.motion_latent
+            if motion is not None:
+                motion.discard_posterior()
 
     def forward_grounding_intermediates(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """返回 Stage 1 的几何 readout、预测和 patch 诊断张量。"""

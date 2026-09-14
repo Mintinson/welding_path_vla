@@ -78,6 +78,7 @@ def test_act_rollout_writes_diagnostics_and_terminal_video_frame(tmp_path: Path)
     config.camera.height = 32
     config.deployment.max_steps = 1
     config.deployment.record_video = True
+    config.evaluation.report_detailed_metrics = True
 
     report = rollout_episode(config, StaticRuntime(), 0, tmp_path / "episode_000000")
     trajectory = np.load(report.trace_path)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
+from welding_path_vla.policies.data import filtered_episode_indices
 from welding_path_vla.policies.factory import get_policy_pipeline
 
 
@@ -35,10 +36,12 @@ class TrainingRequest:
     def command(self) -> list[str]:
         """生成与统一 YAML 对应的 LeRobot 训练命令。"""
         self.validate()
+        episodes = filtered_episode_indices(self.training)
         options = {
             "dataset.repo_id": self.training.dataset_repo_id,
             "dataset.root": self.training.dataset_root,
             "dataset.video_backend": self.training.video_backend,
+            "dataset.episodes": episodes,
             "dataset.eval_split": self.training.eval_split,
             "output_dir": self.training.output_dir,
             "job_name": f"{self.policy.family}_weldpath",
