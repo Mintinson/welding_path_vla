@@ -9,9 +9,9 @@ policy:
   welding_prompt_fields:
     - direction
     - welding_speed
-    - work_angle
-    - travel_angle
-    - tool_roll
+    # - work_angle
+    # - travel_angle
+    # - tool_roll
   parameters:
     language_model_family: qwen2_5
     language_model_name: Qwen/Qwen2.5-0.5B
@@ -55,8 +55,8 @@ policy:
     scheduler_decay_steps: 918506
 
 training:
-  dataset_repo_id: huayan/weldpath_relative_v1
-  dataset_root: /run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1
+  dataset_repo_id: mintinson/weldpath_relative_v1
+  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v2
   output_dir: outputs/train/traj_vla_qwen_weldpath_relative_v1
   lr: 1.0e-4
   batch_size: 4

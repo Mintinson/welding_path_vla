@@ -1,5 +1,9 @@
 # 仿真策略部署与闭环 Rollout
 
+> 论文模型对比现在默认使用[固定可行场景评价](fixed-scene-evaluation.md)：每任务 25 条、
+> 统一四项主结果与控制协议。下文关于即时随机采样、旧 ESR 条件和诊断字段的说明仅适用于
+> 显式设置 `deployment.scene_bank_path=null` 的兼容模式。
+
 `deploy_simulation_policy.py` 将训练完成的 LeRobot checkpoint 放入项目的 robosuite / MuJoCo
 焊接环境中执行闭环 rollout。它用于观察策略能否在自身预测造成的状态分布上完成任务，并同步
 保存视频、逐步控制日志、诊断摘要和论文级轨迹指标。
@@ -161,9 +165,10 @@ $$
 这里的 `ExpertTrajectory` 只提供参考焊缝位姿和自动评估基准，不会向机器人发送动作。闭环中的
 每一个动作都来自待评估策略。
 
-当前部署流程会随机化工件位姿、初始关节和初始 TCP，但不会调用采集流程中的
-`sample_task_config()`；因此速度、圆弧范围、姿态角等任务参数使用任务 YAML 中的标称值。
-这使同一部署配置的任务定义稳定，同时仍保留场景和初始状态变化。
+部署与采集复用 `sample_task_config()`，因此方向、速度、圆弧、姿态角和工件尺寸按同一规则
+采样。`deployment.task_group_size` 默认是 2，比采集分组更小；
+`deployment.balance_directions=true` 时相邻组交替使用 forward/reverse，避免少量 rollout
+恰好只覆盖一个方向。工件位姿、外观、初始关节和 TCP 仍逐 episode 变化。
 
 ## 5. 策略看到什么
 

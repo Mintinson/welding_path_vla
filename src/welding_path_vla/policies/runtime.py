@@ -71,9 +71,17 @@ def apply_inference_overrides(
             )
         config.n_action_steps = action_steps
     if inference_steps is not None:
-        if not hasattr(config, "num_steps"):
+        field = next(
+            (
+                name
+                for name in ("num_steps", "num_inference_steps", "num_denoising_steps")
+                if hasattr(config, name)
+            ),
+            None,
+        )
+        if field is None:
             raise ValueError("当前策略不支持 deployment.inference_steps")
-        config.num_steps = inference_steps
+        setattr(config, field, inference_steps)
 
 
 @dataclass(slots=True)
@@ -145,6 +153,10 @@ class LeRobotRuntime:
         self.postprocessor.reset()
         self.action_queue.clear()
 
+    def discard_pending_actions(self) -> None:
+        """限幅后丢弃旧锚点的余下动作，下一步依据真实 TCP 重新预测。"""
+        self.action_queue.clear()
+
     def observation_sample(self, observation: Observation) -> dict[str, Any]:
         """构造 processor 需要的状态、双相机和可选语言输入。"""
         import torch
@@ -187,10 +199,11 @@ class LeRobotRuntime:
             processed = self.preprocessor(self.observation_sample(observation))
             with torch.inference_mode():
                 relative_chunk = self.policy.predict_action_chunk(processed)
-                absolute_chunk = self.postprocessor(relative_chunk)
+                absolute_chunk: torch.Tensor = self.postprocessor(relative_chunk)
             count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
             self.action_queue.extend(
-                absolute_chunk[0, :count].detach().cpu().numpy().astype(np.float64)
+                # absolute_chunk[0, :count].detach().cpu().numpy().astype(np.float64)
+                absolute_chunk[0, :count].detach().to(torch.float64).cpu().numpy()
             )
         return self.action_queue.popleft()
 

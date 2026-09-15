@@ -8,9 +8,9 @@ import numpy as np
 import torch
 
 from welding_path_vla.core.config import AppConfig
+from welding_path_vla.policies import data as policy_data
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
-from welding_path_vla.policies import data as policy_data
 from welding_path_vla.policies.data import (
     balanced_frame_indices,
     dataset_task_summaries,

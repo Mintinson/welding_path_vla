@@ -21,8 +21,8 @@ from welding_path_vla.simulation.robosuite_compat import MujocoEnv, make
 from welding_path_vla.simulation.task_sampling import (
     sample_collision_free_task,
     sample_episode_task_config,
-    sample_grouped_task_config,
     sample_feasible_trajectory,
+    sample_grouped_task_config,
     sample_task_config,
     stage_for_task,
 )
@@ -574,7 +574,7 @@ def test_workpiece_randomization_stays_on_table_and_uses_plausible_appearance(
         table_top = center[2] + half[2]
         assert position[2] + simulation.workpiece.bottom_offset[2] >= table_top - 1e-9
         colors = simulation.mj_model.geom_rgba[simulation.workpiece_visual_geom_ids, :3]
-        assert np.all((0.18 <= colors) & (colors <= 0.72))
+        assert np.all((colors >= 0.18) & (colors <= 0.72))
         assert simulation.scene_randomization_parameters["light_scale"] >= 0.75
         assert simulation.scene_randomization_parameters["light_scale"] <= 1.25
         assert 1 <= simulation.scene_randomization_parameters["light_count"] <= 2

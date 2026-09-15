@@ -72,6 +72,36 @@ class StaticRuntime:
         return np.array([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float32)
 
 
+class ClippedRuntime:
+    """始终输出超过单步平移上限的绝对目标。"""
+
+    def __init__(self) -> None:
+        self.discarded = 0
+
+    def reset(self) -> None:
+        pass
+
+    def select_action(self, observation: object) -> np.ndarray:
+        position = observation.state[6:9] + np.array([0.04, 0.0, 0.0])
+        return np.concatenate((position, [1, 0, 0, 0, 1, 0]))
+
+    def discard_pending_actions(self) -> None:
+        self.discarded += 1
+
+
+def test_clipped_action_discards_stale_chunk(tmp_path: Path) -> None:
+    config = AppConfig.load("configs/act.yaml")
+    config.camera.width = 32
+    config.camera.height = 32
+    config.deployment.max_steps = 1
+    config.deployment.record_video = False
+    runtime = ClippedRuntime()
+    report = rollout_episode(config, runtime, 0, tmp_path / "clipped_episode")
+    with np.load(report.trace_path) as trace:
+        assert bool(trace["action_increment"][0])
+    assert runtime.discarded == 1
+
+
 def test_act_rollout_writes_diagnostics_and_terminal_video_frame(tmp_path: Path) -> None:
     config = AppConfig.load("configs/act.yaml")
     config.camera.width = 32
@@ -109,7 +139,7 @@ def test_act_rollout_writes_diagnostics_and_terminal_video_frame(tmp_path: Path)
     )
 
     with av.open(report.videos[0]) as container:
-        assert sum(1 for _ in container.decode(video=0)) == 2
+        assert sum(1 for _ in container.decode(video=0)) == 1 + config.timing.policy_hz
 
 
 def test_act_rollout_completion_is_relaxed_without_changing_evaluation() -> None:

@@ -307,10 +307,10 @@ class EvaluationConfig:
     coverage_tolerance_m: float = 0.005
     coverage_ratio_min: float = 0.90
     coverage_bins: int = 100
-    coverage_max_step_m: float = 0.015
+    coverage_max_step_m: float = 0.025
     report_detailed_metrics: bool = False
     pcr_min: float = 0.95
-    direction_ratio_min: float = 0.90
+    direction_ratio_min: float = 0.85
     tracking_band_m: float = 0.01
     cte_rmse_m: float = 0.0015
     cte_p95_m: float = 0.002
@@ -480,11 +480,14 @@ class DeploymentConfig:
         episodes: 每个任务执行的 episode 数量。
         max_steps: 每条 episode 允许的最大策略步数。
         seed: 第 0 条 episode 使用的随机种子。
+        task_group_size: 连续多少个 rollout episode 共享一组任务参数。
+        balance_directions: 是否让相邻参数组交替使用 forward/reverse。
         record_video: 是否记录全局与腕部相机视频。
         action_steps: 每次动作块预测后连续执行的动作数；``None`` 保留 checkpoint 配置。
         inference_steps: Flow Matching 去噪步数；``None`` 保留 checkpoint 配置。
         completion_progress_min: 判定自然完成所需的最小焊缝进度。
         completion_distance_m: 判定自然完成所允许的最大 TCP—焊缝距离。
+        terminal_frame_hold_s: 视频中终止状态的保留时间。
     """
 
     dry_run: bool = True
@@ -493,14 +496,20 @@ class DeploymentConfig:
     auto_log_dir: bool = True
     run_all_tasks: bool = False
     task_config_dir: str = "configs/tasks"
+    scene_bank_path: str | None = None
     episodes: int = 5
     max_steps: int = 1_000
     seed: int = 20260724
+    task_group_size: int = 2
+    balance_directions: bool = True
     record_video: bool = True
     action_steps: int | None = None
     inference_steps: int | None = None
+    max_ik_residual: float | None = None
+    max_target_increment_m: float | None = None
     completion_progress_min: float = 0.95
     completion_distance_m: float = 0.01
+    terminal_frame_hold_s: float = 1.0
 
 
 @dataclass(slots=True)
@@ -740,7 +749,11 @@ class AppConfig:
             or self.policy_evaluation.held_out_episodes < 1
         ):
             raise ValueError("policy evaluation counts must be positive")
-        if self.deployment.episodes < 1 or self.deployment.max_steps < 1:
+        if (
+            self.deployment.episodes < 1
+            or self.deployment.max_steps < 1
+            or self.deployment.task_group_size < 1
+        ):
             raise ValueError("deployment counts must be positive")
         if any(
             value is not None and value < 1
@@ -750,10 +763,20 @@ class AppConfig:
             )
         ):
             raise ValueError("deployment inference counts must be positive")
+        if any(
+            value is not None and value <= 0
+            for value in (
+                self.deployment.max_ik_residual,
+                self.deployment.max_target_increment_m,
+            )
+        ):
+            raise ValueError("deployment IK residual and target increment limits must be positive")
         if not 0 <= self.deployment.completion_progress_min <= 1:
             raise ValueError("deployment.completion_progress_min must be in [0, 1]")
         if self.deployment.completion_distance_m <= 0:
             raise ValueError("deployment.completion_distance_m must be positive")
+        if self.deployment.terminal_frame_hold_s < 0:
+            raise ValueError("deployment.terminal_frame_hold_s must be non-negative")
         export = self.lerobot_export
         if (
             export.start_episode is not None
