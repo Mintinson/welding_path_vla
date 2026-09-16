@@ -1,14 +1,33 @@
 import json
+from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 import welding_path_vla.dataset.video_stats as video_stats_module
 from welding_path_vla.dataset.video_stats import (
     ActionAlignedVideoStats,
+    compute_video_stats,
     read_raw_video_stats,
     write_raw_video_stats,
 )
+
+
+def test_compute_video_stats_uses_action_frames_only(tmp_path: Path):
+    """解码回退应忽略 terminal frame 并保留 raw 0--255 数值。"""
+    path = tmp_path / "global.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 20, (4, 2))
+    for value in (10, 20, 250):
+        writer.write(np.full((2, 4, 3), value, dtype=np.uint8))
+    writer.release()
+
+    stats = compute_video_stats(path, frame_count=2)
+
+    assert stats["count"].tolist() == [16]
+    assert np.all(stats["mean"] < 50)
+    assert np.all(stats["max"] < 50)
+    assert np.all(stats["min"] >= 0)
 
 
 def test_action_aligned_stats_exclude_terminal_frame():

@@ -1,8 +1,10 @@
 import json
+from hashlib import sha256
 import subprocess
 import sys
 from pathlib import Path
 
+import av
 import cv2
 import httpx
 import numpy as np
@@ -17,6 +19,7 @@ from welding_path_vla.dataset.export_lerobot import (
     upload_lerobot_dataset,
     valid_episode_paths,
 )
+from welding_path_vla.dataset.video_stats import write_raw_video_stats
 from welding_path_vla.dataset.migrate_task_parameters import migrate_task_parameters
 
 
@@ -32,6 +35,60 @@ def write_video(path: Path, frame_count: int, value: int) -> None:
     for index in range(frame_count):
         writer.write(np.full((24, 32, 3), value + index, dtype=np.uint8))
     writer.release()
+
+
+def write_h264_video(path: Path, frame_count: int, value: int) -> None:
+    """写入无 B 帧的 H.264 测试视频，满足 packet passthrough 契约。"""
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("libx264", rate=20, options={"bf": "0"})
+        stream.width, stream.height, stream.pix_fmt = 32, 24, "yuv420p"
+        for index in range(frame_count):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((24, 32, 3), value + index, dtype=np.uint8), format="rgb24"
+            )
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+
+def h264_packet_hashes(path: Path) -> list[str]:
+    """返回视频 packet 的哈希，用于断言未重新编码。"""
+    with av.open(str(path), "r") as container:
+        stream = container.streams.video[0]
+        return [
+            sha256(bytes(packet)).hexdigest()
+            for packet in container.demux(stream)
+            if packet.dts is not None
+        ]
+
+
+def write_passthrough_episode(root: Path, index: int, format_name: str) -> Path:
+    """创建包含 H.264 双相机视频的 raw episode。"""
+    path = write_raw_episode(root, index)
+    for name, value in (("global", 20), ("wrist", 80)):
+        write_h264_video(path / f"{name}.mp4", frame_count=4, value=value)
+    metadata_path = path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["dataset_format"] = format_name
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    return path
+
+
+def raw_statistics(global_value: float = 20, wrist_value: float = 80) -> dict:
+    """创建不依赖被测代码计算的 raw 0--255 双相机统计。"""
+    return {
+        "global": {
+            "mean": np.full(3, global_value, dtype=np.float64),
+            "min": np.full(3, global_value - 2, dtype=np.float64),
+            "max": np.full(3, global_value + 2, dtype=np.float64),
+        },
+        "wrist": {
+            "mean": np.full(3, wrist_value, dtype=np.float64),
+            "min": np.full(3, wrist_value - 2, dtype=np.float64),
+            "max": np.full(3, wrist_value + 2, dtype=np.float64),
+        },
+    }
 
 
 def write_raw_episode(root: Path, index: int, valid: bool = True) -> Path:
@@ -81,6 +138,92 @@ def test_episode_range_is_inclusive_and_filters_invalid(tmp_path: Path) -> None:
     write_raw_episode(tmp_path, 4)
     selected = valid_episode_paths(tmp_path, start_episode=3, end_episode=4)
     assert [path.name for path in selected] == ["episode_000004"]
+
+
+def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 sidecar 应直接进入 writer，且 H.264 packet 不得重新编码。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    episode = write_passthrough_episode(source, 0, "weldpath_raw_v2")
+    expected = raw_statistics()
+    write_raw_video_stats(episode, expected, action_count=3)
+    source_hashes = {
+        name: h264_packet_hashes(episode / f"{name}.mp4")[:3] for name in expected
+    }
+    monkeypatch.setattr(
+        "welding_path_vla.dataset.export_lerobot.compute_video_stats",
+        lambda *_: (_ for _ in ()).throw(AssertionError("v2 must not decode")),
+    )
+
+    export_lerobot(
+        source,
+        output,
+        "test/welding-stored-stats",
+        LeRobotExportConfig(video_passthrough=True),
+        action_horizon=2,
+    )
+
+    stats = json.loads((output / "meta/stats.json").read_text(encoding="utf-8"))
+    episode_stats = pq.read_table(next((output / "meta" / "episodes").rglob("*.parquet")))
+    for name, key in (
+        ("global", "observation.images.global"),
+        ("wrist", "observation.images.wrist"),
+    ):
+        for field in ("mean", "min", "max"):
+            normalized = (expected[name][field] / 255).reshape(3, 1, 1)
+            np.testing.assert_allclose(
+                stats[key][field], normalized
+            )
+            np.testing.assert_allclose(
+                episode_stats[f"stats/{key}/{field}"].to_pylist()[0], normalized
+            )
+        target = next(path for path in (output / "videos").rglob("*.mp4") if key in str(path))
+        assert h264_packet_hashes(target) == source_hashes[name]
+
+
+def test_legacy_video_stats_decode_each_camera(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """没有 sidecar 的 v1 episode 应仅通过解码回退为双相机生成统计。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    write_passthrough_episode(source, 0, "weldpath_raw_v1")
+    calls = []
+
+    def record_decode(path: Path, frame_count: int) -> dict:
+        calls.append((path.parent.name.rsplit("-", 1)[1], frame_count))
+        return {
+            "count": np.array([3]),
+            "std": np.zeros(3),
+            **raw_statistics()[calls[-1][0]],
+        }
+
+    monkeypatch.setattr("welding_path_vla.dataset.export_lerobot.compute_video_stats", record_decode)
+    export_lerobot(
+        source,
+        output,
+        "test/welding-legacy-stats",
+        LeRobotExportConfig(video_passthrough=True),
+        action_horizon=2,
+    )
+    assert calls == [("global", 3), ("wrist", 3)]
+
+
+def test_invalid_v2_video_stats_fail_before_metadata(tmp_path: Path) -> None:
+    """损坏的 v2 sidecar 必须在 LeRobot 创建任何元数据前失败。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    episode = write_passthrough_episode(source, 0, "weldpath_raw_v2")
+    (episode / "video_stats.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="format or algorithm"):
+        export_lerobot(
+            source,
+            output,
+            "test/welding-invalid-stats",
+            LeRobotExportConfig(video_passthrough=True),
+            action_horizon=2,
+        )
+
+    assert not (output / "meta").exists()
 
 
 def test_video_export_can_resume_and_skip_completed_episodes(tmp_path: Path) -> None:

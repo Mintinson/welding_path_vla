@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from .raw_schema import RAW_DATASET_FORMAT, RAW_VIDEO_STATS_FILE
@@ -19,6 +20,36 @@ def image_samples(image: np.ndarray) -> np.ndarray:
     if image.dtype != np.uint8 or image.ndim != 3 or image.shape[-1] != 3:
         raise ValueError("image must be RGB uint8")
     return image.reshape(-1, 3).astype(np.float64)
+
+
+def compute_video_stats(path: str | Path, frame_count: int) -> dict[str, np.ndarray]:
+    """解码动作帧统计，保留 LeRobot 归一化前的 0--255 RGB 值。
+
+    Args:
+        path: 单路相机视频路径。
+        frame_count: 与动作对齐的前 N 帧数量。
+
+    Returns:
+        LeRobot writer 所需的逐通道原始统计。
+    """
+    capture = cv2.VideoCapture(str(path))
+    samples = []
+    try:
+        for index in range(frame_count):
+            ok, frame = capture.read()
+            if not ok:
+                raise ValueError(f"video ended before action {index}: {path}")
+            samples.append(image_samples(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+    finally:
+        capture.release()
+    values = np.concatenate(samples)
+    return {
+        "count": np.array([len(values)]),
+        "mean": np.mean(values, axis=0),
+        "min": np.min(values, axis=0),
+        "max": np.max(values, axis=0),
+        "std": np.std(values, axis=0),
+    }
 
 
 class ActionAlignedVideoStats:
@@ -103,4 +134,4 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
         raise ValueError("invalid raw video statistics sidecar") from error
 
 
-__all__ = ["ActionAlignedVideoStats", "image_samples", "read_raw_video_stats", "write_raw_video_stats"]
+__all__ = ["ActionAlignedVideoStats", "compute_video_stats", "image_samples", "read_raw_video_stats", "write_raw_video_stats"]
