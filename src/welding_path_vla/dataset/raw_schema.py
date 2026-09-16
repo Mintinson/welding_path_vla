@@ -5,7 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-RAW_DATASET_FORMAT = "weldpath_raw_v1"
+RAW_DATASET_FORMAT_V1 = "weldpath_raw_v1"
+RAW_DATASET_FORMAT_V2 = "weldpath_raw_v2"
+RAW_DATASET_FORMAT = RAW_DATASET_FORMAT_V2
+RAW_VIDEO_STATS_FILE = "video_stats.json"
 STATE_FILE = "trajectory.npz"
 METADATA_FILE = "metadata.json"
 
@@ -25,4 +28,7 @@ class EpisodeReader:
         return int(self.trajectory["joint_position"].shape[0])
 
 
-__all__ = ["METADATA_FILE", "RAW_DATASET_FORMAT", "STATE_FILE", "EpisodeReader"]
+__all__ = [
+    "METADATA_FILE", "RAW_DATASET_FORMAT", "RAW_DATASET_FORMAT_V1",
+    "RAW_DATASET_FORMAT_V2", "RAW_VIDEO_STATS_FILE", "STATE_FILE", "EpisodeReader",
+]
