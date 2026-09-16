@@ -77,17 +77,21 @@ def write_passthrough_episode(root: Path, index: int, format_name: str) -> Path:
 
 def raw_statistics(global_value: float = 20, wrist_value: float = 80) -> dict:
     """创建不依赖被测代码计算的 raw 0--255 双相机统计。"""
+    values = {"global": global_value, "wrist": wrist_value}
     return {
-        "global": {
-            "mean": np.full(3, global_value, dtype=np.float64),
-            "min": np.full(3, global_value - 2, dtype=np.float64),
-            "max": np.full(3, global_value + 2, dtype=np.float64),
-        },
-        "wrist": {
-            "mean": np.full(3, wrist_value, dtype=np.float64),
-            "min": np.full(3, wrist_value - 2, dtype=np.float64),
-            "max": np.full(3, wrist_value + 2, dtype=np.float64),
-        },
+        name: {
+            "count": np.array([2304], dtype=np.int64),
+            "min": np.full(3, value - 2, dtype=np.float64),
+            "max": np.full(3, value + 2, dtype=np.float64),
+            "mean": np.full(3, value, dtype=np.float64),
+            "std": np.ones(3, dtype=np.float64),
+            "q01": np.full(3, value - 1.8, dtype=np.float64),
+            "q10": np.full(3, value - 1.5, dtype=np.float64),
+            "q50": np.full(3, value, dtype=np.float64),
+            "q90": np.full(3, value + 1.5, dtype=np.float64),
+            "q99": np.full(3, value + 1.8, dtype=np.float64),
+        }
+        for name, value in values.items()
     }
 
 
@@ -171,8 +175,8 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
         ("global", "observation.images.global"),
         ("wrist", "observation.images.wrist"),
     ):
-        for field in ("mean", "min", "max"):
-            normalized = (expected[name][field] / 255).reshape(3, 1, 1)
+        for field, value in expected[name].items():
+            normalized = value if field == "count" else (value / 255).reshape(3, 1, 1)
             np.testing.assert_allclose(
                 stats[key][field], normalized
             )
@@ -192,8 +196,6 @@ def test_legacy_video_stats_decode_each_camera(tmp_path: Path, monkeypatch: pyte
     def record_decode(path: Path, frame_count: int) -> dict:
         calls.append((path.parent.name.rsplit("-", 1)[1], frame_count))
         return {
-            "count": np.array([3]),
-            "std": np.zeros(3),
             **raw_statistics()[calls[-1][0]],
         }
 
@@ -222,6 +224,19 @@ def test_invalid_v2_video_stats_fail_before_metadata(tmp_path: Path) -> None:
             LeRobotExportConfig(video_passthrough=True),
             action_horizon=2,
         )
+
+    assert not (output / "meta").exists()
+
+
+def test_incomplete_v2_video_stats_fail_before_metadata(tmp_path: Path) -> None:
+    """v2 sidecar 缺少 canonical 字段时不得创建 LeRobot 元数据。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    episode = write_passthrough_episode(source, 0, "weldpath_raw_v2")
+    statistics = raw_statistics()
+    statistics["global"].pop("q99")
+
+    with pytest.raises(ValueError, match="fields"):
+        write_raw_video_stats(episode, statistics, action_count=3)
 
     assert not (output / "meta").exists()
 

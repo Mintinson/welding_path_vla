@@ -8,11 +8,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from lerobot.datasets.compute_stats import RunningQuantileStats, auto_downsample_height_width
 
 from .raw_schema import RAW_DATASET_FORMAT, RAW_VIDEO_STATS_FILE
 
 ALGORITHM = "action_aligned_rgb_v1"
-STAT_FIELDS = frozenset(("mean", "min", "max"))
+STAT_FIELDS = frozenset(("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99"))
 
 
 def image_samples(image: np.ndarray) -> np.ndarray:
@@ -20,6 +21,35 @@ def image_samples(image: np.ndarray) -> np.ndarray:
     if image.dtype != np.uint8 or image.ndim != 3 or image.shape[-1] != 3:
         raise ValueError("image must be RGB uint8")
     return image.reshape(-1, 3).astype(np.float64)
+
+
+def statistic_samples(image: np.ndarray) -> np.ndarray:
+    """将 RGB 图像按 LeRobot 规则下采样并展平为逐通道统计样本。"""
+    image_samples(image)
+    downsampled = auto_downsample_height_width(image.transpose(2, 0, 1))
+    return downsampled.transpose(1, 2, 0).reshape(-1, 3).astype(np.float64)
+
+
+def validate_statistics(stats: dict) -> None:
+    """验证 canonical 视频统计的完整字段、形状、dtype 与有限性。"""
+    if set(stats) != STAT_FIELDS:
+        raise ValueError("invalid statistic fields")
+    for key, value in stats.items():
+        array = np.asarray(value)
+        if key == "count":
+            if array.shape != (1,) or array.dtype != np.int64 or array[0] <= 0:
+                raise ValueError("statistics must have shape or dtype (1,) int64 and be positive")
+        elif array.shape != (3,) or array.dtype != np.float64 or not np.isfinite(array).all():
+            raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
+    ordered = np.stack(
+        [stats[key] for key in ("min", "q01", "q10", "q50", "q90", "q99", "max")]
+    )
+    if np.any(np.diff(ordered, axis=0) < 0):
+        raise ValueError("statistics quantiles must be ordered")
+    if np.any(stats["mean"] < stats["min"]) or np.any(stats["mean"] > stats["max"]):
+        raise ValueError("statistics mean must be within min and max")
+    if np.any(stats["std"] < 0):
+        raise ValueError("statistics std must be nonnegative")
 
 
 def compute_video_stats(path: str | Path, frame_count: int) -> dict[str, np.ndarray]:
@@ -33,23 +63,16 @@ def compute_video_stats(path: str | Path, frame_count: int) -> dict[str, np.ndar
         LeRobot writer 所需的逐通道原始统计。
     """
     capture = cv2.VideoCapture(str(path))
-    samples = []
+    statistics = RunningQuantileStats()
     try:
         for index in range(frame_count):
             ok, frame = capture.read()
             if not ok:
                 raise ValueError(f"video ended before action {index}: {path}")
-            samples.append(image_samples(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+            statistics.update(statistic_samples(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
     finally:
         capture.release()
-    values = np.concatenate(samples)
-    return {
-        "count": np.array([len(values)]),
-        "mean": np.mean(values, axis=0),
-        "min": np.min(values, axis=0),
-        "max": np.max(values, axis=0),
-        "std": np.std(values, axis=0),
-    }
+    return statistics.get_statistics()
 
 
 class ActionAlignedVideoStats:
@@ -58,7 +81,7 @@ class ActionAlignedVideoStats:
     def __init__(self, camera_names: tuple[str, ...]) -> None:
         self.camera_names = camera_names
         self.pending: dict[str, np.ndarray] | None = None
-        self.frames: dict[str, list[np.ndarray]] = {name: [] for name in camera_names}
+        self.statistics = {name: RunningQuantileStats() for name in camera_names}
         self.frame_count = 0
 
     def append(self, images: dict[str, np.ndarray]) -> None:
@@ -69,30 +92,24 @@ class ActionAlignedVideoStats:
             image_samples(frame)
         if self.pending is not None:
             for name, frame in self.pending.items():
-                self.frames[name].append(image_samples(frame))
+                self.statistics[name].update(statistic_samples(frame))
         self.pending = {name: images[name].copy() for name in self.camera_names}
         self.frame_count += 1
 
     def finish(self, action_count: int) -> dict[str, dict[str, np.ndarray]]:
-        """返回每个相机的逐通道均值、最小值和最大值。"""
+        """返回每个相机的完整 canonical 逐通道统计。"""
         if self.frame_count != action_count + 1:
             raise ValueError("expected N action frames and one terminal frame")
         return {
-            name: {key: getattr(np, reducer)(np.concatenate(self.frames[name]), axis=0)
-                   for key, reducer in (("mean", "mean"), ("min", "min"), ("max", "max"))}
-            for name in self.camera_names
+            name: statistics.get_statistics()
+            for name, statistics in self.statistics.items()
         }
 
 
 def write_raw_video_stats(root: str | Path, stats: dict, action_count: int) -> Path:
     """原子写入 v2 sidecar，并拒绝非有限统计值。"""
     for camera in stats.values():
-        if set(camera) != STAT_FIELDS:
-            raise ValueError("invalid statistic fields")
-        for value in camera.values():
-            array = np.asarray(value)
-            if array.shape != (3,) or array.dtype != np.float64 or not np.isfinite(array).all():
-                raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
+        validate_statistics(camera)
     root = Path(root)
     path = root / RAW_VIDEO_STATS_FILE
     payload = {"format": RAW_DATASET_FORMAT, "algorithm": ALGORITHM,
@@ -122,11 +139,7 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
         for name in camera_names:
             camera = payload["stats"][name]
             result[name] = {key: np.asarray(value) for key, value in camera.items()}
-            if set(result[name]) != STAT_FIELDS:
-                raise ValueError("invalid statistics fields")
-            for value in result[name].values():
-                if value.shape != (3,) or value.dtype != np.float64 or not np.isfinite(value).all():
-                    raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
+            validate_statistics(result[name])
         return result
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         if isinstance(error, ValueError):

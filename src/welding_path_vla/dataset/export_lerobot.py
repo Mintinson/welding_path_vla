@@ -426,11 +426,7 @@ def passthrough_statistics(episode: EpisodeReader) -> dict[str, dict[str, np.nda
         raise ValueError(f"unsupported raw dataset format: {format_name}")
     raw = read_raw_video_stats(episode.path, ("global", "wrist"), episode.action_count)
     return {
-        key: {
-            "count": np.array([episode.action_count]),
-            "std": np.zeros(3),
-            **raw[name],
-        }
+        key: raw[name]
         for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))
     }
 

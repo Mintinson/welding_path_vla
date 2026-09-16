@@ -14,6 +14,22 @@ from welding_path_vla.dataset.video_stats import (
 )
 
 
+def canonical_statistics(value: float = 1.0) -> dict[str, np.ndarray]:
+    """创建符合 v2 契约的单相机统计。"""
+    return {
+        "count": np.array([16], dtype=np.int64),
+        "min": np.full(3, value - 2, dtype=np.float64),
+        "max": np.full(3, value + 2, dtype=np.float64),
+        "mean": np.full(3, value, dtype=np.float64),
+        "std": np.ones(3, dtype=np.float64),
+        "q01": np.full(3, value - 1.8, dtype=np.float64),
+        "q10": np.full(3, value - 1.5, dtype=np.float64),
+        "q50": np.full(3, value, dtype=np.float64),
+        "q90": np.full(3, value + 1.5, dtype=np.float64),
+        "q99": np.full(3, value + 1.8, dtype=np.float64),
+    }
+
+
 def test_compute_video_stats_uses_action_frames_only(tmp_path: Path):
     """解码回退应忽略 terminal frame 并保留 raw 0--255 数值。"""
     path = tmp_path / "global.mp4"
@@ -25,6 +41,7 @@ def test_compute_video_stats_uses_action_frames_only(tmp_path: Path):
     stats = compute_video_stats(path, frame_count=2)
 
     assert stats["count"].tolist() == [16]
+    assert set(stats) == {"min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99"}
     assert np.all(stats["mean"] < 50)
     assert np.all(stats["max"] < 50)
     assert np.all(stats["min"] >= 0)
@@ -70,8 +87,7 @@ def test_action_aligned_stats_reject_mismatched_action_and_state_counts():
 
 
 def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
-    stats = {"global": {key: np.array(value, dtype=np.float64) for key, value in {
-        "mean": [1.0, 2.0, 3.0], "min": [0, 0, 0], "max": [4, 5, 6]}.items()}}
+    stats = {"global": canonical_statistics()}
     path = write_raw_video_stats(tmp_path, stats, action_count=2)
     assert path.name == "video_stats.json"
     loaded = read_raw_video_stats(tmp_path, ("global",), action_count=2)
@@ -86,36 +102,65 @@ def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
 
 
 def test_raw_video_stats_reject_missing_camera_and_non_finite_values(tmp_path):
-    stats = {"global": {key: np.array(value, dtype=np.float64) for key, value in {
-        "mean": [1.0, 2.0, 3.0], "min": [0, 0, 0], "max": [4, 5, 6]}.items()}}
+    stats = {"global": canonical_statistics()}
     write_raw_video_stats(tmp_path, stats, action_count=2)
     with pytest.raises(ValueError, match="camera"):
         read_raw_video_stats(tmp_path, ("global", "wrist"), action_count=2)
-    bad = {"global": {"mean": np.array([np.nan, 2.0, 3.0]), "min": np.zeros(3), "max": np.ones(3)}}
+    bad = {"global": canonical_statistics()}
+    bad["global"]["mean"] = np.array([np.nan, 2.0, 3.0])
     with pytest.raises(ValueError, match="finite"):
         write_raw_video_stats(tmp_path, bad, action_count=2)
 
 
-@pytest.mark.parametrize("field, value", [("mean", np.zeros(2)), ("min", np.zeros((3, 1))), ("max", np.zeros(3, dtype=np.int32))])
+@pytest.mark.parametrize("field, value", [("mean", np.zeros(2)), ("min", np.zeros((3, 1))), ("count", np.zeros(3, dtype=np.int64))])
 def test_raw_video_stats_reject_wrong_field_shape_or_dtype(tmp_path, field, value):
-    stats = {"global": {"mean": np.zeros(3), "min": np.zeros(3), "max": np.ones(3)}}
+    stats = {"global": canonical_statistics()}
     stats["global"][field] = value
     with pytest.raises(ValueError, match="shape or dtype"):
         write_raw_video_stats(tmp_path, stats, action_count=2)
 
 
 def test_raw_video_stats_reject_incomplete_fields_and_atomic_write(tmp_path):
-    incomplete = {"global": {"mean": np.zeros(3), "min": np.zeros(3)}}
+    incomplete = {"global": canonical_statistics()}
+    incomplete["global"].pop("q99")
     with pytest.raises(ValueError, match="fields"):
         write_raw_video_stats(tmp_path, incomplete, action_count=2)
-    stats = {"global": {"mean": np.zeros(3), "min": np.zeros(3), "max": np.ones(3)}}
+    stats = {"global": canonical_statistics()}
     path = write_raw_video_stats(tmp_path, stats, action_count=2)
     assert not (tmp_path / ".video_stats.json.tmp").exists()
     assert path.exists()
 
 
+def test_raw_video_stats_reader_rejects_incomplete_and_malformed_fields(tmp_path):
+    """读取 v2 sidecar 时也必须拒绝缺失字段和非 int64 样本数。"""
+    path = write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    payload = json.loads(path.read_text())
+    payload["stats"]["global"].pop("q99")
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="fields"):
+        read_raw_video_stats(tmp_path, ("global",), action_count=2)
+
+    write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    payload = json.loads(path.read_text())
+    payload["stats"]["global"]["count"] = [1.5]
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="int64"):
+        read_raw_video_stats(tmp_path, ("global",), action_count=2)
+
+
+def test_raw_video_stats_reader_rejects_unordered_quantiles(tmp_path):
+    """v2 canonical quantile 必须在每个通道内单调递增。"""
+    path = write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    payload = json.loads(path.read_text())
+    payload["stats"]["global"]["q10"] = [-1.0, -1.0, -1.0]
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="ordered"):
+        read_raw_video_stats(tmp_path, ("global",), action_count=2)
+
+
 def test_raw_video_stats_replaces_sidecar_atomically(tmp_path, monkeypatch):
-    stats = {"global": {"mean": np.zeros(3), "min": np.zeros(3), "max": np.ones(3)}}
+    stats = {"global": canonical_statistics()}
     replacements = []
     original_replace = video_stats_module.os.replace
 
