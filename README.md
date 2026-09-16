@@ -176,6 +176,29 @@ pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
 
 `export-lerobot` 默认读取 `configs/base.yaml`，采用有界流式 AV1、CRF 30、preset 12 编码，直接从 raw MP4 写入视频 feature，不生成中间 PNG。可通过 `--lerobot_export.incremental=true` 追加数据，用 `--lerobot_export.start_episode/--lerobot_export.end_episode` 选择源 episode 闭区间；逐帧图片是显式选项 `--lerobot_export.save_images=true`。完整配置与示例见[数据采集、训练与多样性扩展报告](docs/data-training-workflow.md#5-导出-lerobot-数据)。
 
+### 原始视频统计兼容性
+
+raw `weldpath_raw_v2` episode 在录制时把每个相机送入 H.264 编码器之前的 RGB `uint8`
+帧写入 `video_stats.json` 的归一化统计。episode 有 N 条动作和 N+1 个状态/视频帧；统计只
+包含与 N 条动作对齐的前 N 帧，不包含最后的 terminal frame。这样统计反映原始 RGB，既不受
+有损编码影响，也不会把动作之后的终止状态混入训练样本。
+
+导出开启 `--lerobot_export.video_passthrough=true` 时，v2 会先校验 sidecar 的相机集合、动作/
+状态计数、字段、dtype 和数值，再把其中统计交给 LeRobot；该快路径无需为统计解码视频。两个
+相机的 H.264 packet 仍逐 packet 原样重封装，既不重新编码也不改变压缩数据；输入必须是同一
+FPS、无 B 帧且 packet 数足够的 H.264。v1（或未带 sidecar 的旧 episode）保持兼容：passthrough
+重封装后从前 N 个动作帧解码统计。无效 v2 sidecar 会在 LeRobot 元数据写入前失败，不能静默
+回退为解码。
+
+可选地用下列命令为旧 v1 raw 数据回填 sidecar；默认只是预演，只有 `--apply` 才会写入。有效
+的已有 sidecar 会作为可恢复检查点跳过，无效或并发出现的 sidecar 会拒绝覆盖；回填不会修改
+`trajectory.npz`、`metadata.json` 或两个原始 H.264 MP4。
+
+```bash
+pixi run -e data python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4
+pixi run -e data python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4 --apply
+```
+
 旧仿真数据可用 `rerender-dataset` 原地补录黑色待焊线和白色已焊轨迹。raw 模式只替换双相机 MP4；LeRobot 模式通过 manifest 找回 raw 唯一事实源，重建后逐列校验状态、动作、时间戳和索引不变，再原子替换数据集。
 
 Pixi 任务直接调用 `scripts/` 下的单一职责脚本；也可以在对应 Pixi shell 中直接运行，例如 `python scripts/evaluate.py --help`。`src/welding_path_vla` 只提供可复用包代码，不再承载命令行入口。任务与脚本的完整映射见 [脚本入口与模块边界](docs/script-entrypoints.md)。
