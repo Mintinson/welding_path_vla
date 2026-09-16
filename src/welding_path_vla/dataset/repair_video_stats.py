@@ -107,7 +107,10 @@ def repair_video_stats(episode_paths: tuple[Path, ...], checkpoint_path: str | P
     path.write_text(
         json.dumps(
             {
-                key: {"fingerprint": value["fingerprint"], "statistics": serialize_statistics(value["statistics"])}
+                key: {
+                    "fingerprint": value["fingerprint"],
+                    "statistics": serialize_statistics(value["statistics"]),
+                }
                 for key, value in checkpoint.items()
             }
         ),

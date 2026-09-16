@@ -7,9 +7,9 @@ import cv2
 import numpy as np
 import pytest
 
-import welding_path_vla.dataset.video_stats as video_stats_module
-import welding_path_vla.dataset.repair_video_stats as repair_module
 import welding_path_vla.dataset.backfill_raw_video_stats as backfill_module
+import welding_path_vla.dataset.repair_video_stats as repair_module
+import welding_path_vla.dataset.video_stats as video_stats_module
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT_V1, RAW_DATASET_FORMAT_V2
 from welding_path_vla.dataset.video_stats import (
     ActionAlignedVideoStats,
@@ -92,7 +92,7 @@ def test_compute_video_stats_produces_canonical_quantiles(tmp_path: Path):
     read_raw_video_stats(tmp_path, ("global",), action_count=2)
 
 
-def test_action_aligned_stats_exclude_terminal_frame():
+def test_action_aligned_stats_exclude_terminal_frame(tmp_path: Path):
     accumulator = ActionAlignedVideoStats(("global", "wrist"))
     frames = [np.full((24, 32, 3), value, np.uint8) for value in (10, 20, 250)]
     for frame in frames:
@@ -100,6 +100,8 @@ def test_action_aligned_stats_exclude_terminal_frame():
     stats = accumulator.finish(action_count=2)
     assert stats["global"]["mean"].tolist() == [15.0, 15.0, 15.0]
     assert stats["global"]["max"].tolist() == [20, 20, 20]
+    write_raw_video_stats(tmp_path, stats, action_count=2)
+    read_raw_video_stats(tmp_path, ("global", "wrist"), action_count=2)
 
 
 def test_action_aligned_stats_reject_invalid_rgb_frame():
@@ -157,7 +159,10 @@ def test_raw_video_stats_reject_missing_camera_and_non_finite_values(tmp_path):
         write_raw_video_stats(tmp_path, bad, action_count=2)
 
 
-@pytest.mark.parametrize("field, value", [("mean", np.zeros(2)), ("min", np.zeros((3, 1))), ("count", np.zeros(3, dtype=np.int64))])
+@pytest.mark.parametrize(
+    "field, value",
+    [("mean", np.zeros(2)), ("min", np.zeros((3, 1))), ("count", np.zeros(3, dtype=np.int64))],
+)
 def test_raw_video_stats_reject_wrong_field_shape_or_dtype(tmp_path, field, value):
     stats = {"global": canonical_statistics()}
     stats["global"][field] = value

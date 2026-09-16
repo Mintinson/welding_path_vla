@@ -425,10 +425,7 @@ def passthrough_statistics(episode: EpisodeReader) -> dict[str, dict[str, np.nda
     if format_name != RAW_DATASET_FORMAT_V2:
         raise ValueError(f"unsupported raw dataset format: {format_name}")
     raw = read_raw_video_stats(episode.path, ("global", "wrist"), episode.action_count)
-    return {
-        key: raw[name]
-        for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))
-    }
+    return {key: raw[name] for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))}
 
 
 def passthrough_episode_buffer(

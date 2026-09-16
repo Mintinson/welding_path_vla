@@ -1,7 +1,7 @@
 import json
-from hashlib import sha256
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import av
@@ -19,8 +19,8 @@ from welding_path_vla.dataset.export_lerobot import (
     upload_lerobot_dataset,
     valid_episode_paths,
 )
-from welding_path_vla.dataset.video_stats import write_raw_video_stats
 from welding_path_vla.dataset.migrate_task_parameters import migrate_task_parameters
+from welding_path_vla.dataset.video_stats import write_raw_video_stats
 
 
 def write_video(path: Path, frame_count: int, value: int) -> None:
@@ -153,9 +153,7 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
     episode = write_passthrough_episode(source, 0, "weldpath_raw_v2")
     expected = raw_statistics()
     write_raw_video_stats(episode, expected, action_count=3)
-    source_hashes = {
-        name: h264_packet_hashes(episode / f"{name}.mp4")[:3] for name in expected
-    }
+    source_hashes = {name: h264_packet_hashes(episode / f"{name}.mp4")[:3] for name in expected}
     monkeypatch.setattr(
         "welding_path_vla.dataset.export_lerobot.compute_video_stats",
         lambda *_: (_ for _ in ()).throw(AssertionError("v2 must not decode")),
@@ -177,9 +175,7 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
     ):
         for field, value in expected[name].items():
             normalized = value if field == "count" else (value / 255).reshape(3, 1, 1)
-            np.testing.assert_allclose(
-                stats[key][field], normalized
-            )
+            np.testing.assert_allclose(stats[key][field], normalized)
             np.testing.assert_allclose(
                 episode_stats[f"stats/{key}/{field}"].to_pylist()[0], normalized
             )
@@ -187,7 +183,9 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
         assert h264_packet_hashes(target) == source_hashes[name]
 
 
-def test_legacy_video_stats_decode_each_camera(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_video_stats_decode_each_camera(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """没有 sidecar 的 v1 episode 应仅通过解码回退为双相机生成统计。"""
     source, output = tmp_path / "raw", tmp_path / "lerobot"
     write_passthrough_episode(source, 0, "weldpath_raw_v1")
@@ -199,7 +197,9 @@ def test_legacy_video_stats_decode_each_camera(tmp_path: Path, monkeypatch: pyte
             **raw_statistics()[calls[-1][0]],
         }
 
-    monkeypatch.setattr("welding_path_vla.dataset.export_lerobot.compute_video_stats", record_decode)
+    monkeypatch.setattr(
+        "welding_path_vla.dataset.export_lerobot.compute_video_stats", record_decode
+    )
     export_lerobot(
         source,
         output,

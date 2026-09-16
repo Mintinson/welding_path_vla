@@ -29,6 +29,11 @@ class EpisodeReader:
 
 
 __all__ = [
-    "METADATA_FILE", "RAW_DATASET_FORMAT", "RAW_DATASET_FORMAT_V1",
-    "RAW_DATASET_FORMAT_V2", "RAW_VIDEO_STATS_FILE", "STATE_FILE", "EpisodeReader",
+    "METADATA_FILE",
+    "RAW_DATASET_FORMAT",
+    "RAW_DATASET_FORMAT_V1",
+    "RAW_DATASET_FORMAT_V2",
+    "RAW_VIDEO_STATS_FILE",
+    "STATE_FILE",
+    "EpisodeReader",
 ]

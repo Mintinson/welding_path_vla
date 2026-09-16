@@ -31,6 +31,15 @@ def statistic_samples(image: np.ndarray) -> np.ndarray:
     return downsampled.transpose(1, 2, 0).reshape(-1, 3).astype(np.float64)
 
 
+def canonicalize_statistics(stats: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """夹紧并单调化直方图分位数，保持原始 RGB 统计量纲。"""
+    fields = ("min", "q01", "q10", "q50", "q90", "q99", "max")
+    values = np.stack([stats[field] for field in fields])
+    values = np.maximum.accumulate(np.clip(values, stats["min"], stats["max"]), axis=0)
+    stats.update(zip(fields, values, strict=True))
+    return stats
+
+
 def validate_statistics(stats: dict) -> None:
     """验证 canonical 视频统计的完整字段、形状、dtype 与有限性。"""
     if set(stats) != STAT_FIELDS:
@@ -42,9 +51,7 @@ def validate_statistics(stats: dict) -> None:
                 raise ValueError("statistics must have shape or dtype (1,) int64 and be positive")
         elif array.shape != (3,) or array.dtype != np.float64 or not np.isfinite(array).all():
             raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
-    ordered = np.stack(
-        [stats[key] for key in ("min", "q01", "q10", "q50", "q90", "q99", "max")]
-    )
+    ordered = np.stack([stats[key] for key in ("min", "q01", "q10", "q50", "q90", "q99", "max")])
     if np.any(np.diff(ordered, axis=0) < 0):
         raise ValueError("statistics quantiles must be ordered")
     if np.any(stats["mean"] < stats["min"]) or np.any(stats["mean"] > stats["max"]):
@@ -76,13 +83,7 @@ def compute_video_stats(
             statistics.update(statistic_samples(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
     finally:
         capture.release()
-    result = statistics.get_statistics()
-    # LeRobot 直方图边界可能让 q01 略小于 min，统一夹紧为 canonical 契约。
-    fields = ("min", "q01", "q10", "q50", "q90", "q99", "max")
-    values = np.stack([result[field] for field in fields])
-    values = np.maximum.accumulate(np.clip(values, result["min"], result["max"]), axis=0)
-    result.update(zip(fields, values, strict=True))
-    return result
+    return canonicalize_statistics(statistics.get_statistics())
 
 
 class ActionAlignedVideoStats:
@@ -111,7 +112,7 @@ class ActionAlignedVideoStats:
         if self.frame_count != action_count + 1:
             raise ValueError("expected N action frames and one terminal frame")
         return {
-            name: statistics.get_statistics()
+            name: canonicalize_statistics(statistics.get_statistics())
             for name, statistics in self.statistics.items()
         }
 
@@ -131,11 +132,18 @@ def write_raw_video_stats(
         validate_statistics(camera)
     root = Path(root)
     path = root / RAW_VIDEO_STATS_FILE
-    payload = {"format": RAW_DATASET_FORMAT, "algorithm": ALGORITHM,
-               "action_count": action_count, "state_count": action_count + 1,
-               "cameras": list(stats), "dtype": "float64",
-               "stats": {name: {key: np.asarray(value).tolist() for key, value in camera.items()}
-                         for name, camera in stats.items()}}
+    payload = {
+        "format": RAW_DATASET_FORMAT,
+        "algorithm": ALGORITHM,
+        "action_count": action_count,
+        "state_count": action_count + 1,
+        "cameras": list(stats),
+        "dtype": "float64",
+        "stats": {
+            name: {key: np.asarray(value).tolist() for key, value in camera.items()}
+            for name, camera in stats.items()
+        },
+    }
     temporary = path.with_name(f".{path.name}.tmp")
     if not overwrite:
         descriptor, temporary_name = tempfile.mkstemp(
@@ -154,7 +162,9 @@ def write_raw_video_stats(
     return path
 
 
-def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action_count: int) -> dict:
+def read_raw_video_stats(
+    root: str | Path, camera_names: tuple[str, ...], action_count: int
+) -> dict:
     """读取并校验 sidecar 的格式、相机集合、计数和数值完整性。"""
     try:
         payload = json.loads((Path(root) / RAW_VIDEO_STATS_FILE).read_text(encoding="utf-8"))
@@ -162,9 +172,11 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
             raise ValueError("invalid format or algorithm")
         if payload.get("dtype") != "float64":
             raise ValueError("invalid statistics dtype")
-        if (payload.get("action_count") != action_count
-                or payload.get("state_count") != action_count + 1
-                or set(payload.get("cameras", ())) != set(camera_names)):
+        if (
+            payload.get("action_count") != action_count
+            or payload.get("state_count") != action_count + 1
+            or set(payload.get("cameras", ())) != set(camera_names)
+        ):
             raise ValueError("invalid action count or camera set")
         result = {}
         for name in camera_names:
@@ -178,4 +190,10 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
         raise ValueError("invalid raw video statistics sidecar") from error
 
 
-__all__ = ["ActionAlignedVideoStats", "compute_video_stats", "image_samples", "read_raw_video_stats", "write_raw_video_stats"]
+__all__ = [
+    "ActionAlignedVideoStats",
+    "compute_video_stats",
+    "image_samples",
+    "read_raw_video_stats",
+    "write_raw_video_stats",
+]
