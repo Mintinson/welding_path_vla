@@ -66,7 +66,10 @@ def backfill_episode(path: Path, apply: bool) -> str:
         name: compute_video_stats(path / f"{name}.mp4", count, terminal_frame=True)
         for name in CAMERAS
     }
-    write_raw_video_stats(path, statistics, count)
+    try:
+        write_raw_video_stats(path, statistics, count, overwrite=False)
+    except FileExistsError:
+        return "refused"
     return "backfilled"
 
 

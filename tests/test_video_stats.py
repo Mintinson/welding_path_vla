@@ -220,6 +220,18 @@ def test_raw_video_stats_replaces_sidecar_atomically(tmp_path, monkeypatch):
     assert replacements[0][0] == tmp_path / ".video_stats.json.tmp"
 
 
+def test_raw_video_stats_exclusive_write_refuses_existing_sidecar(tmp_path):
+    """非覆盖写入必须保留并拒绝已出现的 sidecar。"""
+    path = tmp_path / "video_stats.json"
+    existing = b'{"invalid": true}'
+    path.write_bytes(existing)
+
+    with pytest.raises(FileExistsError):
+        write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, 2, overwrite=False)
+
+    assert path.read_bytes() == existing
+
+
 def repair_episode(root: Path, index: int, format_name: str) -> Path:
     """创建只包含 repair 所需元数据和视频占位符的原始 episode。"""
     episode = root / f"episode_{index:06d}"
@@ -321,18 +333,10 @@ def test_backfill_dry_run_preserves_v1_sources_and_requires_apply(tmp_path):
     assert source_hashes(episode) == before
 
 
-def test_backfill_apply_writes_atomic_sidecar_and_preserves_v1_label(tmp_path, monkeypatch):
+def test_backfill_apply_writes_atomic_sidecar_and_preserves_v1_label(tmp_path):
     """显式 apply 仅以原子 sidecar 写入补充统计，不修改 v1 标签或源字节。"""
     episode = backfill_episode(tmp_path, 0)
     before = source_hashes(episode)
-    replacements = []
-    original_replace = video_stats_module.os.replace
-
-    def record_replace(source, destination):
-        replacements.append((Path(source), Path(destination)))
-        original_replace(source, destination)
-
-    monkeypatch.setattr(video_stats_module.os, "replace", record_replace)
     report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
 
     assert report.as_dict() == {
@@ -341,7 +345,7 @@ def test_backfill_apply_writes_atomic_sidecar_and_preserves_v1_label(tmp_path, m
         "refused": 0,
         "skipped": 0,
     }
-    assert replacements == [(episode / ".video_stats.json.tmp", episode / "video_stats.json")]
+    assert not list(episode.glob(".video_stats.json.*.tmp"))
     assert (
         json.loads((episode / "metadata.json").read_text())["dataset_format"]
         == RAW_DATASET_FORMAT_V1
@@ -382,6 +386,24 @@ def test_backfill_refuses_invalid_sidecar_without_overwrite(tmp_path, monkeypatc
 
     assert report.as_dict() == {"backfilled": 0, "dry_run": 0, "refused": 1, "skipped": 0}
     assert sidecar.read_bytes() == before
+
+
+def test_backfill_refuses_sidecar_created_during_decode(tmp_path, monkeypatch):
+    """解码期间新出现的无效 sidecar 必须保留，不能被回填覆盖。"""
+    episode = backfill_episode(tmp_path, 0)
+    sidecar = episode / "video_stats.json"
+    existing = b'{"invalid": true}'
+
+    def decode(*args, **kwargs):
+        sidecar.write_bytes(existing)
+        return canonical_statistics()
+
+    monkeypatch.setattr(backfill_module, "compute_video_stats", decode)
+
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
+
+    assert report.as_dict() == {"backfilled": 0, "dry_run": 0, "refused": 1, "skipped": 0}
+    assert sidecar.read_bytes() == existing
 
 
 def test_backfill_uses_multiple_workers_for_independent_episodes(tmp_path):

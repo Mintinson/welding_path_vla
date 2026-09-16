@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -115,8 +116,17 @@ class ActionAlignedVideoStats:
         }
 
 
-def write_raw_video_stats(root: str | Path, stats: dict, action_count: int) -> Path:
-    """原子写入 v2 sidecar，并拒绝非有限统计值。"""
+def write_raw_video_stats(
+    root: str | Path, stats: dict, action_count: int, overwrite: bool = True
+) -> Path:
+    """原子写入 v2 sidecar，并拒绝非有限统计值。
+
+    Args:
+        root: sidecar 所属 episode 目录。
+        stats: 每路相机的 canonical 统计。
+        action_count: 与视频帧对齐的动作数量。
+        overwrite: 为 False 时拒绝覆盖并发出现的目标 sidecar。
+    """
     for camera in stats.values():
         validate_statistics(camera)
     root = Path(root)
@@ -127,8 +137,20 @@ def write_raw_video_stats(root: str | Path, stats: dict, action_count: int) -> P
                "stats": {name: {key: np.asarray(value).tolist() for key, value in camera.items()}
                          for name, camera in stats.items()}}
     temporary = path.with_name(f".{path.name}.tmp")
+    if not overwrite:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=root, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
     temporary.write_text(json.dumps(payload), encoding="utf-8")
-    os.replace(temporary, path)
+    if overwrite:
+        os.replace(temporary, path)
+    else:
+        try:
+            os.link(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return path
 
 
