@@ -138,7 +138,9 @@ class EpisodeRecorder:
             )
         stats = self.video_stats.finish(action_count)
         self.video.finish()
-        write_raw_video_stats(self.temporary_path, stats, action_count)
+        write_raw_video_stats(
+            self.temporary_path, stats, action_count, image_shapes=self.video_stats.image_shapes
+        )
         arrays["episode_done"] = np.arange(action_count) == action_count - 1
         executed_rotation = np.asarray(
             [

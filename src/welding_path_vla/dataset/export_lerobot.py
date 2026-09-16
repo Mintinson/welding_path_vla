@@ -414,15 +414,16 @@ class PassthroughEpisodeEncoder:
 
 
 def passthrough_statistics(episode: EpisodeReader) -> dict[str, dict[str, np.ndarray]] | None:
-    """读取 v2 sidecar 并映射为 LeRobot 视频 feature 的 raw 统计。
+    """读取已有 sidecar 并映射为 LeRobot 视频 feature 的 raw 统计。
 
-    v1 没有 sidecar 时返回 ``None``，由 encoder 在重封装后解码回退；v2
-    必须在 writer 创建元数据前通过校验，避免发布半成品数据集。
+    v1 没有 sidecar 时返回 ``None``，由 encoder 在重封装后解码回退；v1/v2 的
+    有效 sidecar 都在 writer 创建元数据前通过校验，避免发布半成品数据集。
     """
     format_name = episode.metadata.get("dataset_format", RAW_DATASET_FORMAT_V1)
-    if format_name == RAW_DATASET_FORMAT_V1:
+    sidecar = episode.path / "video_stats.json"
+    if format_name == RAW_DATASET_FORMAT_V1 and not sidecar.exists():
         return None
-    if format_name != RAW_DATASET_FORMAT_V2:
+    if format_name not in (RAW_DATASET_FORMAT_V1, RAW_DATASET_FORMAT_V2):
         raise ValueError(f"unsupported raw dataset format: {format_name}")
     raw = read_raw_video_stats(episode.path, ("global", "wrist"), episode.action_count)
     return {key: raw[name] for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))}

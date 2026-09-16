@@ -11,7 +11,12 @@ from pathlib import Path
 import numpy as np
 
 from .raw_schema import RAW_DATASET_FORMAT_V1, RAW_VIDEO_STATS_FILE
-from .video_stats import compute_video_stats, read_raw_video_stats, write_raw_video_stats
+from .video_stats import (
+    compute_video_stats,
+    read_raw_video_stats,
+    video_image_shape,
+    write_raw_video_stats,
+)
 
 CAMERAS = ("global", "wrist")
 
@@ -67,7 +72,13 @@ def backfill_episode(path: Path, apply: bool) -> str:
         for name in CAMERAS
     }
     try:
-        write_raw_video_stats(path, statistics, count, overwrite=False)
+        write_raw_video_stats(
+            path,
+            statistics,
+            count,
+            image_shapes={name: video_image_shape(path / f"{name}.mp4") for name in CAMERAS},
+            overwrite=False,
+        )
     except FileExistsError:
         return "refused"
     return "backfilled"

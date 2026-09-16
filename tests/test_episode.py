@@ -79,6 +79,7 @@ def test_episode_records_action_aligned_video_stats(tmp_path: Path) -> None:
     metadata = json.loads((episode / "metadata.json").read_text())
     assert stats["action_count"] + 1 == stats["state_count"]
     assert set(stats["cameras"]) == {"global", "wrist"}
+    assert stats["image_shapes"] == {"global": [48, 64, 3], "wrist": [48, 64, 3]}
     assert metadata["dataset_format"] == "weldpath_raw_v2"
 
 
@@ -100,6 +101,9 @@ def test_recorder_writes_action_aligned_video_stats(tmp_path: Path) -> None:
     stats = json.loads((episode / "video_stats.json").read_text())
     assert stats["action_count"] + 1 == stats["state_count"]
     assert set(stats["cameras"]) == {"global", "wrist"}
+    assert stats["color_space"] == "RGB"
+    assert stats["frame_selection"] == "first_action_count_frames_excluding_terminal_state"
+    assert stats["image_shapes"] == {"global": [48, 64, 3], "wrist": [48, 64, 3]}
 
 
 def test_abort_does_not_publish_video_stats(tmp_path: Path) -> None:

@@ -19,6 +19,17 @@ from welding_path_vla.dataset.video_stats import (
 )
 
 
+def write_sidecar(root: Path, stats: dict, action_count: int, **kwargs) -> Path:
+    """为不关心分辨率的单元测试提供有效 HWC 形状。"""
+    return write_raw_video_stats(
+        root,
+        stats,
+        action_count,
+        image_shapes={name: (2, 4, 3) for name in stats},
+        **kwargs,
+    )
+
+
 def backfill_episode(root: Path, index: int) -> Path:
     """创建可供回填流程实际解码的 v1 原始 episode。"""
     episode = root / f"episode_{index:06d}"
@@ -87,7 +98,7 @@ def test_compute_video_stats_produces_canonical_quantiles(tmp_path: Path):
         writer.write(np.full((2, 4, 3), value, dtype=np.uint8))
     writer.release()
 
-    write_raw_video_stats(tmp_path, {"global": compute_video_stats(path, frame_count=2)}, 2)
+    write_sidecar(tmp_path, {"global": compute_video_stats(path, frame_count=2)}, 2)
 
     read_raw_video_stats(tmp_path, ("global",), action_count=2)
 
@@ -100,7 +111,7 @@ def test_action_aligned_stats_exclude_terminal_frame(tmp_path: Path):
     stats = accumulator.finish(action_count=2)
     assert stats["global"]["mean"].tolist() == [15.0, 15.0, 15.0]
     assert stats["global"]["max"].tolist() == [20, 20, 20]
-    write_raw_video_stats(tmp_path, stats, action_count=2)
+    write_sidecar(tmp_path, stats, action_count=2)
     read_raw_video_stats(tmp_path, ("global", "wrist"), action_count=2)
 
 
@@ -135,7 +146,9 @@ def test_action_aligned_stats_reject_mismatched_action_and_state_counts():
 
 def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
     stats = {"global": canonical_statistics()}
-    path = write_raw_video_stats(tmp_path, stats, action_count=2)
+    path = write_raw_video_stats(
+        tmp_path, stats, action_count=2, image_shapes={"global": (2, 4, 3)}
+    )
     assert path.name == "video_stats.json"
     loaded = read_raw_video_stats(tmp_path, ("global",), action_count=2)
     for key in stats["global"]:
@@ -148,15 +161,55 @@ def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
         read_raw_video_stats(tmp_path, ("global",), action_count=2)
 
 
+def test_raw_video_stats_round_trip_includes_required_image_metadata(tmp_path):
+    """sidecar 必须记录 RGB、动作帧选择规则和逐相机 HWC 形状。"""
+    stats = {"global": canonical_statistics()}
+    path = write_raw_video_stats(
+        tmp_path, stats, action_count=2, image_shapes={"global": (2, 4, 3)}
+    )
+    payload = json.loads(path.read_text())
+
+    assert payload["color_space"] == "RGB"
+    assert payload["frame_selection"] == "first_action_count_frames_excluding_terminal_state"
+    assert payload["image_shapes"] == {"global": [2, 4, 3]}
+
+    read_raw_video_stats(tmp_path, ("global",), action_count=2)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("color_space", "BGR"),
+        ("frame_selection", "all_video_frames"),
+        ("image_shapes", None),
+        ("image_shapes", {"global": [2, 4]}),
+    ],
+)
+def test_raw_video_stats_rejects_invalid_required_image_metadata(tmp_path, field, value):
+    """设计规定的图像元数据缺失或错误时必须拒绝 sidecar。"""
+    path = write_raw_video_stats(
+        tmp_path,
+        {"global": canonical_statistics()},
+        action_count=2,
+        image_shapes={"global": (2, 4, 3)},
+    )
+    payload = json.loads(path.read_text())
+    payload[field] = value
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="image metadata"):
+        read_raw_video_stats(tmp_path, ("global",), action_count=2)
+
+
 def test_raw_video_stats_reject_missing_camera_and_non_finite_values(tmp_path):
     stats = {"global": canonical_statistics()}
-    write_raw_video_stats(tmp_path, stats, action_count=2)
+    write_sidecar(tmp_path, stats, action_count=2)
     with pytest.raises(ValueError, match="camera"):
         read_raw_video_stats(tmp_path, ("global", "wrist"), action_count=2)
     bad = {"global": canonical_statistics()}
     bad["global"]["mean"] = np.array([np.nan, 2.0, 3.0])
     with pytest.raises(ValueError, match="finite"):
-        write_raw_video_stats(tmp_path, bad, action_count=2)
+        write_sidecar(tmp_path, bad, action_count=2)
 
 
 @pytest.mark.parametrize(
@@ -167,30 +220,30 @@ def test_raw_video_stats_reject_wrong_field_shape_or_dtype(tmp_path, field, valu
     stats = {"global": canonical_statistics()}
     stats["global"][field] = value
     with pytest.raises(ValueError, match="shape or dtype"):
-        write_raw_video_stats(tmp_path, stats, action_count=2)
+        write_sidecar(tmp_path, stats, action_count=2)
 
 
 def test_raw_video_stats_reject_incomplete_fields_and_atomic_write(tmp_path):
     incomplete = {"global": canonical_statistics()}
     incomplete["global"].pop("q99")
     with pytest.raises(ValueError, match="fields"):
-        write_raw_video_stats(tmp_path, incomplete, action_count=2)
+        write_sidecar(tmp_path, incomplete, action_count=2)
     stats = {"global": canonical_statistics()}
-    path = write_raw_video_stats(tmp_path, stats, action_count=2)
+    path = write_sidecar(tmp_path, stats, action_count=2)
     assert not (tmp_path / ".video_stats.json.tmp").exists()
     assert path.exists()
 
 
 def test_raw_video_stats_reader_rejects_incomplete_and_malformed_fields(tmp_path):
     """读取 v2 sidecar 时也必须拒绝缺失字段和非 int64 样本数。"""
-    path = write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    path = write_sidecar(tmp_path, {"global": canonical_statistics()}, action_count=2)
     payload = json.loads(path.read_text())
     payload["stats"]["global"].pop("q99")
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="fields"):
         read_raw_video_stats(tmp_path, ("global",), action_count=2)
 
-    write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    write_sidecar(tmp_path, {"global": canonical_statistics()}, action_count=2)
     payload = json.loads(path.read_text())
     payload["stats"]["global"]["count"] = [1.5]
     path.write_text(json.dumps(payload))
@@ -200,7 +253,7 @@ def test_raw_video_stats_reader_rejects_incomplete_and_malformed_fields(tmp_path
 
 def test_raw_video_stats_reader_rejects_unordered_quantiles(tmp_path):
     """v2 canonical quantile 必须在每个通道内单调递增。"""
-    path = write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, action_count=2)
+    path = write_sidecar(tmp_path, {"global": canonical_statistics()}, action_count=2)
     payload = json.loads(path.read_text())
     payload["stats"]["global"]["q10"] = [-1.0, -1.0, -1.0]
     path.write_text(json.dumps(payload))
@@ -219,7 +272,7 @@ def test_raw_video_stats_replaces_sidecar_atomically(tmp_path, monkeypatch):
         original_replace(source, destination)
 
     monkeypatch.setattr(video_stats_module.os, "replace", record_replace)
-    write_raw_video_stats(tmp_path, stats, action_count=2)
+    write_sidecar(tmp_path, stats, action_count=2)
     assert len(replacements) == 1
     assert replacements[0][1] == tmp_path / "video_stats.json"
     assert replacements[0][0] == tmp_path / ".video_stats.json.tmp"
@@ -232,7 +285,7 @@ def test_raw_video_stats_exclusive_write_refuses_existing_sidecar(tmp_path):
     path.write_bytes(existing)
 
     with pytest.raises(FileExistsError):
-        write_raw_video_stats(tmp_path, {"global": canonical_statistics()}, 2, overwrite=False)
+        write_sidecar(tmp_path, {"global": canonical_statistics()}, 2, overwrite=False)
 
     assert path.read_bytes() == existing
 
@@ -252,7 +305,7 @@ def test_repair_mixed_raw_formats_reuses_v2_sidecar(tmp_path, monkeypatch):
     """v2 sidecar episode 不解码，v1 episode 仍逐相机解码回退。"""
     v2 = repair_episode(tmp_path, 0, RAW_DATASET_FORMAT_V2)
     v1 = repair_episode(tmp_path, 1, RAW_DATASET_FORMAT_V1)
-    write_raw_video_stats(v2, {name: canonical_statistics(20.0) for name in ("global", "wrist")}, 2)
+    write_sidecar(v2, {name: canonical_statistics(20.0) for name in ("global", "wrist")}, 2)
     decoded = []
 
     def decode(path, frame_count, terminal_frame=False):
@@ -273,7 +326,7 @@ def test_repair_mixed_raw_formats_reuses_v2_sidecar(tmp_path, monkeypatch):
 def test_repair_reuses_backfilled_v1_sidecar(tmp_path, monkeypatch):
     """v1 已回填有效 sidecar 时同样避免不必要的视频解码。"""
     episode = repair_episode(tmp_path, 0, RAW_DATASET_FORMAT_V1)
-    write_raw_video_stats(
+    write_sidecar(
         episode,
         {name: canonical_statistics(20.0) for name in ("global", "wrist")},
         2,
@@ -296,7 +349,7 @@ def test_repair_checkpoint_sidecar_replacement_invalidates_only_that_episode(tmp
     """替换一个 sidecar 只重算其所属 episode，其他检查点保持复用。"""
     episodes = tuple(repair_episode(tmp_path, index, RAW_DATASET_FORMAT_V2) for index in range(2))
     for episode in episodes:
-        write_raw_video_stats(
+        write_sidecar(
             episode,
             {name: canonical_statistics(10.0) for name in ("global", "wrist")},
             2,
@@ -317,7 +370,7 @@ def test_repair_checkpoint_sidecar_replacement_invalidates_only_that_episode(tmp
     repair_module.repair_video_stats(episodes, path)
     assert computed == []
 
-    write_raw_video_stats(
+    write_sidecar(
         episodes[0],
         {name: canonical_statistics(30.0) for name in ("global", "wrist")},
         2,

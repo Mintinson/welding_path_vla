@@ -179,16 +179,16 @@ pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
 ### 原始视频统计兼容性
 
 raw `weldpath_raw_v2` episode 在录制时把每个相机送入 H.264 编码器之前的 RGB `uint8`
-帧写入 `video_stats.json` 的归一化统计。episode 有 N 条动作和 N+1 个状态/视频帧；统计只
+帧写入 `video_stats.json` 的未归一化 raw RGB 统计。episode 有 N 条动作和 N+1 个状态/视频帧；统计只
 包含与 N 条动作对齐的前 N 帧，不包含最后的 terminal frame。这样统计反映原始 RGB，既不受
 有损编码影响，也不会把动作之后的终止状态混入训练样本。
 
 导出开启 `--lerobot_export.video_passthrough=true` 时，v2 会先校验 sidecar 的相机集合、动作/
-状态计数、字段、dtype 和数值，再把其中统计交给 LeRobot；该快路径无需为统计解码视频。两个
+状态计数、字段、dtype、颜色空间、选帧规则、HWC 形状和数值，再把其中统计交给 LeRobot 归一化；该快路径无需为统计解码视频。两个
 相机的 H.264 packet 仍逐 packet 原样重封装，既不重新编码也不改变压缩数据；输入必须是同一
-FPS、无 B 帧且 packet 数足够的 H.264。v1（或未带 sidecar 的旧 episode）保持兼容：passthrough
-重封装后从前 N 个动作帧解码统计。无效 v2 sidecar 会在 LeRobot 元数据写入前失败，不能静默
-回退为解码。
+FPS、无 B 帧且 packet 数足够的 H.264。带有效回填 sidecar 的 v1 与 v2 一样复用统计；仅未带
+sidecar 的 v1 旧 episode 会在 passthrough 重封装后从前 N 个动作帧解码统计。无效 sidecar 会在
+LeRobot 元数据写入前失败，不能静默回退为解码。
 
 可选地用下列命令为旧 v1 raw 数据回填 sidecar；默认只是预演，只有 `--apply` 才会写入。有效
 的已有 sidecar 会作为可恢复检查点跳过，无效或并发出现的 sidecar 会拒绝覆盖；回填不会修改

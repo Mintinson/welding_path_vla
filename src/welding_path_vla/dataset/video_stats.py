@@ -14,6 +14,8 @@ from lerobot.datasets.compute_stats import RunningQuantileStats, auto_downsample
 from .raw_schema import RAW_DATASET_FORMAT, RAW_VIDEO_STATS_FILE
 
 ALGORITHM = "action_aligned_rgb_v1"
+COLOR_SPACE = "RGB"
+FRAME_SELECTION = "first_action_count_frames_excluding_terminal_state"
 STAT_FIELDS = frozenset(("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99"))
 
 
@@ -86,6 +88,35 @@ def compute_video_stats(
     return canonicalize_statistics(statistics.get_statistics())
 
 
+def video_image_shape(path: str | Path) -> tuple[int, int, int]:
+    """读取视频流的 HWC 图像形状，不解码像素。"""
+    capture = cv2.VideoCapture(str(path))
+    try:
+        shape = (
+            int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            3,
+        )
+    finally:
+        capture.release()
+    validate_image_shapes({"camera": shape}, ("camera",))
+    return shape
+
+
+def validate_image_shapes(image_shapes: dict, camera_names: tuple[str, ...]) -> None:
+    """验证逐相机 HWC 图像形状与相机集合。"""
+    if not isinstance(image_shapes, dict) or set(image_shapes) != set(camera_names):
+        raise ValueError("invalid image metadata")
+    for shape in image_shapes.values():
+        if (
+            not isinstance(shape, (list, tuple))
+            or len(shape) != 3
+            or any(type(value) is not int or value <= 0 for value in shape)
+            or shape[2] != 3
+        ):
+            raise ValueError("invalid image metadata")
+
+
 class ActionAlignedVideoStats:
     """以一帧延迟方式排除视频末尾的 terminal frame。"""
 
@@ -94,6 +125,7 @@ class ActionAlignedVideoStats:
         self.pending: dict[str, np.ndarray] | None = None
         self.statistics = {name: RunningQuantileStats() for name in camera_names}
         self.frame_count = 0
+        self.image_shapes: dict[str, tuple[int, int, int]] = {}
 
     def append(self, images: dict[str, np.ndarray]) -> None:
         """缓存当前帧，并将上一帧加入动作统计样本。"""
@@ -101,6 +133,11 @@ class ActionAlignedVideoStats:
             raise ValueError("images must contain exactly the configured cameras")
         for frame in images.values():
             image_samples(frame)
+        shapes = {name: images[name].shape for name in self.camera_names}
+        if not self.image_shapes:
+            self.image_shapes = shapes
+        elif shapes != self.image_shapes:
+            raise ValueError("image shapes must remain constant")
         if self.pending is not None:
             for name, frame in self.pending.items():
                 self.statistics[name].update(statistic_samples(frame))
@@ -118,7 +155,11 @@ class ActionAlignedVideoStats:
 
 
 def write_raw_video_stats(
-    root: str | Path, stats: dict, action_count: int, overwrite: bool = True
+    root: str | Path,
+    stats: dict,
+    action_count: int,
+    image_shapes: dict[str, tuple[int, int, int]],
+    overwrite: bool = True,
 ) -> Path:
     """原子写入 v2 sidecar，并拒绝非有限统计值。
 
@@ -130,14 +171,18 @@ def write_raw_video_stats(
     """
     for camera in stats.values():
         validate_statistics(camera)
+    validate_image_shapes(image_shapes, tuple(stats))
     root = Path(root)
     path = root / RAW_VIDEO_STATS_FILE
     payload = {
         "format": RAW_DATASET_FORMAT,
         "algorithm": ALGORITHM,
+        "color_space": COLOR_SPACE,
+        "frame_selection": FRAME_SELECTION,
         "action_count": action_count,
         "state_count": action_count + 1,
         "cameras": list(stats),
+        "image_shapes": {name: list(shape) for name, shape in image_shapes.items()},
         "dtype": "float64",
         "stats": {
             name: {key: np.asarray(value).tolist() for key, value in camera.items()}
@@ -173,11 +218,17 @@ def read_raw_video_stats(
         if payload.get("dtype") != "float64":
             raise ValueError("invalid statistics dtype")
         if (
+            payload.get("color_space") != COLOR_SPACE
+            or payload.get("frame_selection") != FRAME_SELECTION
+        ):
+            raise ValueError("invalid image metadata")
+        if (
             payload.get("action_count") != action_count
             or payload.get("state_count") != action_count + 1
             or set(payload.get("cameras", ())) != set(camera_names)
         ):
             raise ValueError("invalid action count or camera set")
+        validate_image_shapes(payload.get("image_shapes"), camera_names)
         result = {}
         for name in camera_names:
             camera = payload["stats"][name]

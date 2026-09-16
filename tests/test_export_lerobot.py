@@ -152,7 +152,12 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
     source, output = tmp_path / "raw", tmp_path / "lerobot"
     episode = write_passthrough_episode(source, 0, "weldpath_raw_v2")
     expected = raw_statistics()
-    write_raw_video_stats(episode, expected, action_count=3)
+    write_raw_video_stats(
+        episode,
+        expected,
+        action_count=3,
+        image_shapes={"global": (24, 32, 3), "wrist": (24, 32, 3)},
+    )
     source_hashes = {name: h264_packet_hashes(episode / f"{name}.mp4")[:3] for name in expected}
     monkeypatch.setattr(
         "welding_path_vla.dataset.export_lerobot.compute_video_stats",
@@ -181,6 +186,32 @@ def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
             )
         target = next(path for path in (output / "videos").rglob("*.mp4") if key in str(path))
         assert h264_packet_hashes(target) == source_hashes[name]
+
+
+def test_backfilled_v1_video_stats_skip_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """带有效回填 sidecar 的 v1 episode 必须复用统计而非解码。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    episode = write_passthrough_episode(source, 0, "weldpath_raw_v1")
+    write_raw_video_stats(
+        episode,
+        raw_statistics(),
+        action_count=3,
+        image_shapes={"global": (24, 32, 3), "wrist": (24, 32, 3)},
+    )
+    monkeypatch.setattr(
+        "welding_path_vla.dataset.export_lerobot.compute_video_stats",
+        lambda *_: (_ for _ in ()).throw(AssertionError("backfilled v1 must not decode")),
+    )
+
+    export_lerobot(
+        source,
+        output,
+        "test/welding",
+        LeRobotExportConfig(video_passthrough=True),
+        action_horizon=2,
+    )
 
 
 def test_legacy_video_stats_decode_each_camera(
@@ -236,7 +267,12 @@ def test_incomplete_v2_video_stats_fail_before_metadata(tmp_path: Path) -> None:
     statistics["global"].pop("q99")
 
     with pytest.raises(ValueError, match="fields"):
-        write_raw_video_stats(episode, statistics, action_count=3)
+        write_raw_video_stats(
+            episode,
+            statistics,
+            action_count=3,
+            image_shapes={"global": (24, 32, 3), "wrist": (24, 32, 3)},
+        )
 
     assert not (output / "meta").exists()
 
