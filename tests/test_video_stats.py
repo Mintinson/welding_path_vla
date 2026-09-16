@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 import welding_path_vla.dataset.video_stats as video_stats_module
+import welding_path_vla.dataset.repair_video_stats as repair_module
+from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT_V1, RAW_DATASET_FORMAT_V2
 from welding_path_vla.dataset.video_stats import (
     ActionAlignedVideoStats,
     compute_video_stats,
@@ -173,3 +175,92 @@ def test_raw_video_stats_replaces_sidecar_atomically(tmp_path, monkeypatch):
     assert len(replacements) == 1
     assert replacements[0][1] == tmp_path / "video_stats.json"
     assert replacements[0][0] == tmp_path / ".video_stats.json.tmp"
+
+
+def repair_episode(root: Path, index: int, format_name: str) -> Path:
+    """创建只包含 repair 所需元数据和视频占位符的原始 episode。"""
+    episode = root / f"episode_{index:06d}"
+    episode.mkdir()
+    (episode / "metadata.json").write_text(json.dumps({"dataset_format": format_name}))
+    np.savez(episode / "trajectory.npz", command_delta_pose_seam=np.zeros((2, 6)))
+    for camera in ("global", "wrist"):
+        (episode / f"{camera}.mp4").write_bytes(camera.encode())
+    return episode
+
+
+def test_repair_mixed_raw_formats_reuses_v2_sidecar(tmp_path, monkeypatch):
+    """v2 sidecar episode 不解码，v1 episode 仍逐相机解码回退。"""
+    v2 = repair_episode(tmp_path, 0, RAW_DATASET_FORMAT_V2)
+    v1 = repair_episode(tmp_path, 1, RAW_DATASET_FORMAT_V1)
+    write_raw_video_stats(v2, {name: canonical_statistics(20.0) for name in ("global", "wrist")}, 2)
+    decoded = []
+
+    def decode(path, frame_count, terminal_frame=False):
+        decoded.append((Path(path).name, frame_count, terminal_frame))
+        return canonical_statistics(10.0)
+
+    monkeypatch.setattr(repair_module, "compute_video_stats", decode)
+    checkpoint = repair_module.repair_video_stats((v2, v1), tmp_path / "repair.json")
+
+    assert decoded == [("global.mp4", 2, True), ("wrist.mp4", 2, True)]
+    np.testing.assert_array_equal(
+        checkpoint[str(v2)]["statistics"]["global"]["mean"],
+        np.full((3, 1, 1), 20.0 / 255),
+    )
+    assert checkpoint[str(v2)]["statistics"]["global"]["count"].tolist() == [16]
+
+
+def test_repair_reuses_backfilled_v1_sidecar(tmp_path, monkeypatch):
+    """v1 已回填有效 sidecar 时同样避免不必要的视频解码。"""
+    episode = repair_episode(tmp_path, 0, RAW_DATASET_FORMAT_V1)
+    write_raw_video_stats(
+        episode,
+        {name: canonical_statistics(20.0) for name in ("global", "wrist")},
+        2,
+    )
+    monkeypatch.setattr(
+        repair_module,
+        "compute_video_stats",
+        lambda *args, **kwargs: pytest.fail("backfilled v1 episode must not decode"),
+    )
+
+    checkpoint = repair_module.repair_video_stats((episode,), tmp_path / "repair.json")
+
+    np.testing.assert_array_equal(
+        checkpoint[str(episode)]["statistics"]["wrist"]["max"],
+        np.full((3, 1, 1), 22.0 / 255),
+    )
+
+
+def test_repair_checkpoint_sidecar_replacement_invalidates_only_that_episode(tmp_path, monkeypatch):
+    """替换一个 sidecar 只重算其所属 episode，其他检查点保持复用。"""
+    episodes = tuple(repair_episode(tmp_path, index, RAW_DATASET_FORMAT_V2) for index in range(2))
+    for episode in episodes:
+        write_raw_video_stats(
+            episode,
+            {name: canonical_statistics(10.0) for name in ("global", "wrist")},
+            2,
+        )
+    computed = []
+    original = repair_module.compute_episode
+
+    def record_compute(episode):
+        computed.append(episode.path)
+        return original(episode)
+
+    monkeypatch.setattr(repair_module, "compute_episode", record_compute)
+    path = tmp_path / "repair.json"
+    repair_module.repair_video_stats(episodes, path)
+    assert computed == list(episodes)
+
+    computed.clear()
+    repair_module.repair_video_stats(episodes, path)
+    assert computed == []
+
+    write_raw_video_stats(
+        episodes[0],
+        {name: canonical_statistics(30.0) for name in ("global", "wrist")},
+        2,
+    )
+    repair_module.repair_video_stats(episodes, path)
+    assert computed == [episodes[0]]

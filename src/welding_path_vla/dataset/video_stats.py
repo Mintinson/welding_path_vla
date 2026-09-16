@@ -52,12 +52,15 @@ def validate_statistics(stats: dict) -> None:
         raise ValueError("statistics std must be nonnegative")
 
 
-def compute_video_stats(path: str | Path, frame_count: int) -> dict[str, np.ndarray]:
+def compute_video_stats(
+    path: str | Path, frame_count: int, terminal_frame: bool = False
+) -> dict[str, np.ndarray]:
     """解码动作帧统计，保留 LeRobot 归一化前的 0--255 RGB 值。
 
     Args:
         path: 单路相机视频路径。
         frame_count: 与动作对齐的前 N 帧数量。
+        terminal_frame: 兼容 repair 调用；统计始终只读取前 N 个动作帧。
 
     Returns:
         LeRobot writer 所需的逐通道原始统计。
