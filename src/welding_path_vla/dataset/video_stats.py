@@ -11,6 +11,7 @@ import numpy as np
 from .raw_schema import RAW_DATASET_FORMAT, RAW_VIDEO_STATS_FILE
 
 ALGORITHM = "action_aligned_rgb_v1"
+STAT_FIELDS = frozenset(("mean", "min", "max"))
 
 
 def image_samples(image: np.ndarray) -> np.ndarray:
@@ -55,14 +56,16 @@ class ActionAlignedVideoStats:
 def write_raw_video_stats(root: str | Path, stats: dict, action_count: int) -> Path:
     """原子写入 v2 sidecar，并拒绝非有限统计值。"""
     for camera in stats.values():
+        if set(camera) != STAT_FIELDS:
+            raise ValueError("invalid statistic fields")
         for value in camera.values():
             array = np.asarray(value)
-            if array.shape != (3,) or not np.isfinite(array).all():
-                raise ValueError("statistics must be finite arrays with shape (3,)")
+            if array.shape != (3,) or array.dtype != np.float64 or not np.isfinite(array).all():
+                raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
     root = Path(root)
     path = root / RAW_VIDEO_STATS_FILE
     payload = {"format": RAW_DATASET_FORMAT, "algorithm": ALGORITHM,
-               "action_count": action_count, "cameras": list(stats),
+               "action_count": action_count, "cameras": list(stats), "dtype": "float64",
                "stats": {name: {key: np.asarray(value).tolist() for key, value in camera.items()}
                          for name, camera in stats.items()}}
     temporary = path.with_name(f".{path.name}.tmp")
@@ -77,17 +80,19 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
         payload = json.loads((Path(root) / RAW_VIDEO_STATS_FILE).read_text(encoding="utf-8"))
         if payload.get("format") != RAW_DATASET_FORMAT or payload.get("algorithm") != ALGORITHM:
             raise ValueError("invalid format or algorithm")
+        if payload.get("dtype") != "float64":
+            raise ValueError("invalid statistics dtype")
         if payload.get("action_count") != action_count or set(payload.get("cameras", ())) != set(camera_names):
             raise ValueError("invalid action count or camera set")
         result = {}
         for name in camera_names:
             camera = payload["stats"][name]
             result[name] = {key: np.asarray(value) for key, value in camera.items()}
-            if set(result[name]) != {"mean", "min", "max"}:
+            if set(result[name]) != STAT_FIELDS:
                 raise ValueError("invalid statistics fields")
             for value in result[name].values():
-                if value.shape != (3,) or not np.isfinite(value).all():
-                    raise ValueError("statistics must be finite arrays with shape (3,)")
+                if value.shape != (3,) or value.dtype != np.float64 or not np.isfinite(value).all():
+                    raise ValueError("statistics must have shape or dtype (3,) float64 and be finite")
         return result
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         if isinstance(error, ValueError):

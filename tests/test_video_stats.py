@@ -26,8 +26,16 @@ def test_action_aligned_stats_reject_invalid_rgb_frame():
         accumulator.append({"global": np.zeros((2, 2), dtype=np.uint8)})
 
 
+def test_action_aligned_stats_reject_mismatched_action_count():
+    accumulator = ActionAlignedVideoStats(("global",))
+    accumulator.append({"global": np.zeros((2, 2, 3), dtype=np.uint8)})
+    with pytest.raises(ValueError, match="action"):
+        accumulator.finish(action_count=2)
+
+
 def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
-    stats = {"global": {"mean": np.array([1.0, 2.0, 3.0]), "min": np.array([0, 0, 0]), "max": np.array([4, 5, 6])}}
+    stats = {"global": {key: np.array(value, dtype=np.float64) for key, value in {
+        "mean": [1.0, 2.0, 3.0], "min": [0, 0, 0], "max": [4, 5, 6]}.items()}}
     path = write_raw_video_stats(tmp_path, stats, action_count=2)
     assert path.name == "video_stats.json"
     loaded = read_raw_video_stats(tmp_path, ("global",), action_count=2)
@@ -42,10 +50,29 @@ def test_raw_video_stats_round_trip_and_validate_contract(tmp_path):
 
 
 def test_raw_video_stats_reject_missing_camera_and_non_finite_values(tmp_path):
-    stats = {"global": {"mean": np.array([1.0, 2.0, 3.0]), "max": np.array([4, 5, 6])}}
+    stats = {"global": {key: np.array(value, dtype=np.float64) for key, value in {
+        "mean": [1.0, 2.0, 3.0], "min": [0, 0, 0], "max": [4, 5, 6]}.items()}}
     write_raw_video_stats(tmp_path, stats, action_count=2)
     with pytest.raises(ValueError, match="camera"):
         read_raw_video_stats(tmp_path, ("global", "wrist"), action_count=2)
-    bad = {"global": {"mean": np.array([np.nan, 2.0, 3.0]), "min": np.array([0, 0, 0]), "max": np.array([4, 5, 6])}}
+    bad = {"global": {"mean": np.array([np.nan, 2.0, 3.0]), "min": np.zeros(3), "max": np.ones(3)}}
     with pytest.raises(ValueError, match="finite"):
         write_raw_video_stats(tmp_path, bad, action_count=2)
+
+
+@pytest.mark.parametrize("field, value", [("mean", np.zeros(2)), ("min", np.zeros((3, 1))), ("max", np.zeros(3, dtype=np.int32))])
+def test_raw_video_stats_reject_wrong_field_shape_or_dtype(tmp_path, field, value):
+    stats = {"global": {"mean": np.zeros(3), "min": np.zeros(3), "max": np.ones(3)}}
+    stats["global"][field] = value
+    with pytest.raises(ValueError, match="shape or dtype"):
+        write_raw_video_stats(tmp_path, stats, action_count=2)
+
+
+def test_raw_video_stats_reject_incomplete_fields_and_atomic_write(tmp_path):
+    incomplete = {"global": {"mean": np.zeros(3), "min": np.zeros(3)}}
+    with pytest.raises(ValueError, match="fields"):
+        write_raw_video_stats(tmp_path, incomplete, action_count=2)
+    stats = {"global": {"mean": np.zeros(3), "min": np.zeros(3), "max": np.ones(3)}}
+    path = write_raw_video_stats(tmp_path, stats, action_count=2)
+    assert not (tmp_path / ".video_stats.json.tmp").exists()
+    assert path.exists()

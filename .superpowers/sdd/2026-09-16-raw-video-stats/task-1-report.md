@@ -41,3 +41,29 @@ PYTHONPATH=/tmp/welding_path_vla_raw_video_stats/src /root/micromamba/envs/weldi
 ## Concern
 
 仓库环境未提供独立 `ruff` 可执行文件，因此无法运行 ruff；其余可用验证均通过。editable 安装指向主工作区，测试需显式设置当前 worktree 的 `PYTHONPATH`。
+
+## Fix Round
+
+### 覆盖测试
+
+- 覆盖 action/frame（含 terminal）数量不匹配、RGB 错误 dtype/shape。
+- 覆盖 sidecar 错误 shape、非 `float64` dtype、非有限值、不完整字段、错误 action count/camera set/algorithm。
+- 覆盖原子写入后临时文件不残留且最终文件存在。
+- 读写端均强制 exact fields：`mean`、`min`、`max`，并校验 `(3,)`、`float64`、finite。
+
+### 命令与输出
+
+```text
+PYTHONPATH=/tmp/welding_path_vla_raw_video_stats/src /root/micromamba/envs/welding_vla/bin/python -m pytest tests/test_video_stats.py -q
+.........                                                                [100%]
+9 passed in 0.89s
+
+PYTHONPATH=/tmp/welding_path_vla_raw_video_stats/src /root/micromamba/envs/welding_vla/bin/python -m compileall -q src/welding_path_vla/dataset/video_stats.py src/welding_path_vla/dataset/raw_schema.py
+git diff --check
+```
+
+### 跨任务依赖
+
+Task 1 将 `RAW_DATASET_FORMAT` 默认设为 v2，但 recorder 尚未写入 v2 sidecar；因此 Task 2 集成前新 episode 可能处于 metadata v2、sidecar 缺失的中间状态。Task 1 不伪造 recorder 集成或回退默认格式；这是 Task 2 的硬依赖，Task 2 必须在 episode 完成路径原子发布 sidecar 后再发布 v2 metadata。
+
+本轮修复提交：`fix: harden raw video statistics contract`。
