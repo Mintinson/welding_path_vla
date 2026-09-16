@@ -17,6 +17,7 @@ wandb/
 MUJOCO_LOG.TXT
 .vscode/
 .idea/
+.superpowers/
 repo/
 repo.zip
 line2/
