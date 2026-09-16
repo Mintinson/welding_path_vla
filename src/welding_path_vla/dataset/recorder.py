@@ -16,6 +16,7 @@ from welding_path_vla.core.domain import CommandAction, Pose, RobotState
 from welding_path_vla.core.geometry import frame_delta, rotation_error, yaw_degrees_to_matrix
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT
 from welding_path_vla.dataset.video import VideoRecorder
+from welding_path_vla.dataset.video_stats import ActionAlignedVideoStats, write_raw_video_stats
 
 
 class EpisodeRecorder:
@@ -46,6 +47,7 @@ class EpisodeRecorder:
             camera_names,
             config.timing.policy_hz,
         )
+        self.video_stats = ActionAlignedVideoStats(camera_names)
 
     def append_state(
         self, timestamp: float, state: RobotState, images: dict[str, np.ndarray]
@@ -63,6 +65,7 @@ class EpisodeRecorder:
         self.arrays["tcp_position"].append(state.tcp.position)
         self.arrays["tcp_quaternion_wxyz"].append(state.tcp.quaternion_wxyz)
         self.video.append(images)
+        self.video_stats.append(images)
 
     def append_action(
         self,
@@ -126,14 +129,16 @@ class EpisodeRecorder:
         Raises:
             ValueError: state 与 action 数量不匹配。
         """
-        self.video.finish()
         arrays = {name: np.asarray(values) for name, values in self.arrays.items()}
         state_count = len(arrays["timestamp"])
-        action_count = len(arrays["phase"])
+        action_count = len(arrays.get("phase", ()))
         if state_count != action_count + 1:
             raise ValueError(
                 f"episode requires N actions and N+1 states, got {action_count}/{state_count}"
             )
+        stats = self.video_stats.finish(action_count)
+        self.video.finish()
+        write_raw_video_stats(self.temporary_path, stats, action_count)
         arrays["episode_done"] = np.arange(action_count) == action_count - 1
         executed_rotation = np.asarray(
             [

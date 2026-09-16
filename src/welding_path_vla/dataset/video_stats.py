@@ -65,7 +65,8 @@ def write_raw_video_stats(root: str | Path, stats: dict, action_count: int) -> P
     root = Path(root)
     path = root / RAW_VIDEO_STATS_FILE
     payload = {"format": RAW_DATASET_FORMAT, "algorithm": ALGORITHM,
-               "action_count": action_count, "cameras": list(stats), "dtype": "float64",
+               "action_count": action_count, "state_count": action_count + 1,
+               "cameras": list(stats), "dtype": "float64",
                "stats": {name: {key: np.asarray(value).tolist() for key, value in camera.items()}
                          for name, camera in stats.items()}}
     temporary = path.with_name(f".{path.name}.tmp")
@@ -82,7 +83,9 @@ def read_raw_video_stats(root: str | Path, camera_names: tuple[str, ...], action
             raise ValueError("invalid format or algorithm")
         if payload.get("dtype") != "float64":
             raise ValueError("invalid statistics dtype")
-        if payload.get("action_count") != action_count or set(payload.get("cameras", ())) != set(camera_names):
+        if (payload.get("action_count") != action_count
+                or payload.get("state_count") != action_count + 1
+                or set(payload.get("cameras", ())) != set(camera_names)):
             raise ValueError("invalid action count or camera set")
         result = {}
         for name in camera_names:

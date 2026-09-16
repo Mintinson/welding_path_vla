@@ -1,9 +1,12 @@
+import json
 from pathlib import Path
 
 import av
 import numpy as np
+import pytest
 
 from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.domain import CommandAction, Pose, RobotState
 from welding_path_vla.core.geometry import frame_delta, yaw_degrees_to_matrix
 from welding_path_vla.dataset.actions import (
     build_absolute_actions,
@@ -14,6 +17,27 @@ from welding_path_vla.dataset.raw_schema import EpisodeReader
 from welding_path_vla.dataset.recorder import EpisodeRecorder
 from welding_path_vla.evaluation.trajectory_metrics import report_from_arrays
 from welding_path_vla.simulation.collector import collect_episode
+
+
+def test_config(tmp_path: Path) -> AppConfig:
+    """构造快速且确定的 episode 采集配置。
+
+    Args:
+        tmp_path: pytest 提供的临时数据集目录。
+
+    Returns:
+        用于 episode 集成测试的配置。
+    """
+    config = AppConfig.load("configs/default.yaml")
+    config.collection.dataset_root = str(tmp_path)
+    config.camera.width = 64
+    config.camera.height = 48
+    config.task.speed_mps = 0.04
+    config.randomization.xy_m = 0
+    config.randomization.z_m = 0
+    config.randomization.yaw_deg = 0
+    config.randomization.recovery_probability = 0
+    return config
 
 
 def test_default_video_recorder_does_not_probe_unavailable_hardware_codec(
@@ -45,6 +69,63 @@ def test_raw_video_is_browser_compatible_h264(tmp_path: Path, capfd) -> None:
         assert stream.codec_context.name == "h264"
         assert stream.codec_context.pix_fmt == "yuv420p"
         assert float(stream.average_rate) >= 30
+    recorder.abort()
+
+
+def test_episode_records_action_aligned_video_stats(tmp_path: Path) -> None:
+    """完成的 v2 episode 应发布动作对齐的图像统计 sidecar。"""
+    episode = collect_episode(test_config(tmp_path), 0, 7)
+    stats = json.loads((episode / "video_stats.json").read_text())
+    metadata = json.loads((episode / "metadata.json").read_text())
+    assert stats["action_count"] + 1 == stats["state_count"]
+    assert set(stats["cameras"]) == {"global", "wrist"}
+    assert metadata["dataset_format"] == "weldpath_raw_v2"
+
+
+def test_recorder_writes_action_aligned_video_stats(tmp_path: Path) -> None:
+    """录制器应在发布 episode 前写入动作对齐的统计 sidecar。"""
+    config = test_config(tmp_path)
+    recorder = EpisodeRecorder(tmp_path, 0, config)
+    image = np.zeros((config.camera.height, config.camera.width, 3), dtype=np.uint8)
+    state = RobotState(
+        joint_position=np.zeros(6),
+        joint_velocity=np.zeros(6),
+        tcp=Pose(position=np.zeros(3), quaternion_wxyz=np.array([1, 0, 0, 0])),
+    )
+    action = CommandAction(*(np.zeros(6) for _ in range(3)), np.zeros(6))
+    recorder.append_state(0.0, state, {"global": image, "wrist": image})
+    recorder.append_action(action, state.tcp, state.tcp, "track", 0, 0, 0, 0, False, "", False)
+    recorder.append_state(1.0, state, {"global": image, "wrist": image})
+    episode = recorder.finish({})
+    stats = json.loads((episode / "video_stats.json").read_text())
+    assert stats["action_count"] + 1 == stats["state_count"]
+    assert set(stats["cameras"]) == {"global", "wrist"}
+
+
+def test_abort_does_not_publish_video_stats(tmp_path: Path) -> None:
+    """中止的 episode 不应发布目录或统计 sidecar。"""
+    recorder = EpisodeRecorder(tmp_path, 0, test_config(tmp_path))
+    recorder.abort()
+    assert not recorder.final_path.exists()
+    assert not (recorder.final_path / "video_stats.json").exists()
+
+
+def test_state_count_failure_does_not_publish_video_stats(tmp_path: Path) -> None:
+    """状态帧数不匹配时不应发布部分 episode 或统计 sidecar。"""
+    config = test_config(tmp_path)
+    recorder = EpisodeRecorder(tmp_path, 0, config)
+    image = np.zeros((config.camera.height, config.camera.width, 3), dtype=np.uint8)
+    state = RobotState(
+        joint_position=np.zeros(6),
+        joint_velocity=np.zeros(6),
+        tcp=Pose(position=np.zeros(3), quaternion_wxyz=np.array([1, 0, 0, 0])),
+    )
+    recorder.append_state(0.0, state, {"global": image, "wrist": image})
+    recorder.append_state(1.0, state, {"global": image, "wrist": image})
+    with pytest.raises(ValueError, match="N actions"):
+        recorder.finish({})
+    assert not recorder.final_path.exists()
+    assert not (recorder.final_path / "video_stats.json").exists()
     recorder.abort()
 
 
