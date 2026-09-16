@@ -28,8 +28,14 @@ from welding_path_vla.dataset.actions import (
     ABSOLUTE_ACTION_NAMES,
     build_absolute_actions,
 )
-from welding_path_vla.dataset.raw_schema import METADATA_FILE, EpisodeReader
+from welding_path_vla.dataset.raw_schema import (
+    METADATA_FILE,
+    RAW_DATASET_FORMAT_V1,
+    RAW_DATASET_FORMAT_V2,
+    EpisodeReader,
+)
 from welding_path_vla.dataset.task_parameters import TASK_FEATURES, task_feature_values
+from welding_path_vla.dataset.video_stats import compute_video_stats, read_raw_video_stats
 
 GLOBAL_IMAGE = "observation.images.global"
 WRIST_IMAGE = "observation.images.wrist"
@@ -378,18 +384,49 @@ def remux_h264_frames(source: Path, destination: Path, frame_count: int, fps: in
 class PassthroughEpisodeEncoder:
     """把已重封装的视频接入 LeRobot streaming writer 的轻量适配器。"""
 
-    def __init__(self, videos: dict[str, Path]) -> None:
+    def __init__(
+        self,
+        videos: dict[str, Path],
+        frame_count: int,
+        statistics: dict[str, dict[str, np.ndarray]] | None = None,
+    ) -> None:
         self.videos = videos
+        self.frame_count = frame_count
+        self.statistics = statistics
 
-    def finish_episode(self) -> dict[str, tuple[Path, None]]:
-        """返回 LeRobot 所需的临时视频及空视觉统计。"""
-        return {key: (path, None) for key, path in self.videos.items()}
+    def finish_episode(self) -> dict[str, tuple[Path, dict[str, np.ndarray]]]:
+        """返回临时视频和 raw 统计，归一化由 LeRobot writer 统一完成。"""
+        return {
+            key: (
+                path,
+                self.statistics[key]
+                if self.statistics
+                else compute_video_stats(path, self.frame_count),
+            )
+            for key, path in self.videos.items()
+        }
 
     def cancel_episode(self) -> None:
         """兼容 LeRobot 清理接口；文件由 writer 或调用方清理。"""
 
     def close(self) -> None:
         """passthrough 没有常驻编码线程需要关闭。"""
+
+
+def passthrough_statistics(episode: EpisodeReader) -> dict[str, dict[str, np.ndarray]] | None:
+    """读取已有 sidecar 并映射为 LeRobot 视频 feature 的 raw 统计。
+
+    v1 没有 sidecar 时返回 ``None``，由 encoder 在重封装后解码回退；v1/v2 的
+    有效 sidecar 都在 writer 创建元数据前通过校验，避免发布半成品数据集。
+    """
+    format_name = episode.metadata.get("dataset_format", RAW_DATASET_FORMAT_V1)
+    sidecar = episode.path / "video_stats.json"
+    if format_name == RAW_DATASET_FORMAT_V1 and not sidecar.exists():
+        return None
+    if format_name not in (RAW_DATASET_FORMAT_V1, RAW_DATASET_FORMAT_V2):
+        raise ValueError(f"unsupported raw dataset format: {format_name}")
+    raw = read_raw_video_stats(episode.path, ("global", "wrist"), episode.action_count)
+    return {key: raw[name] for name, key in (("global", GLOBAL_IMAGE), ("wrist", WRIST_IMAGE))}
 
 
 def passthrough_episode_buffer(
@@ -424,6 +461,7 @@ def add_passthrough_episode(
     states: np.ndarray,
     actions: np.ndarray,
     task_values: dict[str, Any],
+    statistics: dict[str, dict[str, np.ndarray]] | None,
 ) -> None:
     """不解码像素，把 raw H.264 packet 接入 LeRobot 的数据与元数据写入流程。"""
     episode_index = dataset.meta.total_episodes
@@ -444,7 +482,9 @@ def add_passthrough_episode(
         # 临时替换 LeRobot writer 的 encoder
         writer = dataset.writer
         previous_encoder = writer._streaming_encoder
-        writer._streaming_encoder = PassthroughEpisodeEncoder(videos)
+        writer._streaming_encoder = PassthroughEpisodeEncoder(
+            videos, episode.action_count, statistics
+        )
         try:
             dataset.save_episode(
                 passthrough_episode_buffer(dataset, episode, states, actions, task_values),
@@ -493,7 +533,14 @@ def add_episode(
     actions = build_absolute_actions(episode, source=action_source)
     task_values = task_feature_values(episode.metadata)
     if options.video_passthrough:
-        add_passthrough_episode(dataset, episode, states, actions, task_values)
+        add_passthrough_episode(
+            dataset,
+            episode,
+            states,
+            actions,
+            task_values,
+            passthrough_statistics(episode),
+        )
         return
     frames = tqdm(
         video_frame_pairs(episode.path, count),
@@ -646,6 +693,10 @@ def export_lerobot(
             episode_number(selected[0]),
             episode_number(selected[-1]),
         )
+
+    if options.video_passthrough:
+        for path in pending:
+            passthrough_statistics(EpisodeReader(path))
 
     schema = features(camera, options.save_images)
     if existing_info:
