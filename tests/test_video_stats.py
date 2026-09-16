@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -7,6 +9,7 @@ import pytest
 
 import welding_path_vla.dataset.video_stats as video_stats_module
 import welding_path_vla.dataset.repair_video_stats as repair_module
+import welding_path_vla.dataset.backfill_raw_video_stats as backfill_module
 from welding_path_vla.dataset.raw_schema import RAW_DATASET_FORMAT_V1, RAW_DATASET_FORMAT_V2
 from welding_path_vla.dataset.video_stats import (
     ActionAlignedVideoStats,
@@ -14,6 +17,33 @@ from welding_path_vla.dataset.video_stats import (
     read_raw_video_stats,
     write_raw_video_stats,
 )
+
+
+def backfill_episode(root: Path, index: int) -> Path:
+    """创建可供回填流程实际解码的 v1 原始 episode。"""
+    episode = root / f"episode_{index:06d}"
+    episode.mkdir()
+    (episode / "metadata.json").write_text(
+        json.dumps({"dataset_format": RAW_DATASET_FORMAT_V1, "instruction": "keep label"}),
+        encoding="utf-8",
+    )
+    np.savez(episode / "trajectory.npz", command_delta_pose_seam=np.zeros((2, 6)))
+    for camera, value in (("global", 10), ("wrist", 20)):
+        video = episode / f"{camera}.mp4"
+        writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 20, (4, 2))
+        for frame in (value, value + 1, 250):
+            writer.write(np.full((2, 4, 3), frame, dtype=np.uint8))
+        writer.release()
+    return episode
+
+
+def source_hashes(episode: Path) -> dict[str, bytes]:
+    """读取迁移不得改写的 v1 源文件字节。"""
+    return {
+        path.name: path.read_bytes()
+        for path in episode.glob("*")
+        if path.name != "video_stats.json"
+    }
 
 
 def canonical_statistics(value: float = 1.0) -> dict[str, np.ndarray]:
@@ -47,6 +77,19 @@ def test_compute_video_stats_uses_action_frames_only(tmp_path: Path):
     assert np.all(stats["mean"] < 50)
     assert np.all(stats["max"] < 50)
     assert np.all(stats["min"] >= 0)
+
+
+def test_compute_video_stats_produces_canonical_quantiles(tmp_path: Path):
+    """直方图边界误差不能让解码统计违反严格 sidecar 契约。"""
+    path = tmp_path / "global.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 20, (4, 2))
+    for value in (10, 11, 250):
+        writer.write(np.full((2, 4, 3), value, dtype=np.uint8))
+    writer.release()
+
+    write_raw_video_stats(tmp_path, {"global": compute_video_stats(path, frame_count=2)}, 2)
+
+    read_raw_video_stats(tmp_path, ("global",), action_count=2)
 
 
 def test_action_aligned_stats_exclude_terminal_frame():
@@ -264,3 +307,109 @@ def test_repair_checkpoint_sidecar_replacement_invalidates_only_that_episode(tmp
     )
     repair_module.repair_video_stats(episodes, path)
     assert computed == [episodes[0]]
+
+
+def test_backfill_dry_run_preserves_v1_sources_and_requires_apply(tmp_path):
+    """默认预演只报告待回填 episode，不创建 sidecar 或修改 v1 文件。"""
+    episode = backfill_episode(tmp_path, 0)
+    before = source_hashes(episode)
+
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=False)
+
+    assert report.as_dict() == {"backfilled": 0, "dry_run": 1, "refused": 0, "skipped": 0}
+    assert not (episode / "video_stats.json").exists()
+    assert source_hashes(episode) == before
+
+
+def test_backfill_apply_writes_atomic_sidecar_and_preserves_v1_label(tmp_path, monkeypatch):
+    """显式 apply 仅以原子 sidecar 写入补充统计，不修改 v1 标签或源字节。"""
+    episode = backfill_episode(tmp_path, 0)
+    before = source_hashes(episode)
+    replacements = []
+    original_replace = video_stats_module.os.replace
+
+    def record_replace(source, destination):
+        replacements.append((Path(source), Path(destination)))
+        original_replace(source, destination)
+
+    monkeypatch.setattr(video_stats_module.os, "replace", record_replace)
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
+
+    assert report.as_dict() == {
+        "backfilled": 1,
+        "dry_run": 0,
+        "refused": 0,
+        "skipped": 0,
+    }
+    assert replacements == [(episode / ".video_stats.json.tmp", episode / "video_stats.json")]
+    assert (
+        json.loads((episode / "metadata.json").read_text())["dataset_format"]
+        == RAW_DATASET_FORMAT_V1
+    )
+    assert source_hashes(episode) == before
+    read_raw_video_stats(episode, ("global", "wrist"), action_count=2)
+
+
+def test_backfill_resume_skips_valid_sidecars(tmp_path, monkeypatch):
+    """已存在且有效的 sidecar 是恢复点，重跑时不再解码或写入。"""
+    episode = backfill_episode(tmp_path, 0)
+    backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
+    monkeypatch.setattr(
+        backfill_module,
+        "compute_video_stats",
+        lambda *args, **kwargs: pytest.fail("valid sidecar must be skipped"),
+    )
+
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
+
+    assert report.as_dict() == {"backfilled": 0, "dry_run": 0, "refused": 0, "skipped": 1}
+    assert (episode / "video_stats.json").exists()
+
+
+def test_backfill_refuses_invalid_sidecar_without_overwrite(tmp_path, monkeypatch):
+    """残缺或错误的已有 sidecar 必须拒绝，避免回填掩盖数据问题。"""
+    episode = backfill_episode(tmp_path, 0)
+    sidecar = episode / "video_stats.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    before = sidecar.read_bytes()
+    monkeypatch.setattr(
+        backfill_module,
+        "compute_video_stats",
+        lambda *args, **kwargs: pytest.fail("invalid sidecar must not be replaced"),
+    )
+
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=1, apply=True)
+
+    assert report.as_dict() == {"backfilled": 0, "dry_run": 0, "refused": 1, "skipped": 0}
+    assert sidecar.read_bytes() == before
+
+
+def test_backfill_uses_multiple_workers_for_independent_episodes(tmp_path):
+    """多个独立 v1 episode 可由多个进程回填，且不会遗漏任何 sidecar。"""
+    episodes = [backfill_episode(tmp_path, index) for index in range(2)]
+
+    report = backfill_module.backfill_raw_video_stats((tmp_path,), workers=2, apply=True)
+
+    assert report.as_dict() == {"backfilled": 2, "dry_run": 0, "refused": 0, "skipped": 0}
+    for episode in episodes:
+        read_raw_video_stats(episode, ("global", "wrist"), action_count=2)
+
+
+def test_backfill_cli_help_and_dry_run(tmp_path):
+    """独立 CLI 可显示 apply 说明，且默认预演不写入 sidecar。"""
+    episode = backfill_episode(tmp_path, 0)
+    script = Path(__file__).parents[1] / "scripts" / "backfill_raw_video_stats.py"
+
+    help_result = subprocess.run(
+        [sys.executable, script, "--help"], text=True, capture_output=True, check=True
+    )
+    dry_run = subprocess.run(
+        [sys.executable, script, "--raw-glob", str(tmp_path), "--workers", "1"],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "--apply" in help_result.stdout
+    assert json.loads(dry_run.stdout) == {"backfilled": 0, "dry_run": 1, "refused": 0, "skipped": 0}
+    assert not (episode / "video_stats.json").exists()

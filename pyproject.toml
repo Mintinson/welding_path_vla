@@ -126,6 +126,7 @@ ignore = ["RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.basedpyright]
 pythonVersion = "3.12"

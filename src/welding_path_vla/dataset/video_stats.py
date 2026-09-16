@@ -75,7 +75,13 @@ def compute_video_stats(
             statistics.update(statistic_samples(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
     finally:
         capture.release()
-    return statistics.get_statistics()
+    result = statistics.get_statistics()
+    # LeRobot 直方图边界可能让 q01 略小于 min，统一夹紧为 canonical 契约。
+    fields = ("min", "q01", "q10", "q50", "q90", "q99", "max")
+    values = np.stack([result[field] for field in fields])
+    values = np.maximum.accumulate(np.clip(values, result["min"], result["max"]), axis=0)
+    result.update(zip(fields, values, strict=True))
+    return result
 
 
 class ActionAlignedVideoStats:
