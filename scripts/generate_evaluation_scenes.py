@@ -12,20 +12,14 @@ import numpy as np
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
-from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.config import AppConfig  # noqa: I001
 from welding_path_vla.core.config_files import compose_config, merge_config
 from welding_path_vla.simulation import WeldingEnv
-from welding_path_vla.simulation.evaluation_scenes import SCENE_BANK_VERSION, scene_fingerprint
-from welding_path_vla.simulation.task_sampling import sample_feasible_trajectory, sample_task_config
-
-ROLLOUT_CONTROL = {
-    "max_target_increment_m": 0.025,
-    "max_ik_residual_m": 0.010,
-    "joint_position_margin_rad": 0.010,
-    "replan_after_clip": True,
-    "terminal_frame_hold_s": 1.0,
-}
-
+from welding_path_vla.simulation.evaluation_scenes import SCENE_BANK_VERSION
+from welding_path_vla.simulation.task_sampling import (
+    sample_feasible_trajectory,
+    sample_task_config,
+)
 
 def broaden_randomization(config: AppConfig, bright: bool) -> None:
     """扩大空间与任务范围，并使用清晰、均衡的评价照明。
@@ -55,15 +49,6 @@ def broaden_randomization(config: AppConfig, bright: bool) -> None:
     randomization.joint_degs = [value * 1.1 for value in randomization.joint_degs]
     randomization.max_sampling_attempts = max(30, randomization.max_sampling_attempts)
     randomization.task_group_size = 1
-    config.deployment.action_steps = 8
-    # 这组仿真控制参数对所有策略固定，避免模型 YAML 覆盖评价协议。
-    config.deployment.max_target_increment_m = 0.025
-    config.deployment.max_ik_residual = 0.010
-    config.deployment.terminal_frame_hold_s = 1.0
-    config.evaluation.coverage_max_step_m = 0.025
-    config.evaluation.direction_ratio_min = 0.85
-    config.deployment.completion_progress_min = 0.95
-    config.deployment.completion_distance_m = config.evaluation.coverage_tolerance_m
     config.validate()
 
 
@@ -84,7 +69,7 @@ def main() -> None:
     parser.add_argument("--per-task", type=int, default=25)
     parser.add_argument("--seed", type=int, default=20260914)
     parser.add_argument("--max-candidates", type=int, default=20)
-    parser.add_argument("--tasks", nargs="*", help="只生成指定任务；用于小规模验证")
+    parser.add_argument("--tasks", nargs="*", help="只生成指定任务: 用于小规模验证")
     args = parser.parse_args()
     base = AppConfig.load(args.base_config)
     task_paths = sorted(Path(args.task_dir).glob("*.yaml"))
@@ -92,32 +77,18 @@ def main() -> None:
         task_paths = [path for path in task_paths if path.stem in args.tasks]
     if not task_paths or args.per_task < 1 or args.max_candidates < 1:
         raise ValueError("task list, per-task count and max-candidates must be positive")
-    tasks = [path.stem for path in task_paths]
     output = Path(args.output)
     if output.exists():
         bank = json.loads(output.read_text(encoding="utf-8"))
-        if bank.get("complete") or bank["protocol"]["tasks"] != tasks or (
-            bank["protocol"]["scenes_per_task"] != args.per_task
-            or bank["protocol"]["seed"] != args.seed
-        ):
-            raise ValueError(f"existing scene bank has a different protocol: {output}")
+        if bank.get("version") != SCENE_BANK_VERSION or bank.get("complete"):
+            raise ValueError(f"existing scene bank cannot be resumed: {output}")
     else:
         bank = {
             "version": SCENE_BANK_VERSION,
             "complete": False,
-            "protocol": {
-                "tasks": tasks,
-                "scenes_per_task": args.per_task,
-                "seed": args.seed,
-                "action_steps": 8,
-                "held_out": "training-disjoint seed with expanded scene/task ranges",
-                "randomization_scale": "1.2x scene/task ranges; 1.1x joint offsets",
-                "lighting": "two active lights; alternating 1.00-1.15 and 1.15-1.30 bands",
-                "rollout_control": ROLLOUT_CONTROL,
-            },
             "scenes": [],
         }
-    existing = {(scene["task"], scene["episode"]) for scene in bank["scenes"]}
+    existing = {(scene["task"]["task_id"], scene["episode"]) for scene in bank["scenes"]}
 
     for task_index, task_path in enumerate(task_paths):
         task_base = AppConfig.from_dict(merge_config(base.as_dict(), compose_config(task_path)))
@@ -139,18 +110,13 @@ def main() -> None:
                     )
                     if not sample.initial_tcp_offset_applied:
                         raise RuntimeError("initial TCP offset was not applied")
+                    state = simulation.scene_state()
                     scene = {
-                        "task": task_path.stem,
+                        "task": state["task"],
                         "episode": episode,
-                        "seed": seed,
-                        "config": config.as_dict(),
-                        "fingerprint": scene_fingerprint(simulation),
-                        "initial_workpiece_position_m": simulation.mj_model.body_pos[
-                            simulation.workpiece_id
-                        ].tolist(),
-                        "initial_joint_position_rad": simulation.state().joint_position.tolist(),
-                        "preflight_max_ik_residual_m": sample.planning_max_ik_residual_m,
-                        "rollout_control": ROLLOUT_CONTROL,
+                        "scene": state["scene"],
+                        "robot": state["robot"],
+                        "workpiece": state["workpiece"],
                     }
                     bank["scenes"].append(scene)
                     save_bank(output, bank)
@@ -166,7 +132,7 @@ def main() -> None:
                     f"no feasible scene for {task_path.stem} episode {episode} "
                     f"after {args.max_candidates} candidate seeds: {last_error}"
                 )
-    bank["scenes"].sort(key=lambda scene: (scene["task"], scene["episode"]))
+    bank["scenes"].sort(key=lambda scene: (scene["task"]["task_id"], scene["episode"]))
     bank["complete"] = True
     save_bank(output, bank)
     print(f"Wrote {len(bank['scenes'])} feasible scenes to {output}", flush=True)

@@ -34,6 +34,21 @@ from welding_path_vla.simulation.tasks import (
 )
 
 
+def test_welding_env_uses_dedicated_render_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """策略推理与 EGL 必须使用不同 GPU，避免在线渲染帧被污染。"""
+    captured: dict[str, object] = {}
+
+    def capture_init(self: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(MujocoEnv, "__init__", capture_init)
+    config = AppConfig.load("configs/default.yaml")
+    WeldingEnv(config)
+
+    assert config.camera.render_gpu_device_id == 1
+    assert captured["render_gpu_device_id"] == 1
+
+
 def test_robosuite_reset_step_and_observations() -> None:
     """环境应遵循 robosuite 的 reset/step/observation 契约。"""
     config = AppConfig.load("configs/default.yaml")

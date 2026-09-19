@@ -1,4 +1,4 @@
-"""基于 LeRobot / PyAV 的统一视频录制接口。"""
+"""基于 LeRobot / PyAV 的异步多线程视频录制接口。"""
 
 from __future__ import annotations
 
@@ -13,9 +13,22 @@ from lerobot.configs import RGBEncoderConfig
 from lerobot.datasets.video_utils import StreamingVideoEncoder
 
 
+def video_codec_settings() -> dict[str, int | str]:
+    """返回 rollout 使用的 H.264 编码参数。"""
+    return {
+        "vcodec": "h264",
+        "pix_fmt": "yuv420p",
+        "g": 2,
+        "bf": 0,
+        "crf": 23,
+        "preset": "veryfast",
+        "threads": 2,
+    }
+
+
 @dataclass(slots=True)
 class VideoRecorder:
-    """把多相机 RGB 帧流式编码为兼容浏览器的 H.264 MP4。"""
+    """使用每相机独立线程流式编码 RGB 视频。"""
 
     root: Path
     names: tuple[str, ...]
@@ -24,7 +37,7 @@ class VideoRecorder:
 
     @classmethod
     def start(cls, root: Path, names: tuple[str, ...], fps: int) -> VideoRecorder:
-        """启动一个多相机录制会话。
+        """启动多相机异步录制会话。
 
         Args:
             root: 最终视频所在目录。
@@ -34,16 +47,29 @@ class VideoRecorder:
         Returns:
             已启动的录制器。
         """
-
+        root.mkdir(parents=True, exist_ok=True)
         restore_callback = av_logging.restore_default_callback
 
         def keep_python_callback() -> None:
-            """避免 LeRobot 编码线程恢复原生 stderr 回调。"""
+            """避免编码线程恢复原生 stderr 回调。"""
 
         av_logging.set_level(av_logging.ERROR)
         av_logging.restore_default_callback = keep_python_callback
-        video_config = RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast")
-        encoder = StreamingVideoEncoder(fps, rgb_encoder=video_config, queue_maxsize=0)
+        settings = video_codec_settings()
+        video_config = RGBEncoderConfig(
+            vcodec=str(settings["vcodec"]),
+            pix_fmt=str(settings["pix_fmt"]),
+            g=int(settings["g"]),
+            crf=int(settings["crf"]),
+            preset=str(settings["preset"]),
+            extra_options={"bf": int(settings["bf"])},
+        )
+        encoder = StreamingVideoEncoder(
+            fps,
+            rgb_encoder=video_config,
+            queue_maxsize=0,
+            encoder_threads=int(settings["threads"]),
+        )
         try:
             encoder.start_episode(list(names), root)
         except BaseException:
@@ -53,20 +79,12 @@ class VideoRecorder:
         return cls(root, names, encoder, restore_callback)
 
     def append(self, images: dict[str, np.ndarray]) -> None:
-        """写入同一采样时刻的所有相机帧。
-
-        Args:
-            images: 相机名称到 RGB ``uint8`` 图像的映射。
-        """
+        """把同一采样时刻的所有相机帧送入后台编码线程。"""
         for name in self.names:
             self.encoder.feed_frame(name, images[name])
 
     def finish(self) -> tuple[str, ...]:
-        """完成编码，并把 LeRobot 临时文件移动到 episode 根目录。
-
-        Returns:
-            按 ``names`` 顺序排列的最终视频路径。
-        """
+        """等待后台编码完成，并把视频移动到 episode 目录。"""
         try:
             encoded = self.encoder.finish_episode()
             videos: list[str] = []
@@ -82,7 +100,7 @@ class VideoRecorder:
             self.restore_logging()
 
     def close(self) -> None:
-        """关闭编码器；未完成的会话会由 LeRobot 清理。"""
+        """关闭编码器并清理未完成的会话。"""
         try:
             self.encoder.close()
         finally:
@@ -96,3 +114,6 @@ class VideoRecorder:
         self.restore_logging_callback = None
         av_logging.restore_default_callback = callback
         callback()
+
+
+__all__ = ["VideoRecorder", "video_codec_settings"]

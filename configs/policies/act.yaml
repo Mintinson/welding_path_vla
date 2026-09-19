@@ -47,7 +47,6 @@ policy_evaluation:
   output_dir: outputs/evaluation/policies
 
 deployment:
-  dry_run: false
   episodes: 5
   max_steps: 1000
   seed: 20260724

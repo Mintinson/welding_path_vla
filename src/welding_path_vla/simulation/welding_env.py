@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import asdict
 from typing import Any
 
 import mujoco
@@ -82,6 +83,7 @@ class WeldingEnv(MujocoEnv):
             has_renderer=False,
             has_offscreen_renderer=camera_observations,
             render_camera=config.camera.global_name,
+            render_gpu_device_id=config.camera.render_gpu_device_id,
             render_collision_mesh=False,
             render_visual_mesh=True,
             control_freq=config.timing.policy_hz,
@@ -521,15 +523,10 @@ class WeldingEnv(MujocoEnv):
         self.mj_model.mat_shininess[material] = shininess
         self.mj_model.mat_reflectance[material] = reflectance
 
+        texture_seed = int(rng.integers(0, 2**32))
+        pixels, texture_parameters = self.procedural_texture(texture_seed)
         texture = self.workpiece_texture_id
-        width = int(self.mj_model.tex_width[texture])
-        height = int(self.mj_model.tex_height[texture])
         address = int(self.mj_model.tex_adr[texture])
-        xx = np.indices((height, width))[1]
-        phase = rng.uniform(0, 2 * np.pi)
-        grain = 0.94 + 0.035 * np.sin(2 * np.pi * xx / rng.uniform(14, 28) + phase)
-        grain += rng.normal(0, 0.012, size=(height, width))
-        pixels = np.repeat(np.clip(grain[..., None] * 255, 210, 255), 3, axis=2).astype(np.uint8)
         self.mj_model.tex_data[address : address + pixels.size] = pixels.reshape(-1)
 
         background_jitter = randomization.background_color_jitter
@@ -598,6 +595,7 @@ class WeldingEnv(MujocoEnv):
             "material_specular": specular,
             "material_shininess": shininess,
             "material_reflectance": reflectance,
+            "texture": texture_parameters,
             "table_color_shift": table_shift,
             "floor_color_shift": floor_shift,
             "light_scale": light_scale,
@@ -606,6 +604,117 @@ class WeldingEnv(MujocoEnv):
             "light_elevation_offsets_deg": elevation_offsets.tolist(),
             "light_color_temperature": color_temperature,
         }
+
+    def procedural_texture(self, seed: int) -> tuple[np.ndarray, dict[str, Any]]:
+        """按紧凑参数生成可复现的工件拉丝纹理。"""
+        texture = self.workpiece_texture_id
+        width = int(self.mj_model.tex_width[texture])
+        height = int(self.mj_model.tex_height[texture])
+        rng = np.random.default_rng(seed)
+        period = float(rng.uniform(14, 28))
+        phase = float(rng.uniform(0, 2 * np.pi))
+        xx = np.indices((height, width))[1]
+        grain = 0.94 + 0.035 * np.sin(2 * np.pi * xx / period + phase)
+        grain += rng.normal(0, 0.012, size=(height, width))
+        pixels = np.repeat(np.clip(grain[..., None] * 255, 210, 255), 3, axis=2).astype(np.uint8)
+        return pixels, {
+            "type": "procedural_grain_v1",
+            "seed": seed,
+            "period_px": period,
+            "phase_rad": phase,
+            "noise_std": 0.012,
+        }
+
+    def scene_state(self) -> dict[str, Any]:
+        """导出固定 scene bank 所需的实际环境、机器人和工件状态。"""
+        return {
+            "scene": {
+                "layout": {
+                    "table_center_m": self.config.scene.table_center_m,
+                    "table_half_size_m": self.config.scene.table_half_size_m,
+                    "robot_base_position_m": self.config.scene.robot_base_position_m,
+                    "robot_base_yaw_deg": self.config.scene.robot_base_yaw_deg,
+                    "global_camera_position_table_m": (
+                        self.config.scene.global_camera_position_table_m
+                    ),
+                    "global_camera_target_table_m": (
+                        self.config.scene.global_camera_target_table_m
+                    ),
+                    "global_camera_up_table": self.config.scene.global_camera_up_table,
+                },
+                "camera": {"global_fovy_deg": self.config.camera.global_fovy_deg},
+                "lighting": {
+                    "diffuse": self.mj_model.light_diffuse.tolist(),
+                    "position": self.mj_model.light_pos.tolist(),
+                    "direction": self.mj_model.light_dir.tolist(),
+                    "active": self.mj_model.light_active.tolist(),
+                    "headlight_ambient": self.mj_model.vis.headlight.ambient.tolist(),
+                    "headlight_diffuse": self.mj_model.vis.headlight.diffuse.tolist(),
+                },
+                "background": {
+                    "table_rgb": self.mj_model.geom_rgba[self.table_visual_id, :3].tolist(),
+                    "floor_rgb": self.mj_model.geom_rgba[self.floor_visual_id, :3].tolist(),
+                },
+            },
+            "robot": {
+                "joint_position_rad": self.mj_data.qpos[self.qpos_ids].tolist(),
+                "joint_velocity_rad_s": self.mj_data.qvel[self.dof_ids].tolist(),
+            },
+            "workpiece": {
+                "geometry": asdict(self.config.workpiece),
+                "pose": {
+                    "position_m": self.mj_model.body_pos[self.workpiece_id].tolist(),
+                    "quaternion_wxyz": self.mj_model.body_quat[self.workpiece_id].tolist(),
+                },
+                "surface": {
+                    "visual_rgb": self.mj_model.geom_rgba[
+                        self.workpiece_visual_geom_ids, :3
+                    ].tolist(),
+                    "material_specular": float(
+                        self.mj_model.mat_specular[self.workpiece_material_id]
+                    ),
+                    "material_shininess": float(
+                        self.mj_model.mat_shininess[self.workpiece_material_id]
+                    ),
+                    "material_reflectance": float(
+                        self.mj_model.mat_reflectance[self.workpiece_material_id]
+                    ),
+                    "texture": self.scene_randomization_parameters["texture"],
+                },
+            },
+            "task": asdict(self.config.task),
+        }
+
+    def apply_scene_state(self, state: dict[str, Any]) -> None:
+        """应用 scene bank 保存的实际光照、外观、位姿和机器人状态。"""
+        scene = state["scene"]
+        lighting = scene["lighting"]
+        background = scene["background"]
+        workpiece = state["workpiece"]
+        surface = workpiece["surface"]
+        self.mj_model.light_diffuse[:] = lighting["diffuse"]
+        self.mj_model.light_pos[:] = lighting["position"]
+        self.mj_model.light_dir[:] = lighting["direction"]
+        self.mj_model.light_active[:] = lighting["active"]
+        self.mj_model.vis.headlight.ambient[:] = lighting["headlight_ambient"]
+        self.mj_model.vis.headlight.diffuse[:] = lighting["headlight_diffuse"]
+        self.mj_model.geom_rgba[self.table_visual_id, :3] = background["table_rgb"]
+        self.mj_model.geom_rgba[self.floor_visual_id, :3] = background["floor_rgb"]
+        self.mj_model.body_pos[self.workpiece_id] = workpiece["pose"]["position_m"]
+        self.mj_model.body_quat[self.workpiece_id] = workpiece["pose"]["quaternion_wxyz"]
+        self.mj_model.geom_rgba[self.workpiece_visual_geom_ids, :3] = surface["visual_rgb"]
+        self.mj_model.mat_specular[self.workpiece_material_id] = surface["material_specular"]
+        self.mj_model.mat_shininess[self.workpiece_material_id] = surface["material_shininess"]
+        self.mj_model.mat_reflectance[self.workpiece_material_id] = surface["material_reflectance"]
+        texture = surface["texture"]
+        pixels, _ = self.procedural_texture(int(texture["seed"]))
+        address = int(self.mj_model.tex_adr[self.workpiece_texture_id])
+        self.mj_model.tex_data[address : address + pixels.size] = pixels.reshape(-1)
+        joints = np.asarray(state["robot"]["joint_position_rad"], dtype=np.float64)
+        self.set_joint_position(joints)
+        self.mj_data.qvel[self.dof_ids] = state["robot"]["joint_velocity_rad_s"]
+        self.last_joint_command = joints.copy()
+        self.robosuite_sim.forward()
 
     def site_position(self, name: str) -> np.ndarray:
         """返回指定 site 的世界坐标位置。"""

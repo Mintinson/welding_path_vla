@@ -71,8 +71,8 @@ pixi run -e policy-sim policy-sim-deploy \
   --deployment.episodes=10
 ```
 
-目录默认自动命名为 `outputs/deploy/{policy.family}_{task.task_id}`。同一 checkpoint 批量运行
-全部任务时增加 `--deployment.run_all_tasks=true`，无需逐个切换配置和输出目录。
+目录默认命名为 `outputs/deploy/{checkpoint_experiment}/YYYY-MM-DD-HH-MM/{task_id}`。默认运行全部任务；只运行指定任务时传入
+`--deployment.include_tasks='["curve_plate"]'`。
 
 项目的组合层只识别 `--config_path=PATH` 形式。其他字段由 Draccus 直接解析，使用
 `--section.field=value` 覆盖；布尔值显式写成 `true` 或 `false`。

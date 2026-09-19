@@ -283,10 +283,11 @@ pixi run -e train train-policy \
 pixi run -e data lerobot-info --config_path=configs/smolvla.yaml
 pixi run -e train train-policy \
   --config_path=configs/smolvla.yaml \
-  --training.include_tasks='["Weld along the circular seam around the top rim of the pipe."]'
+  --training.include_tasks='["pipe_top"]'
 ```
 
-`training.include_tasks` 与 `training.exclude_tasks` 精确匹配 `lerobot-info` 输出的任务名称。
+`training.include_tasks` 与 `training.exclude_tasks` 只接受 `configs/tasks` 下的任务 ID，例如
+`curve_plate`、`l_joint` 和 `pipe_top`。
 筛选先转换为 LeRobot `DatasetConfig.episodes`，再由官方 factory 对所选 episode 建立
 train/eval 划分；训练集的状态与 relative EE action 统计也会按筛选结果重算。
 

@@ -4,7 +4,7 @@
   1. 采样/回放任务（焊缝几何、初始关节位置、TCP 偏移）；
   2. 逐步执行策略动作，进行安全校验、IK 求解和仿真步进；
   3. 记录每步的 TCP/关节/动作/焊缝进度等轨迹数据；
-  4. 保存轨迹为 .npz，并计算四项闭环主结果（成功、覆盖率、方向率、CTE）；
+  4. 保存轨迹为 .npz，并计算覆盖率、到达率、方向率和 tracking CTE；
   5. 汇总多个 episode 的指标，输出 JSON 报告。
 
 设计目标：
@@ -15,9 +15,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,7 @@ from welding_path_vla.simulation.evaluation_scenes import (
     config_for_scene,
     load_scene_bank,
     replay_scene,
+    scene_task_ids,
 )
 from welding_path_vla.simulation.task_sampling import (
     TaskSamplingError,
@@ -57,6 +58,8 @@ from welding_path_vla.simulation.task_sampling import (
     sample_grouped_task_config,
     sample_initial_tcp_offset,
 )
+
+TASK_CONFIG_DIR = Path("configs/tasks")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +77,7 @@ class SimulationRolloutReport:
         trace_path: 逐步 rollout 数组的保存路径。
         videos: 已保存的相机视频路径。
         diagnostics: 用于排查控制和跟踪问题的统计摘要。
-        evaluation: 包含全部有效与失败轨迹的四项闭环主结果。
+        evaluation: 覆盖率、到达、方向率和 tracking 阶段 CTE 主结果。
     """
 
     task: str
@@ -107,7 +110,7 @@ def rollout_episode(
       2. 采样/回放任务，构建专家轨迹；
       3. 进入主循环：观察 → 策略动作 → 位移限幅 → IK → 安全校验 → 仿真步进；
       4. 记录每步轨迹数据，检查终止条件（碰撞/违规/完成/超时）；
-      5. 收尾：保存轨迹、计算四项主结果、构建报告。
+      5. 收尾：保存轨迹、计算主结果、构建报告。
 
     Args:
         config: 全局应用配置。
@@ -119,8 +122,8 @@ def rollout_episode(
     Returns:
         包含完整轨迹、诊断和主结果的 SimulationRolloutReport。
     """
-    # 有 scene 时使用场景固定种子（保证可复现）；否则用基础种子 + episode 编号。
-    seed = int(scene["seed"]) if scene is not None else config.deployment.seed + episode
+    # 固定 scene 已保存全部状态；seed 仅用于报告和随机模式的 episode 采样。
+    seed = config.deployment.seed + episode
 
     # 无 scene 时按配置采样任务（方向、速度、角度等），用于随机化评估。
     if scene is None:
@@ -168,17 +171,8 @@ def rollout_episode(
 
         completion = RolloutCompletion(config.deployment, expert.post)  # 完成条件判定器
 
-        # 可选 rollout 控制参数：scene 可覆盖安全配置（如关节位置余量）。
-        rollout_control = scene.get("rollout_control", {}) if scene is not None else {}
-        safety_config = (
-            replace(
-                config.safety,
-                joint_position_margin_rad=float(rollout_control["joint_position_margin_rad"]),
-            )
-            if "joint_position_margin_rad" in rollout_control
-            else config.safety
-        )
-        safety = SafetyMonitor(safety_config, simulation.joint_ranges)
+        # 固定场景不携带部署控制参数，安全限制统一来自用户配置。
+        safety = SafetyMonitor(config.safety, simulation.joint_ranges)
 
         # 重置策略内部状态（如 VLA 的历史缓存）
         runtime.reset()
@@ -378,7 +372,11 @@ def rollout_episode(
             (trajectory["observation_tcp_position"][:1], trajectory["tcp_position"])
         )
         evaluation = evaluate_rollout(
-            metric_positions, seam_points, termination_reason, config.evaluation
+            metric_positions,
+            seam_points,
+            termination_reason,
+            config.evaluation,
+            np.concatenate((np.array([False]), trajectory["track_mask"])),
         ).as_dict()
         if config.evaluation.report_detailed_metrics and np.sum(trajectory["track_mask"]) >= 2:
             safety_signals = {
@@ -428,10 +426,6 @@ def rollout_episode(
         )
         if detailed is not None:
             diagnostics["detailed_evaluation"] = detailed
-        if scene is not None:
-            diagnostics["scene_fingerprint"] = scene["fingerprint"]
-            if rollout_control:
-                diagnostics["rollout_control"] = rollout_control
         videos = recorder.finish() if recorder else ()
         report = SimulationRolloutReport(
             task=config.task.task_id,
@@ -458,63 +452,43 @@ def rollout_episode(
 
 
 def deployment_task_configs(config: AppConfig) -> tuple[AppConfig, ...]:
-    """返回单任务配置，或从任务目录组合全部部署任务。
-
-    单任务模式：直接返回原配置。
-    全任务模式：扫描 task_config_dir 下所有 .yaml，与基础配置合并后返回。
-    合并时强制关闭 run_all_tasks，避免递归调用。
-
-    Args:
-        config: 基础应用配置。
-
-    Returns:
-        一个或多个 AppConfig 元组。
-    """
-    if not config.deployment.run_all_tasks:
-        return (config,)
-    task_paths = sorted(Path(config.deployment.task_config_dir).glob("*.yaml"))
+    """按 ``include_tasks`` 展开任务配置；空列表表示全部任务。"""
+    task_ids = config.deployment.include_tasks or sorted(
+        path.stem for path in TASK_CONFIG_DIR.glob("*.yaml")
+    )
+    task_paths = [TASK_CONFIG_DIR / f"{task_id}.yaml" for task_id in task_ids]
+    missing = [path for path in task_paths if not path.is_file()]
+    if missing:
+        raise ValueError(f"unknown task IDs: {[path.stem for path in missing]}")
     if not task_paths:
-        raise FileNotFoundError(f"no task YAML files under: {config.deployment.task_config_dir}")
+        raise FileNotFoundError(f"no task YAML files under: {TASK_CONFIG_DIR}")
     configurations: list[AppConfig] = []
     for path in task_paths:
         values = merge_config(config.as_dict(), compose_config(path))
-        values["deployment"]["run_all_tasks"] = False
-        values["deployment"]["auto_log_dir"] = True
+        values["deployment"]["include_tasks"] = [path.stem]
         configurations.append(AppConfig.from_dict(values))
     return tuple(configurations)
 
 
+def checkpoint_experiment_name(checkpoint: str | None) -> str:
+    """从 checkpoint 路径提取训练实验目录名。"""
+    path = Path(checkpoint or "checkpoint")
+    if path.name == "pretrained_model" and path.parent.parent.name == "checkpoints":
+        return path.parent.parent.parent.name
+    return path.name
+
+
 def deployment_output_dir(config: AppConfig) -> Path:
-    """按模型与任务自动生成目录，或返回显式的兼容路径。
-
-    自动目录命名规则：
-      - 基础名：{policy_family}_{task_id}
-      - 若使用 scene bank，附加 checkpoint 哈希前 8 位，避免不同模型混淆。
-      - 目录层级：output_root / [scene_bank_stem] / name
-
-    Args:
-        config: 应用配置。
-
-    Returns:
-        输出目录路径。
-    """
-    if config.deployment.auto_log_dir:
-        name = f"{config.policy.family}_{config.task.task_id}"
-        if config.deployment.scene_bank_path:
-            checkpoint = config.policy.checkpoint or config.policy.family
-            suffix = hashlib.sha256(checkpoint.encode()).hexdigest()[:8]
-            name = f"{name}_{suffix}"
-            return (
-                Path(config.deployment.output_root)
-                / Path(config.deployment.scene_bank_path).stem
-                / name
-            )
-        return Path(config.deployment.output_root) / name
-    return Path(config.deployment.log_dir)
+    """返回 ``output_root/{checkpoint_experiment}/YYYY-MM-DD-HH-MM``。"""
+    return (
+        Path(config.deployment.output_root)
+        / checkpoint_experiment_name(config.policy.checkpoint)
+        / datetime.now().strftime("%Y-%m-%d-%H-%M")
+    )
 
 
 def rollout_metric_summary(reports: list[SimulationRolloutReport]) -> dict[str, Any]:
-    """按全部计划 episode 汇总四项主结果。
+    """按全部计划 episode 汇总完成率、到达率、超时率和跟踪指标。
 
     关键点：分母是 len(reports)（全部计划 episode），而非仅有评估的 episode。
     这样 setup 失败、无评估的 episode 也会拉低成功率，避免"失败被剔除"导致指标虚高。
@@ -523,22 +497,41 @@ def rollout_metric_summary(reports: list[SimulationRolloutReport]) -> dict[str, 
         reports: 全部 episode 的报告列表。
 
     Returns:
-        包含成功率、覆盖率均值、方向率均值、CTE 均值等的字典。
+        包含成功率、覆盖率均值、到达率、超时率和 tracking CTE 均值的字典。
     """
-    metrics = [report.evaluation for report in reports if report.evaluation is not None]
-    cte = [item["cte_p95_m"] for item in metrics if item["cte_p95_m"] is not None]
+    metrics = [report.evaluation or {} for report in reports]
+    cte = [item["cte_p95_m"] for item in metrics if item.get("cte_p95_m") is not None]
     count = len(reports)
+    evaluated = [report.evaluation for report in reports if report.evaluation is not None]
     return {
         "episodes": count,
-        "success_rate": sum(bool(item["success"]) for item in metrics) / count if count else 0.0,
-        "coverage_ratio_mean": sum(float(item["coverage_ratio"]) for item in metrics) / count
+        "complete_rate": sum(report.completed for report in reports) / count if count else 0.0,
+        "success_rate": sum(bool(item.get("success", False)) for item in metrics) / count
         if count
         else 0.0,
-        "direction_ratio_mean": sum(float(item["direction_ratio"]) for item in metrics) / count
+        "arrival_rate": sum(bool(item.get("reached_start", False)) for item in metrics) / count
+        if count
+        else 0.0,
+        "arrival_episodes": sum(bool(item.get("reached_start", False)) for item in metrics),
+        "timeout_rate": sum(report.termination_reason == "timeout" for report in reports) / count
+        if count
+        else 0.0,
+        "timeout_episodes": sum(report.termination_reason == "timeout" for report in reports),
+        "coverage_ratio_mean": sum(float(item.get("coverage_ratio", 0.0)) for item in metrics)
+        / count
+        if count
+        else 0.0,
+        "direction_ratio_mean": sum(float(item.get("direction_ratio", 0.0)) for item in metrics)
+        / count
         if count
         else 0.0,
         "cte_p95_mean_m": float(np.mean(cte)) if cte else None,
         "cte_observed_episodes": len(cte),
+        "tracking_frames_mean": float(
+            np.mean([int(item.get("tracking_frames", 0)) for item in evaluated])
+        )
+        if evaluated
+        else 0.0,
     }
 
 
@@ -565,7 +558,8 @@ def deploy_task_episodes(
     """
     if scenes is not None and not scenes:
         raise ValueError(f"scene bank has no scenes for task: {config.task.task_id}")
-    root = deployment_output_dir(config_for_scene(config, scenes[0]) if scenes else config)
+    task_config = config_for_scene(config, scenes[0]) if scenes else config
+    root = deployment_output_dir(task_config) / task_config.task.task_id
     root.mkdir(parents=True, exist_ok=True)
     reports = []
     episode_items = (
@@ -585,7 +579,8 @@ def deploy_task_episodes(
         except TaskSamplingError as error:
             if scene is not None:
                 raise RuntimeError(
-                    f"prevalidated scene could not be replayed: {scene['task']} {episode}"
+                    "prevalidated scene could not be replayed: "
+                    f"{scene['task']['task_id']} {episode}"
                 ) from error
             report = SimulationRolloutReport(
                 task=config.task.task_id,
@@ -615,26 +610,13 @@ def deploy_task_episodes(
 
 
 def deploy_episodes(config: AppConfig, runtime: Policy) -> list[SimulationRolloutReport]:
-    """运行单个或全部任务，并为批量执行生成跨任务摘要。
-
-    执行路径：
-      - 有 scene_bank_path：从场景库加载任务列表，按任务筛选 scenes 后执行。
-      - 无 scene_bank_path：从任务目录组合配置，逐个任务执行。
-      - run_all_tasks=True：额外写跨任务汇总 JSON。
-
-    Args:
-        config: 顶层应用配置。
-        runtime: 策略运行时。
-
-    Returns:
-        全部任务的报告列表。
-    """
-    if config.deployment.scene_bank_path:
+    """按固定场景或随机模式执行全部任务，或执行指定任务 ID。"""
+    if config.deployment.mode == "scene":
+        if not config.deployment.scene_bank_path:
+            raise ValueError("scene mode requires deployment.scene_bank_path")
         # 场景库模式：加载银行，确定要执行的任务列表。
         bank = load_scene_bank(config.deployment.scene_bank_path)
-        tasks = (
-            bank["protocol"]["tasks"] if config.deployment.run_all_tasks else [config.task.task_id]
-        )
+        tasks = scene_task_ids(config, bank)
         # 按任务筛选 scenes，逐个任务执行。
         reports = [
             report
@@ -642,35 +624,27 @@ def deploy_episodes(config: AppConfig, runtime: Policy) -> list[SimulationRollou
             for report in deploy_task_episodes(
                 config,
                 runtime,
-                [scene for scene in bank["scenes"] if scene["task"] == task],
+                [scene for scene in bank["scenes"] if scene["task"]["task_id"] == task],
             )
         ]
-    else:
-        # 无场景库：从任务目录组合配置，逐个任务执行。
+    elif config.deployment.mode == "random":
         reports = [
             report
             for task_config in deployment_task_configs(config)
             for report in deploy_task_episodes(task_config, runtime)
         ]
-
-    # 全任务模式：额外写跨任务汇总文件到 output_root。
-    if config.deployment.run_all_tasks:
-        root = Path(config.deployment.output_root)
-        prefix = config.policy.family
-        if config.deployment.scene_bank_path:
-            root /= Path(config.deployment.scene_bank_path).stem
-            checkpoint = config.policy.checkpoint or config.policy.family
-            prefix += "_" + hashlib.sha256(checkpoint.encode()).hexdigest()[:8]
-        root.mkdir(parents=True, exist_ok=True)
-        summary = root / f"{prefix}_all_tasks_summary.json"
-        summary.write_text(
-            json.dumps([report.as_dict() for report in reports], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (root / f"{prefix}_metrics_summary.json").write_text(
-            json.dumps(rollout_metric_summary(reports), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    else:
+        raise ValueError(f"unsupported deployment mode: {config.deployment.mode}")
+    root = deployment_output_dir(config)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "summary.json").write_text(
+        json.dumps([report.as_dict() for report in reports], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (root / "metrics_summary.json").write_text(
+        json.dumps(rollout_metric_summary(reports), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return reports
 
 

@@ -177,3 +177,8 @@ pixi run -e data export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasetss/*_raw_v2' \
   --output=datasetss/weldpath_lerobot_relative_v2 
+
+sleep 3h && time python scripts/collect_simulation_data.py --config_path=configs/pipe_top.yaml \
+--collection.episodes=1200 \
+--collection.workers=12 \
+--collection.dataset_root=datasets/raw_v3/pipe_top

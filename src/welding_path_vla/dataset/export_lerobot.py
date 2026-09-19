@@ -463,7 +463,7 @@ def add_passthrough_episode(
     task_values: dict[str, Any],
     statistics: dict[str, dict[str, np.ndarray]] | None,
 ) -> None:
-    """不解码像素，把 raw H.264 packet 接入 LeRobot 的数据与元数据写入流程。"""
+    """原样重封装 H.264，仅为统计解码 RGB，再交给 LeRobot writer。"""
     episode_index = dataset.meta.total_episodes
     # 为当前 episode 创建两个临时输出路径
     videos = {

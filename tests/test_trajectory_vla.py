@@ -1,4 +1,6 @@
+import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -39,8 +41,9 @@ def test_trajectory_vla_configs_switch_complete_tasks(path: str, seam: str) -> N
     assert config.policy.family == "trajectory_vla"
     assert config.task.seam_id == seam
     assert config.policy.checkpoint is not None
-    task_name = {"straight_fillet": "l_joint", "curve_seam": "curve_plate"}.get(seam, seam)
-    assert deployment_output_dir(config).name == f"trajectory_vla_{task_name}"
+    output = deployment_output_dir(config)
+    assert output.parent == Path("outputs/deploy") / "trajectory_vla_weldpath_relative_v1"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}", output.name)
 
 
 def test_trajectory_vla_uses_local_registered_policy() -> None:

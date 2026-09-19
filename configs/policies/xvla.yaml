@@ -8,10 +8,10 @@ policy:
   action_source: safe_command
   welding_prompt_fields:
     - direction
-    - welding_speed
     - work_angle
-    - travel_angle
-    - tool_roll
+    # - welding_speed
+    # - travel_angle
+    # - tool_roll
   parameters:
     pretrained_model: lerobot/xvla-base
     dtype: bfloat16
@@ -20,7 +20,7 @@ policy:
     max_action_dim: 20
     max_state_dim: 20
     # 保持基础模型的三视角结构；当前双相机输入会自动零填充第三视角。
-    num_image_views: 3
+    num_image_views: 2
     resize_imgs_with_padding: [224, 224]
     tokenizer_max_length: 160
     num_denoising_steps: 10
@@ -59,7 +59,6 @@ policy_evaluation:
   output_dir: outputs/evaluation/policies
 
 deployment:
-  dry_run: false
   episodes: 3
   max_steps: 3300
   seed: 20260908
@@ -67,6 +66,5 @@ deployment:
   # 仅仿真部署：将混合位姿 IK 残差停止线从默认 0.005 放宽到 0.010。
   max_ik_residual: 0.01
   # 每个 30 Hz 控制步最大平移目标增量；默认 0.40/30=0.0133 m。
-  max_target_increment_m: 0.02
   completion_progress_min: 0.85
   completion_distance_m: 0.015

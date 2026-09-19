@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator, cast
+from typing import Any, cast
 
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
+from welding_path_vla.core.config_files import compose_config
 from welding_path_vla.dataset.actions import ABSOLUTE_ACTION_NAMES
 from welding_path_vla.dataset.task_parameters import TASK_DIRECTION, TASK_PARAMETERS
 
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
+TASK_CONFIG_DIR = Path("configs/tasks")
 
 CAMERA_KEYS = ("observation.images.global", "observation.images.wrist")
 
@@ -97,17 +100,21 @@ def dataset_task_summaries(training: TrainingConfig) -> list[DatasetTaskSummary]
 
 
 def filtered_episode_indices(training: TrainingConfig) -> list[int] | None:
-    """把任务名称过滤器解析为 LeRobot 原生 episode 子集。"""
+    """把任务 ID 过滤器解析为 LeRobot 原生 episode 子集。"""
     if not training.include_tasks and not training.exclude_tasks:
         return None
     summaries = dataset_task_summaries(training)
-    available = {summary.name for summary in summaries}
+    task_instructions = {
+        path.stem: str(compose_config(path)["task"]["instruction"])
+        for path in TASK_CONFIG_DIR.glob("*.yaml")
+    }
     requested = set(training.include_tasks) | set(training.exclude_tasks)
-    unknown = sorted(requested - available)
+    unknown = sorted(requested - task_instructions.keys())
     if unknown:
-        raise ValueError(f"unknown LeRobot tasks: {unknown}; available={sorted(available)}")
-    selected = set(training.include_tasks) if training.include_tasks else available
-    selected -= set(training.exclude_tasks)
+        raise ValueError(f"unknown task IDs: {unknown}; available={sorted(task_instructions)}")
+    selected_ids = set(training.include_tasks) if training.include_tasks else set(task_instructions)
+    selected_ids -= set(training.exclude_tasks)
+    selected = {task_instructions[task_id] for task_id in selected_ids}
     episodes = [
         episode
         for summary in summaries
@@ -231,6 +238,41 @@ def balanced_frame_indices(dataset: LeRobotDataset, count: int) -> list[int]:
     return sorted(selected)
 
 
+def episode_row_ranges(episode_indices: np.ndarray) -> list[tuple[int, int, int]]:
+    """把按 episode 连续排列的帧索引转换为 ``(episode, start, end)`` 区间。
+
+    Args:
+        episode_indices: 每一行对应的 episode 编号，要求同一 episode 的行连续排列。
+
+    Returns:
+        每个连续 episode 对应的编号、起始行和结束行（结束行不包含）。
+    """
+    if not len(episode_indices):
+        return []
+    boundaries = np.flatnonzero(episode_indices[1:] != episode_indices[:-1]) + 1
+    starts = np.concatenate(([0], boundaries))
+    ends = np.concatenate((boundaries, [len(episode_indices)]))
+    return [
+        (int(episode_indices[start]), int(start), int(end))
+        for start, end in zip(starts, ends, strict=True)
+    ]
+
+
+def dataset_feature_array(dataset: Any, feature: str, dtype: Any) -> np.ndarray:
+    """直接从 Arrow 列读取数值 feature，避免 HuggingFace Python-list 转换。"""
+    hf_dataset = dataset.hf_dataset
+    table = getattr(hf_dataset, "data", None)
+    if table is None or not hasattr(table, "column"):
+        return np.asarray(hf_dataset[feature], dtype=dtype)
+
+    column = table.column(feature).combine_chunks()
+    list_size = getattr(column.type, "list_size", None)
+    if list_size is None:
+        return np.asarray(column.to_numpy(zero_copy_only=False), dtype=dtype)
+    values = column.values.to_numpy(zero_copy_only=False)
+    return values.reshape(len(column), list_size).astype(dtype, copy=False)
+
+
 def make_dataset(
     policy: PolicyConfig,
     training: TrainingConfig,
@@ -262,9 +304,9 @@ def filtered_training_stats(dataset: LeRobotDataset, policy: PolicyConfig) -> di
 
     from welding_path_vla.core.geometry import relative_ee_actions_from_absolute
 
-    states = np.asarray(dataset.hf_dataset["observation.state"], dtype=np.float32)
-    actions = np.asarray(dataset.hf_dataset["action"], dtype=np.float32)
-    episode_indices = np.asarray(dataset.hf_dataset["episode_index"])
+    states = dataset_feature_array(dataset, "observation.state", np.float32)
+    actions = dataset_feature_array(dataset, "action", np.float32)
+    episode_indices = dataset_feature_array(dataset, "episode_index", np.int64)
     stats = deepcopy(dataset.meta.stats)
     stats["observation.state"] = get_feature_stats(states, axis=0, keepdims=False)
 
@@ -272,17 +314,15 @@ def filtered_training_stats(dataset: LeRobotDataset, policy: PolicyConfig) -> di
     action_stats = RunningQuantileStats()
     offsets = np.arange(policy.action_horizon) * policy.action_stride
     sampled = False
-    for episode in np.unique(episode_indices):
-        # 该 episode 所有帧在全局数据集中的行索引
-        rows = np.flatnonzero(episode_indices == episode)
-        sample_count = len(rows) - int(offsets[-1])
+    for _, episode_start, episode_end in episode_row_ranges(episode_indices):
+        sample_count = episode_end - episode_start - int(offsets[-1])
         for start in range(0, max(sample_count, 0), 1024):
             starts = np.arange(start, min(start + 1024, sample_count))
-            chunks = actions[rows[starts[:, None] + offsets]]
+            chunks = actions[episode_start + starts[:, None] + offsets]
             relative = relative_ee_actions_from_absolute(
                 chunks,
-                states[rows[starts], 6:9],
-                states[rows[starts], 9:13],
+                states[episode_start + starts, 6:9],
+                states[episode_start + starts, 9:13],
             )
             action_stats.update(relative.reshape(-1, actions.shape[1]))
             sampled = True
@@ -333,7 +373,9 @@ __all__ = [
     "DatasetTaskSummary",
     "PolicyDataReport",
     "balanced_frame_indices",
+    "dataset_feature_array",
     "dataset_task_summaries",
+    "episode_row_ranges",
     "filtered_episode_indices",
     "filtered_training_stats",
     "held_out_episode_indices",

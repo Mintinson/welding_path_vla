@@ -180,8 +180,8 @@ def test_frequency_layers_must_be_integral() -> None:
 def test_training_task_filters_cannot_overlap() -> None:
     """同一任务不能同时包含和排除。"""
     config = AppConfig()
-    config.training.include_tasks = ["pipe top"]
-    config.training.exclude_tasks = ["pipe top"]
+    config.training.include_tasks = ["pipe_top"]
+    config.training.exclude_tasks = ["pipe_top"]
     with pytest.raises(ValueError, match="task filters overlap"):
         config.validate()
 

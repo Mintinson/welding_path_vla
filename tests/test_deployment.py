@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -7,24 +8,33 @@ from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies import simulation_rollout
 from welding_path_vla.policies.simulation_rollout import (
     SimulationRolloutReport,
+    checkpoint_experiment_name,
     deploy_episodes,
     deployment_output_dir,
     deployment_task_configs,
+    rollout_metric_summary,
 )
 from welding_path_vla.simulation.task_sampling import TaskSamplingError
 
 
-def test_deployment_directory_is_derived_from_policy_and_task() -> None:
-    """单任务输出目录应自动使用模型与稳定任务标识命名。"""
+def test_checkpoint_experiment_name_supports_numbered_checkpoints() -> None:
+    """输出目录应从 numbered checkpoint 提取训练实验名。"""
+    checkpoint = "outputs/train_v2/xvla_l_joint/checkpoints/0040000/pretrained_model"
+    assert checkpoint_experiment_name(checkpoint) == "xvla_l_joint"
+
+
+def test_deployment_directory_is_derived_from_checkpoint_and_minute() -> None:
+    """输出根目录应使用 checkpoint 的训练实验名和分钟级时间。"""
     config = AppConfig.load("configs/deploy/smolvla_pipe_top.yaml")
-    config.deployment.scene_bank_path = None
-    assert deployment_output_dir(config) == Path("outputs/deploy/smolvla_pipe_top")
+    output = deployment_output_dir(config)
+    assert output.parent == Path("outputs/deploy") / "smolvla_weldpath_relative_v1"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}", output.name)
 
 
 def test_deployment_can_load_all_task_modules() -> None:
     """批量部署应复用一个策略配置并展开所有任务 YAML。"""
     config = AppConfig.load("configs/deploy/trajectory_vla.yaml")
-    config.deployment.run_all_tasks = True
+    config.deployment.mode = "random"
     tasks = deployment_task_configs(config)
 
     assert [item.task.task_id for item in tasks] == [
@@ -37,18 +47,72 @@ def test_deployment_can_load_all_task_modules() -> None:
     ]
     assert all(item.policy.family == "trajectory_vla" for item in tasks)
     assert all(item.policy.checkpoint == config.policy.checkpoint for item in tasks)
-    assert len({deployment_output_dir(item) for item in tasks}) == len(tasks)
+    assert len({deployment_output_dir(item) for item in tasks}) == 1
     assert (
         next(item for item in tasks if item.task.task_id == "pipe_top").deployment.max_steps == 3300
     )
 
 
-def test_deployment_can_keep_an_explicit_legacy_directory() -> None:
-    """关闭自动命名后应继续支持调用方给出的完整目录。"""
+def test_deployment_include_tasks_accepts_task_ids() -> None:
+    """部署过滤器只接受任务 ID。"""
+    config = AppConfig.load("configs/deploy/trajectory_vla.yaml")
+    config.deployment.include_tasks = ["pipe_top"]
+    assert [item.task.task_id for item in deployment_task_configs(config)] == ["pipe_top"]
+
+
+def test_scene_include_tasks_filters_scene_without_switching_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scene 模式传入 include_tasks 时只筛选场景，不切换为 random。"""
     config = AppConfig.load("configs/deploy/smolvla.yaml")
-    config.deployment.auto_log_dir = False
-    config.deployment.log_dir = "outputs/deploy/custom_run"
-    assert deployment_output_dir(config) == Path("outputs/deploy/custom_run")
+    config.policy.checkpoint = "checkpoint"
+    config.deployment.mode = "scene"
+    config.deployment.include_tasks = ["pipe_top"]
+    config.deployment.output_root = str(tmp_path)
+    path = tmp_path / "scenes.json"
+    scene_config = config.as_dict()
+    scenes = [
+        {
+            "task": {**scene_config["task"], "task_id": task},
+            "episode": 0,
+            "scene": {},
+            "robot": {},
+            "workpiece": {},
+        }
+        for task in ("l_joint", "pipe_top")
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "complete": True,
+                "scenes": scenes,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.deployment.scene_bank_path = str(path)
+    calls: list[tuple[str, list[str], list[str]]] = []
+
+    def fake_deploy_task_episodes(task_config, runtime, selected_scenes):
+        calls.append(
+            (
+                task_config.deployment.mode,
+                task_config.deployment.include_tasks,
+                [scene["task"]["task_id"] for scene in selected_scenes],
+            )
+        )
+        return []
+
+    monkeypatch.setattr(simulation_rollout, "deploy_task_episodes", fake_deploy_task_episodes)
+    monkeypatch.setattr(
+        simulation_rollout,
+        "deployment_task_configs",
+        lambda config: pytest.fail("scene mode must not build random task configs"),
+    )
+
+    assert simulation_rollout.deploy_episodes(config, object()) == []
+    assert calls == [("scene", ["pipe_top"], ["pipe_top"])]
 
 
 def test_all_tasks_write_subdirectories_and_combined_summary(
@@ -57,8 +121,7 @@ def test_all_tasks_write_subdirectories_and_combined_summary(
 ) -> None:
     """批量部署应为每个任务建子目录，并在公共根目录写跨任务摘要。"""
     config = AppConfig.load("configs/deploy/smolvla.yaml")
-    config.deployment.scene_bank_path = None
-    config.deployment.run_all_tasks = True
+    config.deployment.mode = "random"
     config.deployment.output_root = str(tmp_path)
     config.deployment.episodes = 1
 
@@ -87,10 +150,12 @@ def test_all_tasks_write_subdirectories_and_combined_summary(
     reports = deploy_episodes(config, object())
 
     assert len(reports) == 6
+    root = next((tmp_path / "smolvla_weldpath_relative_v1").iterdir())
     assert all(
-        (tmp_path / f"smolvla_{report.task}" / "summary.json").exists() for report in reports
+        (root / report.task / "summary.json").exists()
+        for report in reports
     )
-    assert (tmp_path / "smolvla_all_tasks_summary.json").exists()
+    assert (root / "summary.json").exists()
 
 
 def test_unreachable_staging_does_not_abort_remaining_episodes(
@@ -99,9 +164,8 @@ def test_unreachable_staging_does_not_abort_remaining_episodes(
 ) -> None:
     """Record scene setup failures separately and continue the simulation benchmark."""
     config = AppConfig.load("configs/xvla_a100.yaml")
-    config.deployment.scene_bank_path = None
-    config.deployment.auto_log_dir = False
-    config.deployment.log_dir = str(tmp_path)
+    config.deployment.mode = "random"
+    config.deployment.output_root = str(tmp_path)
     config.deployment.episodes = 2
 
     def fake_rollout(
@@ -130,16 +194,25 @@ def test_unreachable_staging_does_not_abort_remaining_episodes(
     monkeypatch.setattr(simulation_rollout, "rollout_episode", fake_rollout)
     reports = simulation_rollout.deploy_task_episodes(config, object())
     assert [report.termination_reason for report in reports] == ["setup_failure", "completed"]
-    assert (tmp_path / "episode_000000" / "summary.json").exists()
-    assert (tmp_path / "summary.json").exists()
+    root = deployment_output_dir(config) / config.task.task_id
+    assert (
+        root
+        / "episode_000000"
+        / "summary.json"
+    ).exists()
+    assert (
+        root / "summary.json"
+    ).exists()
+    metrics = json.loads((root / "metrics_summary.json").read_text())
+    assert metrics["complete_rate"] == 0.5
     assert config.deployment.max_ik_residual == 0.01
     assert config.deployment.max_target_increment_m == 0.02
 
 
-def test_fixed_scene_bank_uses_its_protocol_for_every_episode(
+def test_fixed_scene_bank_uses_user_deployment_config_for_every_episode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """模型 YAML 的步数和评价阈值不能覆盖固定场景清单。"""
+    """scene bank 不包含 deployment，部署控制项应来自用户配置。"""
     model = AppConfig()
     model.policy.checkpoint = "checkpoint-a"
     model.deployment.output_root = str(tmp_path / "outputs")
@@ -150,14 +223,31 @@ def test_fixed_scene_bank_uses_its_protocol_for_every_episode(
     reference = AppConfig()
     reference.deployment.max_steps = 500
     reference.evaluation.coverage_tolerance_m = 0.005
+    reference_values = reference.as_dict()
     scenes = [
-        {"task": "l_joint", "episode": index, "seed": index, "config": reference.as_dict()}
+        {
+            "task": reference_values["task"],
+            "episode": index,
+            "scene": {
+                "layout": reference_values["scene"],
+                "camera": {"global_fovy_deg": reference.camera.global_fovy_deg},
+                "lighting": {},
+                "background": {},
+            },
+            "robot": {"joint_position_rad": [0.0] * 6, "joint_velocity_rad_s": [0.0] * 6},
+            "workpiece": {
+                "geometry": reference_values["workpiece"],
+                "pose": {
+                    "position_m": reference_values["scene"]["workpiece_position_m"],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                },
+                "surface": {},
+            },
+        }
         for index in range(2)
     ]
     path.write_text(
-        json.dumps({"version": 1, "complete": True,
-                    "protocol": {"tasks": ["l_joint"], "scenes_per_task": 2, "action_steps": 8},
-                    "scenes": scenes}),
+        json.dumps({"version": 2, "complete": True, "scenes": scenes}),
         encoding="utf-8",
     )
     seen = []
@@ -166,15 +256,70 @@ def test_fixed_scene_bank_uses_its_protocol_for_every_episode(
         output.mkdir(parents=True)
         seen.append((episode, config.deployment.max_steps, config.evaluation.coverage_tolerance_m))
         return SimulationRolloutReport(
-            "l_joint", episode, scene["seed"], 1, True, "completed", False, "", (), {},
+            "l_joint",
+            episode,
+            model.deployment.seed + episode,
+            1,
+            True,
+            "completed",
+            False,
+            "",
+            (),
+            {},
             {"success": episode == 0, "coverage_ratio": 0.9,
-             "direction_ratio": 1.0, "cte_p95_m": 0.001},
+             "direction_ratio": 1.0, "reached_start": episode == 0,
+             "tracking_frames": 1, "cte_p95_m": 0.001},
         )
 
     monkeypatch.setattr(simulation_rollout, "rollout_episode", fake_rollout)
     reports = deploy_episodes(model, object())
-    assert seen == [(0, 500, 0.005), (1, 500, 0.005)]
+    assert seen == [(0, 1, 0.001), (1, 1, 0.001)]
     assert len(reports) == 2
     metric_files = list((tmp_path / "outputs").rglob("metrics_summary.json"))
-    assert len(metric_files) == 1
-    assert json.loads(metric_files[0].read_text())["success_rate"] == 0.5
+    assert len(metric_files) == 2
+    global_metrics = next(
+        path for path in metric_files if path.parent.parent.name == "checkpoint-a"
+    )
+    assert json.loads(global_metrics.read_text())["success_rate"] == 0.5
+
+
+def test_rollout_metric_summary_reports_arrival_timeout_and_tracking_cte() -> None:
+    """批量指标使用全部 episode 分母，并单独报告到达率与超时率。"""
+    reports = [
+        SimulationRolloutReport(
+            "l_joint", 0, 0, 10, True, "completed", False, "", (), {},
+            {
+                "success": True,
+                "coverage_ratio": 1.0,
+                "direction_ratio": 1.0,
+                "reached_start": True,
+                "tracking_frames": 8,
+                "cte_p95_m": 0.002,
+            },
+        ),
+        SimulationRolloutReport(
+            "l_joint", 1, 1, 10, False, "timeout", False, "", (), {},
+            {
+                "success": False,
+                "coverage_ratio": 0.0,
+                "direction_ratio": 0.0,
+                "reached_start": False,
+                "tracking_frames": 0,
+                "cte_p95_m": None,
+            },
+        ),
+        SimulationRolloutReport(
+            "l_joint", 2, 2, 0, False, "setup_failure", False, "", (), {}, None
+        ),
+    ]
+
+    summary = rollout_metric_summary(reports)
+
+    assert summary["episodes"] == 3
+    assert summary["arrival_episodes"] == 1
+    assert summary["arrival_rate"] == pytest.approx(1 / 3)
+    assert summary["timeout_episodes"] == 1
+    assert summary["timeout_rate"] == pytest.approx(1 / 3)
+    assert summary["coverage_ratio_mean"] == pytest.approx(1 / 3)
+    assert summary["cte_p95_mean_m"] == pytest.approx(0.002)
+    assert summary["cte_observed_episodes"] == 1

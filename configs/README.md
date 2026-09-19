@@ -20,13 +20,13 @@ includes:
   - ../tasks/pipe_top.yaml
 ```
 
-输出目录由程序自动生成为 `outputs/deploy/{model}_{task_id}`，任务组合文件不需要再同步维护
-目录名。一次运行全部任务：
+部署配置统一使用 `deployment.output_root: outputs/deploy`；程序从 checkpoint 路径提取训练实验目录名，
+输出为 `{deployment.output_root}/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/{task_id}`。默认运行全部任务，只运行曲线平板任务时：
 
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
-  --deployment.run_all_tasks=true
+  --deployment.include_tasks='["curve_plate"]'
 ```
 
 ## 焊接参数 Prompt

@@ -55,15 +55,16 @@ policy:
     scheduler_decay_steps: 918506
 
 training:
-  dataset_repo_id: mintinson/weldpath_relative_v1
-  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v2
+  dataset_repo_id: mintinson/weldpath_relative_v3
+  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v3
   output_dir: outputs/train/traj_vla_qwen_weldpath_relative_v1
   lr: 1.0e-4
   batch_size: 4
   # 3,674,023 个训练帧 / batch 4，约为完整遍历一次训练集。
   steps: 918506
   num_workers: 4
-  video_backend: torchcodec
+  # 当前训练环境缺少 torchcodec 所需的 CUDA FFmpeg 库，使用 PyAV 解码 H.264。
+  video_backend: pyav
   eval_split: 0.1
   eval_steps: 50000
   max_eval_samples: 100
@@ -81,7 +82,6 @@ policy_evaluation:
   output_dir: outputs/evaluation/policies
 
 deployment:
-  dry_run: false
   episodes: 3
   max_steps: 3300
   seed: 20260806

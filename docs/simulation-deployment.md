@@ -1,8 +1,8 @@
 # 仿真策略部署与闭环 Rollout
 
-> 论文模型对比现在默认使用[固定可行场景评价](fixed-scene-evaluation.md)：每任务 25 条、
-> 统一四项主结果与控制协议。下文关于即时随机采样、旧 ESR 条件和诊断字段的说明仅适用于
-> 显式设置 `deployment.scene_bank_path=null` 的兼容模式。
+论文模型对比默认使用[固定可行场景评价](fixed-scene-evaluation.md)：每任务 25 条、统一闭环主结果
+与控制协议。部署默认按 `deployment.scene_bank_path` 指向的固定场景清单执行；需要随机生成场景时
+使用 `--deployment.mode=random`。
 
 `deploy_simulation_policy.py` 将训练完成的 LeRobot checkpoint 放入项目的 robosuite / MuJoCo
 焊接环境中执行闭环 rollout。它用于观察策略能否在自身预测造成的状态分布上完成任务，并同步
@@ -23,6 +23,7 @@
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_l_joint.yaml \
+  --deployment.include_tasks='["l_joint"]' \
   --deployment.episodes=5
 ```
 
@@ -32,16 +33,25 @@ pixi run -e policy-sim policy-sim-deploy \
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["pipe_top"]' \
   --deployment.episodes=5
 ```
 
-输出目录会自动生成为 `outputs/deploy/smolvla_pipe_top`。一次执行全部任务时，模型只加载一次：
+输出目录会自动使用 checkpoint 的实验目录名。上述 checkpoint 会写入
+`outputs/deploy/RUN/YYYY-MM-DD-HH-MM/pipe_top`。一次执行全部任务时，模型只加载一次：
 
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
-  --deployment.run_all_tasks=true \
   --deployment.episodes=5
+```
+
+默认执行全部任务；只运行一个任务时传入任务 ID：
+
+```bash
+pixi run -e policy-sim policy-sim-deploy \
+  --config_path=configs/deploy/smolvla.yaml \
+  --deployment.include_tasks='["pipe_top"]'
 ```
 
 进入环境后也可以直接运行脚本：
@@ -89,20 +99,17 @@ includes:
 | `policy.family` | 从公共注册表选择 ACT、SmolVLA、Trajectory-VLA、Qwen 或 π 系列 pipeline |
 | `policy.checkpoint` | 待加载的 LeRobot checkpoint；部署时必须提供 |
 | `policy.device` | 首选推理设备，例如 `cuda`；不可用时自动选择可用设备 |
-| `deployment.output_root` | 自动命名的公共输出根目录，默认 `outputs/deploy` |
-| `deployment.auto_log_dir` | 是否自动使用 `{policy.family}_{task.task_id}` 子目录 |
-| `deployment.log_dir` | 关闭自动命名后的兼容完整路径 |
-| `deployment.run_all_tasks` | 是否遍历 `task_config_dir` 下的全部任务 |
-| `deployment.task_config_dir` | 批量部署使用的任务 YAML 目录 |
+| `camera.render_gpu_device_id` | EGL 离屏渲染使用的 GPU；默认 1，与 GPU 0 上的策略推理解耦 |
+| `deployment.mode` | `scene` 使用固定场景清单，`random` 随机生成场景 |
+| `deployment.output_root` | checkpoint 实验目录的公共根目录，固定为 `outputs/deploy` |
+| `deployment.scene_bank_path` | 固定场景清单路径；随机模式不读取 |
+| `deployment.include_tasks` | scene 和 random 模式通用的任务 ID 过滤器；空列表表示全部任务，不会改变 `deployment.mode` |
 | `deployment.episodes` | 连续执行的 episode 数量 |
 | `deployment.max_steps` | 每条 episode 的最大策略步数 |
-| `deployment.seed` | 第 0 条 episode 的随机种子 |
+| `deployment.seed` | 随机模式第 0 条 episode 的随机种子 |
 | `deployment.record_video` | 是否录制全局与腕部相机视频 |
 | `deployment.completion_progress_min` | 自然退出所需的最小焊缝进度 |
 | `deployment.completion_distance_m` | 自然退出时允许的最大焊缝距离 |
-
-`deployment.dry_run` 是保留字段，当前仿真部署入口不会读取它；即使该值为 `true` 也会实际执行
-rollout。若只想检查配置，应使用 `policy-config`，不要把 `dry_run` 当作部署预览开关。
 
 模型结构、归一化统计、`chunk_size` 和 `n_action_steps` 从 checkpoint 自身配置恢复。外层 YAML
 中的 `policy.action_horizon`、`policy.action_steps` 和 `policy.parameters` 主要用于训练构造，不能
@@ -112,12 +119,13 @@ rollout。若只想检查配置，应使用 `policy-config`，不要把 `dry_run
 默认输出路径为：
 
 ```text
-{deployment.output_root}/{policy.family}_{task.task_id}
+{deployment.output_root}/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/{task_id}
 ```
 
-例如 SmolVLA 的管口任务自动写入 `outputs/deploy/smolvla_pipe_top`，不再需要在每个任务配置中
-同步维护目录名。若必须使用完整自定义路径，应同时设置
-`--deployment.auto_log_dir=false --deployment.log_dir=PATH`。
+例如 checkpoint 为 `outputs/train_v2/trajvla_cross_with_dense_prompt_v3_2/checkpoints/last/pretrained_model`
+时，管口任务会写入 `outputs/deploy/trajvla_cross_with_dense_prompt_v3_2/2026-09-17-10-30/pipe_top`。
+`include_tasks` 在两种模式下都只负责筛选任务；是否使用固定场景仍由
+`deployment.mode=scene` 决定，传入任务 ID 不会切换为随机模式。
 
 ## 3. 完整调用链
 
@@ -147,13 +155,13 @@ rollout.npz + 双相机 MP4 + episode summary.json
 
 ## 4. Episode 初始化
 
-第 $e$ 条 episode 使用确定性种子
+随机模式下，第 $e$ 条 episode 使用确定性种子
 
 $$
 \mathrm{seed}_e=\mathrm{deployment.seed}+e.
 $$
 
-初始化依次执行：
+随机模式初始化依次执行：
 
 1. 创建 `WeldingEnv`，加载 Elfin5-Pro、焊枪、桌面、双相机和任务工件；
 2. 在配置范围内随机化工件位置和偏航角，并重采样不可达或碰撞的 staging pose；
@@ -162,8 +170,9 @@ $$
 5. 根据当前工件位姿建立 `SeamPath` 和 `ExpertTrajectory` 参考；
 6. 创建 `SafetyMonitor`，并清空模型、processor 与动作队列的跨 episode 状态。
 
-这里的 `ExpertTrajectory` 只提供参考焊缝位姿和自动评估基准，不会向机器人发送动作。闭环中的
-每一个动作都来自待评估策略。
+固定 scene 模式不执行上述随机化，而是直接从 scene bank 恢复光照、背景、工件表面与位姿、
+机器人初始关节和任务工艺参数。这里的 `ExpertTrajectory` 只提供参考焊缝位姿和自动评估基准，
+不会向机器人发送动作。闭环中的每一个动作都来自待评估策略。
 
 部署与采集复用 `sample_task_config()`，因此方向、速度、圆弧、姿态角和工件尺寸按同一规则
 采样。`deployment.task_group_size` 默认是 2，比采集分组更小；
@@ -275,8 +284,10 @@ track_mask = seam_distance_m <= evaluation.tracking_band_m
 ```
 
 episode 结束后，只有 `track_mask` 至少包含 2 帧时才调用 `evaluate_trace()`；否则
-`evaluation` 为 `null`。自动评价使用几何专家的 TRACK 段作为参考焊缝，并在仿真中将指令
-选择标记为正确，因为工件、焊缝和方向由当前配置明确给出。
+`diagnostics.detailed_evaluation` 不生成。部署主评价 `evaluation` 仍会写入：它始终统计
+coverage、到达和方向，只有没有 tracking 帧时才将 `cte_p95_m` 写为 `null`。自动评价使用
+几何专家的 TRACK 段作为参考焊缝，并在仿真中将指令选择标记为正确，因为工件、焊缝和方向
+由当前配置明确给出。
 
 当前 rollout 没有把专家时间序列传入 jerk 对比，因此 `jerk_ratio` 通常为 `null`；默认
 `require_smoothness_for_success=false` 时不影响 ESR。PCR、CTE、姿态、速度和安全仍会正常
@@ -284,41 +295,55 @@ episode 结束后，只有 `track_mask` 至少包含 2 帧时才调用 `evaluate
 
 ## 9. 输出目录与字段
 
-单任务默认目录由模型和任务自动生成：
-
-```text
-outputs/deploy/smolvla_pipe_top/
-├── summary.json                    # 所有 episode 的报告列表
-├── episode_000000/
-│   ├── config.json                 # 本次执行的完整合并配置
-│   ├── rollout.npz                 # 逐策略步轨迹和诊断原始量
-│   ├── global.mp4                  # 全局相机 H.264 视频
-│   ├── wrist.mp4                   # 腕部相机 H.264 视频
-│   └── summary.json                # 本 episode 的结构化报告
-└── episode_000001/
-    └── ...
-```
-
-每次调用都从 `episode_000000` 开始，且 episode 目录使用 `exist_ok=false`。因此不能直接复用
-含有旧 episode 的自动目录；新一轮实验可覆盖 `deployment.output_root`，或先把旧结果移动到
-归档位置。
-若中途异常退出，已经完成的 episode 会保留，但根目录 `summary.json` 可能尚未生成。
-
-批量模式在同一个 `output_root` 中建立六个模型—任务子目录，并额外写入跨任务摘要：
+每个 checkpoint 的每个任务写入独立目录：
 
 ```text
 outputs/deploy/
-├── smolvla_l_joint/
-├── smolvla_pipe_bottom/
-├── smolvla_pipe_top/
-├── smolvla_curve_plate/
-├── smolvla_trihedral_horizontal/
-├── smolvla_trihedral_vertical/
-└── smolvla_all_tasks_summary.json
+└── trajvla_cross_with_dense_prompt_v3_2/
+    └── 2026-09-17-10-30/
+        ├── summary.json              # 全部任务的报告列表
+        ├── metrics_summary.json      # 全部任务的汇总指标
+        └── pipe_top/
+            ├── summary.json            # 所有 episode 的报告列表
+            ├── episode_000000/
+            │   ├── config.json         # 本次执行的完整合并配置
+            │   ├── rollout.npz         # 逐策略步轨迹和诊断原始量
+            │   ├── global.mp4          # 全局相机 H.264 视频
+            │   ├── wrist.mp4            # 腕部相机 H.264 视频
+            │   └── summary.json        # 本 episode 的结构化报告
+            └── episode_000001/
+                └── ...
+```
+
+每次调用都从 `episode_000000` 开始，且 episode 目录使用 `exist_ok=false`。因此不能直接复用
+含有同一 checkpoint、同一任务 episode 的目录；新一轮实验应使用新的 checkpoint 实验目录或先把旧结果移动到
+归档位置。双相机分别由独立后台线程编码，每路 H.264 编码器使用 2 个线程，主 rollout 线程不等待
+逐帧压缩。
+若中途异常退出，已经完成的 episode 会保留，但根目录 `summary.json` 可能尚未生成。
+
+批量模式在同一个 checkpoint 实验目录的日期目录中建立六个任务子目录，并额外写入跨任务摘要：
+
+```text
+outputs/deploy/
+└── smolvla_weldpath_relative_v1/
+    └── 2026-09-17-10-30/
+        ├── l_joint/
+        ├── pipe_bottom/
+        ├── pipe_top/
+        ├── curve_plate/
+        ├── trihedral_horizontal/
+        ├── trihedral_vertical/
+        ├── summary.json
+        └── metrics_summary.json
 ```
 
 每条 report 新增 `task` 字段，根摘要可以直接按任务分组。各任务仍拥有自己的 `summary.json`、
-episode 目录和视频。
+episode 目录和视频。每个 `metrics_summary.json` 都包含 `complete_rate`，即
+`completed=true` 的 episode 数除以该任务全部计划 episode 数；它与 `evaluation.success` 的
+`success_rate` 分开统计，并额外包含 `arrival_rate`、`timeout_rate`、
+`coverage_ratio_mean`、`direction_ratio_mean`、`cte_p95_mean_m` 和
+`cte_observed_episodes`。其中到达率、超时率和 coverage/direction 均以全部计划 episode 为
+分母，CTE 均值只以实际出现 tracking 帧的 episode 为分母。
 
 ### 9.1 `rollout.npz`
 
@@ -377,12 +402,12 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla_curve_plate.yaml
 ```
 
-不想逐个切换任务时，直接使用模型的通用部署配置并开启批量模式：
+默认即执行全部任务；只运行曲线平板任务时：
 
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla.yaml \
-  --deployment.run_all_tasks=true
+  --deployment.include_tasks='["curve_plate"]'
 ```
 
 程序按文件名排序读取 `configs/tasks/*.yaml`，保留相同的模型、checkpoint、episode 数和安全
@@ -409,8 +434,7 @@ deployment:
 ### 输出目录已存在
 
 若出现 `FileExistsError`，说明目标 `episode_XXXXXX` 已存在。为新实验指定新的
-`--deployment.output_root`，避免覆盖可复查的旧结果。若已关闭自动命名，则改用新的
-`--deployment.log_dir`。
+`--deployment.output_root`，避免覆盖可复查的旧结果。
 
 ### checkpoint 加载失败
 
@@ -444,7 +468,9 @@ checkpoint 的配置类型一致。报错提示缺少 `relative_action processor
 ### 服务器无显示或 OpenGL 初始化失败
 
 仿真部署使用离屏渲染，默认应设置 `camera.offscreen_backend=egl`。脚本会在导入仿真环境前
-设置 `MUJOCO_GL`；服务器需提供可用的 NVIDIA 驱动和 EGL。仅 CPU 环境可以尝试 OSMesa，
+设置 `MUJOCO_GL`；服务器需提供可用的 NVIDIA 驱动和 EGL。大型 CUDA 策略与 EGL 使用同一张
+GPU 时可能污染渲染缓冲区，因此默认让策略在 GPU 0 推理、EGL 在 GPU 1 渲染。如果策略显式改用
+`cuda:1`，应同时把 `camera.render_gpu_device_id` 改为其他 GPU。仅 CPU 环境可以尝试 OSMesa，
 但大型策略推理和双相机渲染会很慢。
 
 ## 12. 推荐复现实验流程

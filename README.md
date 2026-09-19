@@ -133,8 +133,9 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_tr
 ```
 
 配置由 `base.yaml`、`tasks/`、`policies/` 和 `deploy/` 分层组合；部署时更换一个入口
-YAML 即可同时切换工件、焊缝、指令、最大步数和输出目录。公共 checkpoint 只需在
-`configs/deploy/smolvla.yaml` 修改一次。
+YAML 即可同时切换工件、焊缝、指令和最大步数。公共 checkpoint 只需在
+`configs/deploy/smolvla.yaml` 修改一次，输出统一写入
+`outputs/deploy/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/{task_id}`。
 
 实际采集数量、增量合并、RTX 4060 训练参数和最终产物见
 [SmolVLA 三任务基线](docs/smolvla-pipeline.md)。

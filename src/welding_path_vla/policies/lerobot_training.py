@@ -279,7 +279,7 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
             dataloader_config=DataLoaderConfiguration(
                 non_blocking=True,
             ),
-            kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
+            kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=False)],
         )
     resume_config = (
         config.checkpoint_path / "pretrained_model" / "train_config.json"

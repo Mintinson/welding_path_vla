@@ -16,14 +16,23 @@ def straight_path() -> tuple[np.ndarray, np.ndarray]:
     return execution, seam
 
 
-def test_complete_path_reports_only_four_primary_results() -> None:
+def test_complete_path_reports_tracking_metrics_and_arrival() -> None:
     execution, seam = straight_path()
     report = evaluate_rollout(execution, seam, "completed", EvaluationConfig())
     assert report.success
     assert report.coverage_ratio == pytest.approx(1)
     assert report.direction_ratio == pytest.approx(1)
     assert report.cte_p95_m == pytest.approx(0.001)
-    assert set(report.as_dict()) == {"success", "coverage_ratio", "direction_ratio", "cte_p95_m"}
+    assert report.reached_start
+    assert report.tracking_frames == len(execution)
+    assert set(report.as_dict()) == {
+        "success",
+        "coverage_ratio",
+        "direction_ratio",
+        "reached_start",
+        "tracking_frames",
+        "cte_p95_m",
+    }
 
 
 def test_jump_to_endpoint_does_not_count_as_full_coverage() -> None:
@@ -48,9 +57,12 @@ def test_reverse_and_no_entry_are_failures_with_complete_denominator() -> None:
     assert reverse.coverage_ratio == pytest.approx(1)
     assert reverse.direction_ratio == 0
     assert reverse.cte_p95_m == pytest.approx(0.001)
+    assert reverse.reached_start
     assert not reverse.success
     assert missed.coverage_ratio == 0
-    assert missed.cte_p95_m == pytest.approx(0.101)
+    assert missed.cte_p95_m is None
+    assert missed.tracking_frames == 0
+    assert not missed.reached_start
     assert not missed.success
 
 
@@ -65,11 +77,11 @@ def test_partial_path_has_metrics_without_reaching_start() -> None:
     assert not report.success
 
 
-def test_far_off_seam_frames_are_included_in_cte_and_collision_fails() -> None:
+def test_far_off_seam_frames_are_excluded_from_tracking_cte() -> None:
     execution, seam = straight_path()
     execution[50:150, 1] = 0.03
     report = evaluate_rollout(execution, seam, "completed", EvaluationConfig())
-    assert report.cte_p95_m == pytest.approx(0.03)
+    assert report.cte_p95_m == pytest.approx(0.001)
     assert report.coverage_ratio < 0.9
     clean, _ = straight_path()
     collision = evaluate_rollout(clean, seam, "collision", EvaluationConfig())

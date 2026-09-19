@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from welding_path_vla.core.config import AppConfig
-from welding_path_vla.dataset.video import VideoRecorder
+from welding_path_vla.dataset.video import VideoRecorder, video_codec_settings
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.data import scale_uint8_images
 from welding_path_vla.policies.lerobot_training import make_train_config
@@ -40,12 +40,13 @@ def test_act_uses_official_lerobot_training_config() -> None:
     assert training.use_policy_training_preset
 
 
-def test_rollout_video_is_browser_compatible_and_torchcodec_decodable(tmp_path: Path) -> None:
-    from torchcodec.decoders import VideoDecoder
-
+def test_rollout_video_is_browser_compatible_and_pyav_decodable(tmp_path: Path) -> None:
     config = AppConfig.load("configs/act.yaml")
     names = (config.camera.global_name, config.camera.wrist_name)
     recorder = VideoRecorder.start(tmp_path, names, config.timing.policy_hz)
+    assert recorder.encoder._encoder_threads == 2
+    assert len(recorder.encoder._threads) == len(names)
+    assert all(thread.is_alive() for thread in recorder.encoder._threads.values())
     images = {
         name: np.zeros((32, 32, 3), dtype=np.uint8)
         for name in (config.camera.global_name, config.camera.wrist_name)
@@ -59,7 +60,23 @@ def test_rollout_video_is_browser_compatible_and_torchcodec_decodable(tmp_path: 
         stream = container.streams.video[0]
         assert stream.codec_context.name == "h264"
         assert stream.pix_fmt == "yuv420p"
-    assert tuple(VideoDecoder(videos[0])[0].shape) == (3, 32, 32)
+        assert not stream.codec_context.has_b_frames
+    with av.open(videos[0]) as container:
+        frame = next(container.decode(video=0))
+        assert frame.to_ndarray(format="rgb24").shape == (32, 32, 3)
+
+
+def test_rollout_video_uses_explicit_intra_frame_safe_h264_settings() -> None:
+    """rollout 视频必须固定软件编码器和短 GOP，避免异步/长参考链污染画面。"""
+    assert video_codec_settings() == {
+        "vcodec": "h264",
+        "pix_fmt": "yuv420p",
+        "g": 2,
+        "bf": 0,
+        "crf": 23,
+        "preset": "veryfast",
+        "threads": 2,
+    }
 
 
 class StaticRuntime:

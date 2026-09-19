@@ -40,6 +40,7 @@ class CameraConfig:
     global_fovy_deg: float = 55.0
     wrist_fovy_deg: float = 85.0
     offscreen_backend: str = "egl"
+    render_gpu_device_id: int = -1
     wrist_position_link6_m: list[float] = field(
         default_factory=lambda: [0.008607, -0.071891, 0.172212]
     )
@@ -471,12 +472,10 @@ class DeploymentConfig:
     """仿真策略部署与输出组织参数。
 
     Attributes:
-        dry_run: 保留的兼容字段；当前闭环部署不会据此跳过执行。
-        output_root: 自动命名的模型—任务输出目录所在的公共根目录。
-        log_dir: 关闭自动命名时使用的完整输出路径。
-        auto_log_dir: 是否按 ``{policy.family}_{task.task_id}`` 自动命名目录。
-        run_all_tasks: 是否依次执行 ``task_config_dir`` 中的全部任务。
-        task_config_dir: 批量部署时读取任务 YAML 的目录。
+        mode: ``scene`` 按固定场景清单执行，``random`` 随机生成场景。
+        output_root: checkpoint 实验目录所在的公共根目录，默认 ``outputs/deploy``。
+        scene_bank_path: 固定场景清单路径；随机模式不读取它。
+        include_tasks: 要执行的任务 ID；空列表表示全部任务。
         episodes: 每个任务执行的 episode 数量。
         max_steps: 每条 episode 允许的最大策略步数。
         seed: 第 0 条 episode 使用的随机种子。
@@ -490,13 +489,10 @@ class DeploymentConfig:
         terminal_frame_hold_s: 视频中终止状态的保留时间。
     """
 
-    dry_run: bool = True
+    mode: str = "scene"
     output_root: str = "outputs/deploy"
-    log_dir: str = "outputs/deploy"
-    auto_log_dir: bool = True
-    run_all_tasks: bool = False
-    task_config_dir: str = "configs/tasks"
     scene_bank_path: str | None = None
+    include_tasks: list[str] = field(default_factory=list)
     episodes: int = 5
     max_steps: int = 1_000
     seed: int = 20260724
@@ -629,6 +625,8 @@ class AppConfig:
             raise ValueError("camera field of view must be in (0, 180)")
         if self.camera.offscreen_backend not in {"egl", "glfw", "osmesa"}:
             raise ValueError("camera.offscreen_backend must be egl, glfw, or osmesa")
+        if self.camera.render_gpu_device_id < -1:
+            raise ValueError("camera.render_gpu_device_id must be -1 or a non-negative GPU index")
         if any(len(value) != 3 for value in asdict(self.scene).values() if isinstance(value, list)):
             raise ValueError("scene vectors must contain three values")
         if not 0 <= self.randomization.recovery_probability <= 1:
@@ -755,6 +753,8 @@ class AppConfig:
             or self.deployment.task_group_size < 1
         ):
             raise ValueError("deployment counts must be positive")
+        if self.deployment.mode not in {"scene", "random"}:
+            raise ValueError("deployment.mode must be scene or random")
         if any(
             value is not None and value < 1
             for value in (

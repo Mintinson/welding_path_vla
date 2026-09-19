@@ -122,6 +122,7 @@ def test_qwen_config_and_policy_are_registered() -> None:
     assert not config.policy.parameters["use_geometry_grounding"]
     assert not config.policy.parameters["use_motion_latent"]
     assert config.policy.parameters["training_stage"] == "standard"
+    assert config.training.video_backend == "pyav"
     assert get_policy_pipeline("traj_vla_qwen").spec is TRAJ_VLA_QWEN
 
 

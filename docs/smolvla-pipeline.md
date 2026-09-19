@@ -100,12 +100,12 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
 ```
 
-一次运行全部任务并自动写入 `outputs/deploy/smolvla_{task_id}`：
+一次运行全部任务并自动写入 `outputs/deploy/smolvla_weldpath_relative_v1/YYYY-MM-DD-HH-MM/{task_id}`：
 
 ```bash
 pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
-  --deployment.run_all_tasks=true
+  --deployment.include_tasks='["curve_plate"]'
 ```
 
 公共 checkpoint 位于 `configs/deploy/smolvla.yaml`。也可在命令行临时覆盖：

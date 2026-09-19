@@ -9,13 +9,13 @@ policy:
 training:
   output_dir: outputs/train_v2/xvla_weldpath_relative_v1_a100
   # 每卡 batch 4，双卡全局 batch 8；官方推荐 batch 4，适合 40GB A100。
-  batch_size: 12
+  batch_size: 16
   # Current v3 split needs 888,245 steps per epoch at global batch 8.
   # Keep the user-selected 1,000,000 steps (about 1.13 epochs).
   steps: 1000000
   num_workers: 8
-  eval_steps: 25000
+  eval_steps: 20000
   max_eval_samples: 300
   log_freq: 50
-  save_freq: 50000
+  save_freq: 20000
   resume: false

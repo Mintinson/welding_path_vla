@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+import pyarrow as pa
+import pytest
 import torch
 
 from welding_path_vla.core.config import AppConfig
@@ -13,7 +15,9 @@ from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import find_resume_checkpoint, resolve_checkpoint
 from welding_path_vla.policies.data import (
     balanced_frame_indices,
+    dataset_feature_array,
     dataset_task_summaries,
+    episode_row_ranges,
     filtered_episode_indices,
     filtered_training_stats,
     held_out_episode_indices,
@@ -61,37 +65,72 @@ def test_smolvla_uses_lerobot_training_config() -> None:
 
 
 def test_task_filter_uses_lerobot_episode_subset(monkeypatch: Any) -> None:
-    """任务名称过滤应解析为完整 episode，并在官方切分前写入 DatasetConfig。"""
+    """任务 ID 过滤应解析为完整 episode，并在官方切分前写入 DatasetConfig。"""
 
     class TaskTable:
         def iterrows(self) -> Any:
             return iter(
                 [
-                    ("Task A", SimpleNamespace(task_index=0)),
-                    ("Task B", SimpleNamespace(task_index=1)),
+                    (
+                        "Weld along the straight fillet seam of the L-shaped workpiece.",
+                        SimpleNamespace(task_index=0),
+                    ),
+                    (
+                        "Weld along the periodic curved seam on the flat plate.",
+                        SimpleNamespace(task_index=1),
+                    ),
                 ]
             )
 
     meta = SimpleNamespace(
         tasks=TaskTable(),
         episodes=[
-            {"episode_index": 0, "tasks": ["Task A"], "length": 10},
-            {"episode_index": 1, "tasks": ["Task B"], "length": 20},
-            {"episode_index": 2, "tasks": ["Task A"], "length": 30},
+            {
+                "episode_index": 0,
+                "tasks": ["Weld along the straight fillet seam of the L-shaped workpiece."],
+                "length": 10,
+            },
+            {
+                "episode_index": 1,
+                "tasks": ["Weld along the periodic curved seam on the flat plate."],
+                "length": 20,
+            },
+            {
+                "episode_index": 2,
+                "tasks": ["Weld along the straight fillet seam of the L-shaped workpiece."],
+                "length": 30,
+            },
         ],
     )
     monkeypatch.setattr(policy_data, "metadata", lambda training: meta)
     config = AppConfig.load("configs/smolvla.yaml")
-    training_config = replace(config.training, include_tasks=["Task A"], resume=False)
+    training_config = replace(config.training, include_tasks=["l_joint"], resume=False)
 
     assert filtered_episode_indices(training_config) == [0, 2]
-    assert [(item.name, item.episodes, item.frames) for item in dataset_task_summaries(training_config)] == [
-        ("Task A", 2, 40),
-        ("Task B", 1, 20),
+    assert [
+        (item.name, item.episodes, item.frames)
+        for item in dataset_task_summaries(training_config)
+    ] == [
+        ("Weld along the straight fillet seam of the L-shaped workpiece.", 2, 40),
+        ("Weld along the periodic curved seam on the flat plate.", 1, 20),
     ]
     train_config = make_train_config(config.policy, training_config, SMOLVLA)
     assert train_config.dataset.episodes == [0, 2]
     assert held_out_episode_indices(training_config, 1) == [2]
+
+
+def test_task_filter_rejects_instruction_text(monkeypatch: Any) -> None:
+    """训练过滤器不再兼容自然语言任务。"""
+    monkeypatch.setattr(
+        policy_data,
+        "metadata",
+        lambda training: SimpleNamespace(
+            tasks=SimpleNamespace(iterrows=lambda: iter([])), episodes=[]
+        ),
+    )
+    config = AppConfig.load("configs/smolvla.yaml")
+    with pytest.raises(ValueError, match="unknown task IDs"):
+        filtered_episode_indices(replace(config.training, include_tasks=["Task A"]))
 
 
 def test_filtered_training_stats_use_only_selected_rows() -> None:
@@ -117,6 +156,34 @@ def test_filtered_training_stats_use_only_selected_rows() -> None:
 
     np.testing.assert_allclose(stats["observation.state"]["mean"][6], 0.55)
     assert int(stats["action"]["count"][0]) == 4
+
+
+def test_episode_row_ranges_group_contiguous_rows_in_one_pass() -> None:
+    """连续 episode 应转换为行区间，避免逐个 episode 扫描全量索引。"""
+    episode_indices = np.array([3, 3, 3, 8, 8, 11], dtype=np.int64)
+
+    assert episode_row_ranges(episode_indices) == [
+        (3, 0, 3),
+        (8, 3, 5),
+        (11, 5, 6),
+    ]
+
+
+def test_dataset_feature_array_reads_arrow_fixed_size_lists() -> None:
+    """固定长度 Arrow list 应直接展平，避免 HF Python-list 转换。"""
+    table = pa.table(
+        {
+            "observation.state": pa.array(
+                [[1.0, 2.0], [3.0, 4.0]],
+                type=pa.list_(pa.float32(), 2),
+            )
+        }
+    )
+    dataset = SimpleNamespace(hf_dataset=SimpleNamespace(data=table))
+
+    values = dataset_feature_array(cast(Any, dataset), "observation.state", np.float32)
+
+    np.testing.assert_array_equal(values, [[1.0, 2.0], [3.0, 4.0]])
 
 
 def test_smolvla_command_uses_pretrained_path() -> None:

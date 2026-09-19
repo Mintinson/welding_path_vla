@@ -12,6 +12,8 @@ camera:
   wrist_fovy_deg: 85.0
   # 无头采集使用 EGL；sim view 仍使用 GLFW 创建交互窗口。
   offscreen_backend: egl
+  # 策略默认在 GPU 0 推理，EGL 固定使用 GPU 1，避免同卡图形上下文污染渲染帧。
+  render_gpu_device_id: 1
   # link6 局部坐标：安装架仍与负 Y 侧螺钉对齐，镜头光心沿光轴前移 40 mm。
   wrist_position_link6_m: [0.008607, -0.071891, 0.172212]
   wrist_target_link6_m: [0.057557, -0.025778, 0.389520]
@@ -154,7 +156,7 @@ training:
   steps: 100000
   num_workers: 4
   video_backend: torchcodec
-  # 精确匹配 LeRobot metadata 中的任务名称；空列表表示不限制。
+  # 使用 configs/tasks 下的 task_id；空列表表示不限制。
   include_tasks: []
   exclude_tasks: []
   eval_split: 0.1
@@ -201,15 +203,14 @@ lerobot_export:
   video_preset: 12
 
 deployment:
-  dry_run: true
-  # 默认输出到 output_root/{policy.family}_{task.task_id}。
+  # 默认按固定场景清单执行；随机生成时使用 --deployment.mode=random。
+  mode: scene
+  # 输出目录为 output_root/{checkpoint_experiment}/YYYY-MM-DD-HH-MM/{task_id}。
   output_root: outputs/deploy
-  log_dir: outputs/deploy
-  auto_log_dir: true
-  run_all_tasks: false
-  task_config_dir: configs/tasks
   # 所有模型共用同一份预检合格的 6×25 场景清单。
   scene_bank_path: configs/evaluation_scenes_v2.json
+  # 空列表执行全部任务；scene 和 random 模式都可传入 task_id 过滤任务，不会改变 mode。
+  include_tasks: []
   episodes: 5
   max_steps: 1000
   seed: 20260724
