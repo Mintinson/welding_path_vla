@@ -1,6 +1,6 @@
 # VLA 真机数据采集和模型部署框架搭建
 
-这是一个针对 VLA (Vision Language Model)在工业焊接机器人上进行数据采集，模型训练和模型部署的项目。使用 `pixi` 管理环境和执行常用命令。基于 `lerobot` 机器人学习框架。
+这是一个针对 VLA (Vision Language Model)在工业焊接机器人上进行数据采集，模型训练和模型部署的项目。使用 `pixi` 管理环境和执行常用命令。基于 `lerobot` 机器人学习框架。(**注意**：在服务器中优先使用 `zsh + micromamba welding_vla` 环境)
 
 使用的机器人为 Huayan Elfin5-Pro.
 
