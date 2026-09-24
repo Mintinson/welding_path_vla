@@ -210,13 +210,13 @@ def test_rollout_completion_rules_are_fixed_across_policy_configs() -> None:
     )
     assert all(not hasattr(config.deployment, name) for name in fields)
     assert all(not hasattr(qwen_config.deployment, name) for name in fields)
-    assert pytest.approx(0.95) == COMPLETION_PROGRESS_MIN
-    assert pytest.approx(0.01) == COMPLETION_DISTANCE_M
+    assert pytest.approx(0.85) == COMPLETION_PROGRESS_MIN
+    assert pytest.approx(0.015) == COMPLETION_DISTANCE_M
     assert pytest.approx(0.01) == COMPLETION_EXIT_DISTANCE_M
     assert config.evaluation.pcr_min == pytest.approx(0.95)
-    assert seam_endpoint_reached(0.95, 0.01)
-    assert not seam_endpoint_reached(0.949, 0.01)
-    assert not seam_endpoint_reached(1.0, 0.0101)
+    assert seam_endpoint_reached(0.85, 0.015)
+    assert not seam_endpoint_reached(0.849, 0.015)
+    assert not seam_endpoint_reached(1.0, 0.0151)
 
 
 def test_rollout_does_not_finish_at_the_seam_endpoint() -> None:

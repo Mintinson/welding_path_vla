@@ -252,9 +252,9 @@ IK 残差超过 `10 × robot.ik_tolerance`、关节命令越界、动作无法�
 rollout 使用两阶段自然完成判定。第一阶段确认 TCP 已到达焊缝末端区域：
 
 $$
-\mathrm{progress}\geq0.95
+\mathrm{progress}\geq0.85
 \quad\land\quad
-\mathrm{seam\_distance}\leq0.01\,\mathrm{m}.
+\mathrm{seam\_distance}\leq0.015\,\mathrm{m}.
 $$
 
 该条件只锁定“焊缝末端已到达”，不会立刻退出。随后记录此阶段 TCP 到焊缝的最小距离
