@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from lerobot.processor import UnnormalizerProcessorStep
 from lerobot.processor.converters import TransitionKey
 from scipy.spatial.transform import Rotation
 
@@ -13,7 +14,9 @@ from welding_path_vla.core.geometry import (
 )
 from welding_path_vla.policies.action_processors import (
     AbsoluteEEActionsProcessorStep,
+    Float32ActionProcessorStep,
     RelativeEEActionsProcessorStep,
+    connect_relative_processors,
     require_relative_checkpoint,
 )
 
@@ -68,7 +71,7 @@ def test_old_checkpoint_is_not_silently_resumed(tmp_path: Path) -> None:
 
 
 def test_absolute_processor_aligns_anchor_with_policy_action() -> None:
-    """π0.5 的 GPU / 混合精度动作应使用同设备、同精度的 TCP 锚点。"""
+    """动作解码统一使用 FP32，并把锚点放到动作所在设备。"""
     relative_step = RelativeEEActionsProcessorStep()
     relative_step.anchor_positions = torch.zeros((1, 3), dtype=torch.float32)
     relative_step.anchor_quaternions = torch.tensor([[1, 0, 0, 0]], dtype=torch.float32)
@@ -78,5 +81,55 @@ def test_absolute_processor_aligns_anchor_with_policy_action() -> None:
     converted = processor({TransitionKey.ACTION: action})
 
     absolute = converted[TransitionKey.ACTION]
-    assert absolute.dtype == action.dtype
-    torch.testing.assert_close(absolute[..., :3], action[..., :3])
+    assert absolute.dtype == torch.float32
+    torch.testing.assert_close(absolute[..., :3], action[..., :3].float())
+
+
+def test_absolute_processor_keeps_submillimeter_motion_in_float32() -> None:
+    """BF16 policy action 解码时不能把世界坐标和小步位移一起量化。"""
+    relative_step = RelativeEEActionsProcessorStep()
+    relative_step.anchor_positions = torch.tensor([[0.3003, 0.1001, 0.2961]], dtype=torch.float32)
+    relative_step.anchor_quaternions = torch.tensor([[1, 0, 0, 0]], dtype=torch.float32)
+    processor = AbsoluteEEActionsProcessorStep(relative_step)
+    action = torch.tensor(
+        [[[0.0007, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]]], dtype=torch.bfloat16
+    )
+
+    absolute = processor({TransitionKey.ACTION: action})[TransitionKey.ACTION]
+
+    assert absolute.dtype == torch.float32
+    torch.testing.assert_close(
+        absolute[..., :3],
+        torch.tensor([[[0.3010, 0.1001, 0.2961]]], dtype=torch.float32),
+        atol=2e-4,
+        rtol=0,
+    )
+
+
+def test_connect_inserts_float32_before_unnormalizer() -> None:
+    """FP32 边界必须位于反归一化之前，避免统计量缩放仍在 BF16 中执行。"""
+    from types import SimpleNamespace
+
+    preprocessor = SimpleNamespace(steps=[RelativeEEActionsProcessorStep()])
+    postprocessor = SimpleNamespace(
+        steps=[UnnormalizerProcessorStep(features={}, norm_map={}, stats={})]
+    )
+
+    connect_relative_processors(preprocessor, postprocessor, require_saved=False)
+
+    float32_index = next(
+        index
+        for index, step in enumerate(postprocessor.steps)
+        if isinstance(step, Float32ActionProcessorStep)
+    )
+    unnormalizer_index = next(
+        index
+        for index, step in enumerate(postprocessor.steps)
+        if isinstance(step, UnnormalizerProcessorStep)
+    )
+    absolute_index = next(
+        index
+        for index, step in enumerate(postprocessor.steps)
+        if isinstance(step, AbsoluteEEActionsProcessorStep)
+    )
+    assert float32_index < unnormalizer_index < absolute_index

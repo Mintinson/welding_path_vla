@@ -27,6 +27,7 @@ from welding_path_vla.policies.welding_prompt import configure_welding_prompt_bu
 
 RELATIVE_PROCESSOR = "welding_relative_ee_actions"
 ABSOLUTE_PROCESSOR = "welding_absolute_ee_actions"
+FLOAT32_ACTION_PROCESSOR = "welding_float32_action"
 
 
 @ProcessorStepRegistry.register(RELATIVE_PROCESSOR)
@@ -43,13 +44,14 @@ class RelativeEEActionsProcessorStep(ProcessorStep):
         state = observation.get(OBS_STATE) if observation else None
         if state is None:
             return transition
-        anchor_positions = state[..., 6:9].detach().clone()
-        anchor_quaternions = state[..., 9:13].detach().clone()
+        anchor_positions = state[..., 6:9].detach().clone().to(dtype=torch.float32)
+        anchor_quaternions = state[..., 9:13].detach().clone().to(dtype=torch.float32)
         self.anchor_positions = anchor_positions
         self.anchor_quaternions = anchor_quaternions
         action = transition.get(TransitionKey.ACTION)
         if action is None:
             return transition
+        action = action.to(dtype=torch.float32)
         converted = transition.copy()
         cast(Any, converted)[TransitionKey.ACTION] = relative_ee_actions_from_absolute(
             action, anchor_positions, anchor_quaternions
@@ -69,7 +71,7 @@ class RelativeEEActionsProcessorStep(ProcessorStep):
 @ProcessorStepRegistry.register(ABSOLUTE_PROCESSOR)
 @dataclass
 class AbsoluteEEActionsProcessorStep(ProcessorStep):
-    """反归一化后将 relative action chunk 恢复为世界系绝对目标。"""
+    """在 FP32 中将 relative action chunk 恢复为世界系绝对目标。"""
 
     relative_step: Any = field(default=None, repr=False)
 
@@ -81,8 +83,9 @@ class AbsoluteEEActionsProcessorStep(ProcessorStep):
         step = self.relative_step
         if step is None or step.anchor_positions is None or step.anchor_quaternions is None:
             raise RuntimeError("relative action postprocessor 缺少当前 TCP 锚点")
-        anchor_positions = step.anchor_positions.to(action)
-        anchor_quaternions = step.anchor_quaternions.to(action)
+        action = action.to(dtype=torch.float32)
+        anchor_positions = step.anchor_positions.to(device=action.device, dtype=torch.float32)
+        anchor_quaternions = step.anchor_quaternions.to(device=action.device, dtype=torch.float32)
         converted = transition.copy()
         cast(Any, converted)[TransitionKey.ACTION] = absolute_ee_actions_from_relative(
             action, anchor_positions, anchor_quaternions
@@ -91,6 +94,25 @@ class AbsoluteEEActionsProcessorStep(ProcessorStep):
 
     def transform_features(self, features: dict[Any, Any]) -> dict[Any, Any]:
         """动作维数和类型不变。"""
+        return features
+
+
+@ProcessorStepRegistry.register(FLOAT32_ACTION_PROCESSOR)
+@dataclass
+class Float32ActionProcessorStep(ProcessorStep):
+    """在动作反归一化前把模型的低精度输出提升到 FP32。"""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        """保证统计量缩放和后续几何计算不会在 BF16 中进行。"""
+        action = transition.get(TransitionKey.ACTION)
+        if action is None or not isinstance(action, torch.Tensor):
+            return transition
+        converted = transition.copy()
+        cast(Any, converted)[TransitionKey.ACTION] = action.to(dtype=torch.float32)
+        return converted
+
+    def transform_features(self, features: dict[Any, Any]) -> dict[Any, Any]:
+        """只改变运行时精度，不改变特征结构。"""
         return features
 
 
@@ -128,6 +150,35 @@ def connect_relative_processors(preprocessor: Any, postprocessor: Any, require_s
             0,
         )
         postprocessor.steps = [*postprocessor.steps[:index], absolute, *postprocessor.steps[index:]]
+
+    float32_step = next(
+        (step for step in postprocessor.steps if isinstance(step, Float32ActionProcessorStep)),
+        None,
+    )
+    if float32_step is None:
+        float32_step = Float32ActionProcessorStep()
+    else:
+        postprocessor.steps = [step for step in postprocessor.steps if step is not float32_step]
+    unnormalizer_index = next(
+        (
+            index
+            for index, step in enumerate(postprocessor.steps)
+            if isinstance(step, UnnormalizerProcessorStep)
+        ),
+        next(
+            (
+                index
+                for index, step in enumerate(postprocessor.steps)
+                if isinstance(step, AbsoluteEEActionsProcessorStep)
+            ),
+            len(postprocessor.steps),
+        ),
+    )
+    postprocessor.steps = [
+        *postprocessor.steps[:unnormalizer_index],
+        float32_step,
+        *postprocessor.steps[unnormalizer_index:],
+    ]
     absolute.relative_step = relative
 
 
@@ -183,8 +234,10 @@ def relative_processor_factory(welding_prompt_fields: tuple[str, ...] = ()) -> I
 
 __all__ = [
     "ABSOLUTE_PROCESSOR",
+    "FLOAT32_ACTION_PROCESSOR",
     "RELATIVE_PROCESSOR",
     "AbsoluteEEActionsProcessorStep",
+    "Float32ActionProcessorStep",
     "RelativeEEActionsProcessorStep",
     "connect_relative_processors",
     "make_relative_pre_post_processors",

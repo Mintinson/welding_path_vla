@@ -202,7 +202,6 @@ class LeRobotRuntime:
                 absolute_chunk: torch.Tensor = self.postprocessor(relative_chunk)
             count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
             self.action_queue.extend(
-                # absolute_chunk[0, :count].detach().cpu().numpy().astype(np.float64)
                 absolute_chunk[0, :count].detach().to(torch.float64).cpu().numpy()
             )
         return self.action_queue.popleft()
