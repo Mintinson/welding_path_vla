@@ -28,6 +28,13 @@ from welding_path_vla.dataset.actions import (
     ABSOLUTE_ACTION_NAMES,
     build_absolute_actions,
 )
+from welding_path_vla.dataset.phase_index import (
+    PHASE_CODES,
+    append_phase_index,
+    load_phase_index,
+    phase_index_path,
+    phase_values,
+)
 from welding_path_vla.dataset.raw_schema import (
     METADATA_FILE,
     RAW_DATASET_FORMAT_V1,
@@ -183,6 +190,14 @@ def load_manifest(
     }
     if representation != expected:
         raise ValueError(f"目标数据集动作定义不兼容: expected={expected}, got={representation}")
+    manifest.setdefault(
+        "phase_index",
+        {
+            "path": "meta/phase_index.npz",
+            "dtype": "uint8",
+            "codes": PHASE_CODES,
+        },
+    )
     recorded = sum(len(set(names)) for names in manifest["sources"].values())
     if recorded != existing_count:
         raise ValueError(
@@ -671,6 +686,18 @@ def export_lerobot(
     source = source_id(root)
     existing_info = read_dataset_info(destination) if destination.exists() else None
     existing_count = int(existing_info["total_episodes"]) if existing_info else 0
+    if existing_count and not phase_index_path(destination).exists():
+        raise ValueError(
+            "existing LeRobot dataset is missing meta/phase_index.npz; "
+            "run scripts/build_phase_index.py before incremental export"
+        )
+    if existing_count:
+        existing_phase = load_phase_index(phase_index_path(destination))
+        if len(existing_phase) != int(existing_info["total_frames"]):
+            raise ValueError(
+                f"phase index has {len(existing_phase)} frames, but LeRobot metadata has "
+                f"{existing_info['total_frames']}"
+            )
     manifest = load_manifest(
         destination,
         source,
@@ -682,6 +709,12 @@ def export_lerobot(
     exported_names = set(manifest["sources"].get(source, []))
     pending = [path for path in selected if path.name not in exported_names]
     if not pending:
+        phase = load_phase_index(phase_index_path(destination))
+        expected_frames = int(existing_info["total_frames"]) if existing_info else 0
+        if len(phase) != expected_frames:
+            raise ValueError(
+                f"phase index has {len(phase)} frames, but LeRobot metadata has {expected_frames}"
+            )
         write_manifest(destination, manifest)
         if not options.save_images:
             remove_video_image_tree(destination)
@@ -703,6 +736,7 @@ def export_lerobot(
         validate_existing_dataset(existing_info, camera, fps, options.save_images)
     dataset = open_lerobot_dataset(repo_id, destination, fps, schema, options, existing_info)
     saved: list[str] = []
+    phase_chunks: list[np.ndarray] = []
     try:
         for path in tqdm(
             pending,
@@ -710,14 +744,22 @@ def export_lerobot(
             unit="episode",
             disable=not show_progress,
         ):
-            add_episode(dataset, EpisodeReader(path), options, show_progress)
+            episode = EpisodeReader(path)
+            phase = phase_values(episode.trajectory)
+            add_episode(dataset, episode, options, show_progress)
+            phase_chunks.append(phase)
             saved.append(path.name)
     finally:
         dataset.finalize()
         if saved:
-            manifest["sources"].setdefault(source, []).extend(saved)
             if recompute_stats:
                 recompute_relative_action_stats(destination, action_horizon, action_stride)
+            append_phase_index(
+                destination,
+                phase_chunks,
+                expected_frames=int(read_dataset_info(destination)["total_frames"]),
+            )
+            manifest["sources"].setdefault(source, []).extend(saved)
             write_manifest(destination, manifest)
         if not options.save_images:
             remove_video_image_tree(destination)
