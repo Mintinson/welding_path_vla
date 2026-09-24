@@ -1,0 +1,12 @@
+includes:
+  - ../base.yaml
+  - ../policies/vla_adapter.yaml
+
+policy:
+  checkpoint: outputs/train/vla_adapter_weldpath_relative_v1/checkpoints/last/pretrained_model
+
+training:
+  resume: false
+
+deployment:
+  episodes: 5

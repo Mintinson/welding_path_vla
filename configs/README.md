@@ -45,7 +45,7 @@ policy:
 ```
 
 可以删除任意字段做消融；`welding_prompt_fields: []` 表示只使用 LeRobot 原始 `task`。
-SmolVLA、Trajectory-VLA、TrajVLA-Qwen、π0 和 π0.5 的主配置默认全部启用。长 prompt 需要为
+SmolVLA、Trajectory-VLA、TrajVLA-Qwen、VLA-Adapter、π0 和 π0.5 的主配置默认全部启用。长 prompt 需要为
 SmolVLM、Qwen 和 π0 保留至少 160 个 token；π0.5 还会拼接离散状态，默认保留 200 个 token。
 新训练 checkpoint 会保存 builder 及字段列表，评估和部署从 checkpoint 恢复同一处理链。
 
@@ -66,6 +66,7 @@ act_a100.yaml
 smolvla_a100.yaml
 trajectory_vla_a100.yaml
 traj_vla_qwen_a100.yaml
+vla_adapter_a100.yaml
 pi0_a100.yaml
 pi0_5_a100.yaml
 ```
@@ -84,7 +85,7 @@ A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再
 详细计算公式和硬件调优流程见
 [多 GPU Batch、Step 与训练时间计算](../docs/training-scale-guide.md)。
 
-`{model}` 当前可取 `smolvla`、`trajectory_vla`、`pi0` 和 `pi0_5`；`{task}` 可取 `l_joint`、
+`{model}` 当前可取 `smolvla`、`trajectory_vla`、`traj_vla_qwen`、`vla_adapter`、`pi0` 和 `pi0_5`；`{task}` 可取 `l_joint`、
 `pipe_bottom`、`pipe_top`、`curve_plate`、`trihedral_horizontal` 和 `trihedral_vertical`。更换 checkpoint 只修改对应的 `deploy/{model}.yaml`，
 调整工件或焊缝只修改 `tasks/*.yaml`。临时参数仍可通过 Draccus 覆盖，例如
 `--deployment.episodes=10`，无需复制整份配置。

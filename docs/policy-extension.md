@@ -19,6 +19,7 @@ data.py                 LeRobotDataset 查询和数据检查
 welding_prompt.py       VLM 无关的结构化焊接参数到任务文本转换
 trajectory_vla/         项目真正维护的本地模型实现
 traj_vla_qwen/          Prismatic-Qwen 与成对层动作专家
+vla_adapter/            Prismatic-Qwen、ActionQuery 与逐层 Pro Bridge
 ```
 
 ACT、SmolVLA、π0、π0.5 和 X-VLA 直接使用 LeRobot 官方模型，因此各目录仅保留实验说明，不再

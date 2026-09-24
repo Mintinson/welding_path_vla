@@ -1,0 +1,12 @@
+includes:
+  - base.yaml
+  - tasks/l_joint.yaml
+  - policies/vla_adapter.yaml
+
+policy:
+  parameters:
+    action_head: flow_matching
+    num_steps: 10
+
+training:
+  output_dir: outputs/train/vla_adapter_flow_weldpath_relative_v1

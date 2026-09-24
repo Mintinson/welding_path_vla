@@ -1,0 +1,74 @@
+policy:
+  family: vla_adapter
+  checkpoint: null
+  device: cuda
+  action_horizon: 30
+  action_steps: 8
+  action_source: safe_command
+  welding_prompt_fields:
+    - direction
+    - welding_speed
+    # - work_angle
+    # - travel_angle
+    # - tool_roll
+  parameters:
+    # 默认复现官方推荐的 Pro Bridge + deterministic L1 Head。
+    action_head: l1
+    num_action_queries: 64
+    num_bridge_layers: 24
+    bridge_num_heads: 8
+    language_model_name: Qwen/Qwen2.5-0.5B
+    prismatic_repo_id: Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b
+    prismatic_checkpoint_file: checkpoints/step-020792-epoch-01-loss=0.5268.pt
+    load_prismatic_weights: true
+    load_base_weights: true
+    train_vision_encoder: false
+    use_vision_lora: true
+    train_projector: true
+    train_language_model: false
+    train_language_last_n_layers: 0
+    frozen_vision_dtype: float32
+    gradient_checkpointing_qwen: false
+    compile_model: false
+    compile_mode: reduce-overhead
+    num_steps: 10
+    use_amp: true
+    scheduler_warmup_steps: 18000
+    scheduler_decay_steps: 918506
+
+training:
+  dataset_repo_id: mintinson/weldpath_relative_v3
+  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v5
+  output_dir: outputs/train/vla_adapter_weldpath_relative_v1
+  lr: 1.0e-4
+  batch_size: 4
+  steps: 918506
+  num_workers: 4
+  video_backend: torchcodec
+  image_aug: true
+  eval_split: 0.1
+  eval_steps: 50000
+  max_eval_samples: 100
+  log_freq: 20
+  save_freq: 100000
+  seed: 20260921
+  amp_dtype: bfloat16
+  resume: false
+  # 对冻结 Qwen 与视觉主干的线性层使用 rank-64 LoRA。
+  peft:
+    method_type: LORA
+    r: 64
+    lora_alpha: 128
+
+policy_evaluation:
+  batch_size: 1
+  num_workers: 2
+  max_batches: 50
+  held_out_episodes: 9
+  output_dir: outputs/evaluation/policies
+
+deployment:
+  episodes: 3
+  max_steps: 3300
+  seed: 20260921
+  record_video: true

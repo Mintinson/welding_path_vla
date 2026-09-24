@@ -1,0 +1,6 @@
+includes:
+  - vla_adapter.yaml
+  - ../tasks/l_joint.yaml
+
+deployment:
+  max_steps: 1000

@@ -127,6 +127,27 @@ TRAJ_VLA_QWEN = LeRobotPolicySpec(
     ),
 )
 
+VLA_ADAPTER = LeRobotPolicySpec(
+    family="vla_adapter",
+    policy_type="vla_adapter",
+    display_name="VLA-Adapter",
+    config_class_path=(
+        "welding_path_vla.policies.vla_adapter.configuration_vla_adapter.VLAAdapterConfig"
+    ),
+    policy_class_path=(
+        "welding_path_vla.policies.vla_adapter.modeling_vla_adapter.VLAAdapterPolicy"
+    ),
+    config_mode="scratch",
+    implementation="local",
+    evaluation_values=("l1_loss",),
+    plan_fields=(
+        ("action_head", "action_head"),
+        ("action_queries", "num_action_queries"),
+        ("bridge_layers", "num_bridge_layers"),
+        ("inference_steps", "num_steps"),
+    ),
+)
+
 PI0 = LeRobotPolicySpec(
     family="pi0",
     policy_type="pi0",
@@ -179,7 +200,7 @@ XVLA = LeRobotPolicySpec(
 
 POLICY_SPECS = {
     spec.family: spec
-    for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, TRAJ_VLA_QWEN, PI0, PI05, XVLA)
+    for spec in (ACT, SMOLVLA, TRAJECTORY_VLA, TRAJ_VLA_QWEN, VLA_ADAPTER, PI0, PI05, XVLA)
 }
 
 
@@ -199,6 +220,7 @@ __all__ = [
     "SMOLVLA",
     "TRAJECTORY_VLA",
     "TRAJ_VLA_QWEN",
+    "VLA_ADAPTER",
     "XVLA",
     "LeRobotPolicySpec",
     "get_policy_spec",

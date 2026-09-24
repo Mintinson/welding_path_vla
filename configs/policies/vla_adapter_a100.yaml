@@ -1,0 +1,17 @@
+includes:
+  - vla_adapter.yaml
+
+policy:
+  parameters:
+    gradient_checkpointing_qwen: true
+    scheduler_warmup_steps: 9000
+    scheduler_decay_steps: 459253
+
+training:
+  output_dir: outputs/train/vla_adapter_weldpath_relative_v1_a100
+  batch_size: 8
+  steps: 459253
+  num_workers: 8
+  eval_steps: 10000
+  save_freq: 20000
+  resume: true

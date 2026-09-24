@@ -128,9 +128,15 @@ class LeRobotRuntime:
             from peft import PeftConfig, PeftModel
 
             adapter = PeftConfig.from_pretrained(path)
-            if not adapter.base_model_name_or_path:
-                raise ValueError(f"PEFT checkpoint does not identify its base model: {path}")
-            policy = policy_class.from_pretrained(adapter.base_model_name_or_path, config=config)
+            if adapter.base_model_name_or_path:
+                policy = policy_class.from_pretrained(
+                    adapter.base_model_name_or_path, config=config
+                )
+            else:
+                make_peft_base = getattr(policy_class, "make_peft_base", None)
+                if not callable(make_peft_base):
+                    raise ValueError(f"PEFT checkpoint does not identify its base model: {path}")
+                policy = make_peft_base(config)
             policy = PeftModel.from_pretrained(policy, path, config=adapter)
         else:
             policy = policy_class.from_pretrained(path, config=config)
@@ -199,6 +205,7 @@ class LeRobotRuntime:
             processed = self.preprocessor(self.observation_sample(observation))
             with torch.inference_mode():
                 relative_chunk = self.policy.predict_action_chunk(processed)
+                # postprocessor 已在反归一化前把动作提升到 FP32；这里仅在控制接口边界转 float64。
                 absolute_chunk: torch.Tensor = self.postprocessor(relative_chunk)
             count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
             self.action_queue.extend(
