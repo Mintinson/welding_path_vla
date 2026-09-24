@@ -16,12 +16,28 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetad
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
 from welding_path_vla.core.config_files import compose_config
 from welding_path_vla.dataset.actions import ABSOLUTE_ACTION_NAMES
+from welding_path_vla.dataset.phase_index import (
+    PHASE_CODES,
+    load_phase_index,
+    phase_index_path,
+)
 from welding_path_vla.dataset.task_parameters import TASK_DIRECTION, TASK_PARAMETERS
 
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 TASK_CONFIG_DIR = Path("configs/tasks")
 
 CAMERA_KEYS = ("observation.images.global", "observation.images.wrist")
+
+
+def phase_by_frame(index_path: str | Path) -> np.ndarray:
+    """读取按 LeRobot 全局 frame index 对齐的 phase 数组。"""
+    return load_phase_index(index_path)
+
+
+def phase_frame_indices(index_path: str | Path) -> dict[str, np.ndarray]:
+    """构造 phase 到 LeRobot 全局 frame index 的映射。"""
+    phase = phase_by_frame(index_path)
+    return {name: np.flatnonzero(phase == code) for name, code in PHASE_CODES.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +178,13 @@ def validate_dataset(training: TrainingConfig, policy: PolicyConfig) -> PolicyDa
     )
     if actual != expected:
         raise ValueError(f"动作契约不匹配: policy={expected}, dataset={actual}")
+    if training.phase_sampling.enabled:
+        index_path = (
+            Path(training.phase_sampling.index_path)
+            if training.phase_sampling.index_path
+            else phase_index_path(training.dataset_root or "")
+        )
+        phase_frame_indices(index_path)
     selected = filtered_episode_indices(training)
     selected_set = set(selected) if selected is not None else None
     episodes = [
@@ -382,6 +405,8 @@ __all__ = [
     "lerobot_task_filter",
     "make_dataset",
     "metadata",
+    "phase_by_frame",
+    "phase_frame_indices",
     "scale_uint8_images",
     "validate_dataset",
 ]

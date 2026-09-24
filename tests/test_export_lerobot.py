@@ -21,6 +21,7 @@ from welding_path_vla.dataset.export_lerobot import (
 )
 from welding_path_vla.dataset.migrate_task_parameters import migrate_task_parameters
 from welding_path_vla.dataset.video_stats import write_raw_video_stats
+from welding_path_vla.policies.data import phase_frame_indices
 
 
 def write_video(path: Path, frame_count: int, value: int) -> None:
@@ -107,6 +108,7 @@ def write_raw_episode(root: Path, index: int, valid: bool = True) -> Path:
     np.savez_compressed(
         path / "trajectory.npz",
         command_delta_pose_seam=np.zeros((action_count, 6)),
+        phase=np.array(["approach", "track", "retreat"]),
         joint_position=np.zeros((action_count + 1, 6)),
         tcp_position=positions,
         tcp_quaternion_wxyz=quaternions,
@@ -142,6 +144,23 @@ def test_episode_range_is_inclusive_and_filters_invalid(tmp_path: Path) -> None:
     write_raw_episode(tmp_path, 4)
     selected = valid_episode_paths(tmp_path, start_episode=3, end_episode=4)
     assert [path.name for path in selected] == ["episode_000004"]
+
+
+def test_export_writes_phase_index_aligned_to_lerobot_frames(tmp_path: Path) -> None:
+    """导出后 phase sidecar 应按 LeRobot 全局 frame 顺序保存。"""
+    source, output = tmp_path / "raw", tmp_path / "lerobot"
+    write_raw_episode(source, 0)
+
+    export_lerobot(source, output, "test/welding-phase", action_horizon=2, show_progress=False)
+
+    with np.load(output / "meta/phase_index.npz", allow_pickle=False) as sidecar:
+        assert sidecar["phase"].tolist() == [0, 1, 2]
+    mapping = phase_frame_indices(output / "meta/phase_index.npz")
+    assert {name: frames.tolist() for name, frames in mapping.items()} == {
+        "approach": [0],
+        "track": [1],
+        "retreat": [2],
+    }
 
 
 def test_stored_video_stats_skip_decode_and_preserve_h264_packets(
@@ -583,6 +602,8 @@ def test_sequential_export_combines_multiple_raw_datasets(tmp_path: Path) -> Non
     info = json.loads((output / "meta/info.json").read_text(encoding="utf-8"))
     assert resumed.exported_episodes == 2
     assert info["total_episodes"] == 4
+    with np.load(output / "meta/phase_index.npz", allow_pickle=False) as sidecar:
+        assert sidecar["phase"].tolist() == [0, 1, 2] * 4
 
 
 def test_export_can_push_finalized_dataset_to_hub(

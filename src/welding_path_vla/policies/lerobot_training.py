@@ -12,13 +12,17 @@ from welding_path_vla.policies.action_processors import (
     relative_processor_factory,
     require_relative_checkpoint,
 )
-from welding_path_vla.policies.checkpoint import find_resume_checkpoint
+from welding_path_vla.policies.checkpoint import (
+    ensure_peft_base_reference,
+    find_resume_checkpoint,
+)
 from welding_path_vla.policies.data import (
     dataset_task_summaries,
     filtered_episode_indices,
     lerobot_task_filter,
     validate_dataset,
 )
+from welding_path_vla.policies.phase_sampling import phase_balanced_sampler
 from welding_path_vla.policies.process import (
     lerobot_config_argument,
     lerobot_training_log,
@@ -87,6 +91,17 @@ def make_policy_config(policy: PolicyConfig, spec: LeRobotPolicySpec) -> Any:
     return config
 
 
+def image_transforms_config(enabled: bool) -> Any:
+    """构造仅改变光照和颜色的训练增强，保持焊接几何标注不变。"""
+    from lerobot.transforms import ImageTransformsConfig
+
+    config = ImageTransformsConfig(enable=enabled, max_num_transforms=4)
+    names = ("brightness", "contrast", "saturation", "hue")
+    config.tfs = {name: config.tfs[name] for name in names}
+    config.tfs["saturation"].kwargs["saturation"] = (0.8, 1.2)
+    return config
+
+
 def apply_training_overrides(config: Any, policy: PolicyConfig, training: TrainingConfig) -> Any:
     """把项目 YAML 中允许变化的训练字段覆盖到 LeRobot 配置。"""
     config.output_dir = Path(training.output_dir)
@@ -113,8 +128,14 @@ def apply_training_overrides(config: Any, policy: PolicyConfig, training: Traini
     config.dataset.video_backend = training.video_backend
     config.dataset.episodes = filtered_episode_indices(training)
     config.dataset.eval_split = training.eval_split
+    config.dataset.image_transforms = image_transforms_config(training.image_aug)
     config.policy.device = policy.device
-    for name in ("scheduler_warmup_steps", "scheduler_decay_steps"):
+    for name in (
+        "scheduler_warmup_steps",
+        "scheduler_decay_steps",
+        "compile_model",
+        "compile_mode",
+    ):
         if name in policy.parameters and hasattr(config.policy, name):
             setattr(config.policy, name, policy.parameters[name])
     if training.lr is not None and hasattr(config.policy, "optimizer_lr"):
@@ -140,6 +161,10 @@ def resumed_train_config(
     config = TrainPipelineConfig.from_pretrained(checkpoint.config)
     if config.policy is None or not isinstance(config.policy, config_class):
         raise ValueError(f"checkpoint policy is not {spec.display_name}: {checkpoint.config}")
+    if config.policy.use_peft and not config.policy.pretrained_path:
+        policy_class = spec.policy_class()
+        if callable(getattr(policy_class, "make_peft_base", None)):
+            ensure_peft_base_reference(checkpoint.model, config.policy.prismatic_repo_id)
     config.resume = True
     config.checkpoint_path = checkpoint.root
     config.policy.pretrained_path = checkpoint.model
@@ -176,6 +201,7 @@ def make_train_config(
             episodes=filtered_episode_indices(training),
             video_backend=training.video_backend,
             eval_split=training.eval_split,
+            image_transforms=image_transforms_config(training.image_aug),
             return_uint8=spec.return_uint8,
             use_imagenet_stats=spec.use_imagenet_stats,
         ),
@@ -215,11 +241,16 @@ def training_plan(
     eval_episodes = (
         sum(
             math.ceil(
-                sum(selected_set is None or episode in selected_set for episode in task.episode_indices)
+                sum(
+                    selected_set is None or episode in selected_set
+                    for episode in task.episode_indices
+                )
                 * training.eval_split
             )
             for task in dataset_task_summaries(training)
-            if any(selected_set is None or episode in selected_set for episode in task.episode_indices)
+            if any(
+                selected_set is None or episode in selected_set for episode in task.episode_indices
+            )
         )
         if training.eval_split
         else 0
@@ -241,6 +272,7 @@ def training_plan(
         "train_episodes": report.episodes - eval_episodes,
         "eval_episodes": eval_episodes,
         "video_backend": training.video_backend,
+        "image_aug": config.dataset.image_transforms.enable,
         "batch_size_per_process": training.batch_size,
         "steps": training.steps,
         "output_dir": training.output_dir,
@@ -253,6 +285,7 @@ def training_plan(
         "device": policy.device,
         "mixed_precision": training.amp_dtype,
         "peft": training.peft,
+        "phase_sampling": asdict(training.phase_sampling),
         "parameters": policy.parameters,
         "welding_prompt_fields": list(policy.welding_prompt_fields),
     }
@@ -279,7 +312,9 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
             dataloader_config=DataLoaderConfiguration(
                 non_blocking=True,
             ),
-            kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=False)],
+            kwargs_handlers=[
+                DistributedDataParallelKwargs(find_unused_parameters=training.peft is not None)
+            ],
         )
     resume_config = (
         config.checkpoint_path / "pretrained_model" / "train_config.json"
@@ -292,6 +327,12 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
         synchronized_lerobot_config_validation(config, accelerator),
         lerobot_task_filter(policy),
         relative_processor_factory(policy.welding_prompt_fields),
+        phase_balanced_sampler(
+            training.phase_sampling,
+            training.dataset_root,
+            policy.action_horizon,
+            policy.action_stride,
+        ),
     ):
         lerobot_train(config, accelerator=accelerator)
     return Path(training.output_dir)

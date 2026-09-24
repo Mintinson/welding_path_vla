@@ -1,5 +1,7 @@
 """LeRobot 策略共享的 checkpoint 路径解析。"""
 
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,4 +63,21 @@ def find_resume_checkpoint(output_dir: str | Path) -> ResumeCheckpoint:
     return ResumeCheckpoint(root, model, config, load_training_step(root / "training_state"))
 
 
-__all__ = ["ResumeCheckpoint", "find_resume_checkpoint", "resolve_checkpoint"]
+def ensure_peft_base_reference(model_path: str | Path, base_model: str) -> None:
+    """为旧 PEFT checkpoint 补齐可重建基座的标识。"""
+    config_path = Path(model_path) / "adapter_config.json"
+    config = json.loads(config_path.read_text())
+    if config.get("base_model_name_or_path"):
+        return
+    config["base_model_name_or_path"] = base_model
+    temporary = config_path.with_name(f"adapter_config.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(config, indent=2) + "\n")
+    temporary.replace(config_path)
+
+
+__all__ = [
+    "ResumeCheckpoint",
+    "ensure_peft_base_reference",
+    "find_resume_checkpoint",
+    "resolve_checkpoint",
+]

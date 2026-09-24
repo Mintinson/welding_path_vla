@@ -291,6 +291,38 @@ pixi run -e train train-policy \
 筛选先转换为 LeRobot `DatasetConfig.episodes`，再由官方 factory 对所选 episode 建立
 train/eval 划分；训练集的状态与 relative EE action 统计也会按筛选结果重算。
 
+### 7.1 按轨迹阶段重采样
+
+新导出的 LeRobot 数据集会在每次 `export-lerobot` / `export_lerobot_many` 完成一个 source 后，自动
+写入 `meta/phase_index.npz`，并在 `meta/welding_path_vla_export.json` 记录其编码方式。该 sidecar
+按 LeRobot 全局 frame index 保存 `approach=0`、`track=1`、`retreat=2`，不会改变 Parquet feature
+schema。
+
+对于本功能加入前已经存在、但还没有 phase sidecar 的旧数据集，可根据导出 manifest 补建：
+
+```bash
+pixi run -e train python scripts/build_phase_index.py \
+  --dataset-root datasets/lerobot/weldpath_lerobot_relative_v3 \
+  --raw-root datasets/raw_v3 \
+  --output datasets/lerobot/weldpath_lerobot_relative_v3/meta/phase_index.npz
+```
+
+所有模型都通过公共训练入口使用同一个采样器，默认关闭，不需要修改各模型配置。确认 sidecar
+完整后，在任意模型配置或命令行打开：
+
+```bash
+pixi run -e train train-policy \
+  --config_path=configs/xvla_a100.yaml \
+  --training.phase_sampling.enabled=true \
+  --training.phase_sampling.index_path=datasets/lerobot/weldpath_lerobot_relative_v3/meta/phase_index.npz
+```
+
+默认每个 epoch 按 `approach/track/retreat = 0.40/0.50/0.10` 重采样。`track_threshold=0.50`
+表示 future action chunk 中至少一半属于 track 才归入 track bucket；这比只看当前帧更符合动作块
+训练。可通过 `approach_ratio`、`track_ratio`、`retreat_ratio` 和 `track_threshold` 调整。该功能
+只改变训练 sampler，不修改原始数据、视频、动作标签或评估采样；启用后仍应重新运行
+`policy-data-check`，确认筛选任务与 sidecar 属于同一个数据集版本。
+
 训练日志写入 `<training.output_dir>/train.log`；W&B 默认以 offline 模式写入同目录的 `wandb/`。
 联网后使用 `wandb sync` 上传。训练中断后保持原 `training.output_dir`：
 

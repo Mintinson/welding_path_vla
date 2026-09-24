@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -386,6 +387,18 @@ class PolicyConfig:
 
 
 @dataclass(slots=True)
+class PhaseSamplingConfig:
+    """训练帧的 approach/track/retreat 重采样配置。"""
+
+    enabled: bool = False
+    index_path: str | None = None
+    approach_ratio: float = 0.40
+    track_ratio: float = 0.50
+    retreat_ratio: float = 0.10
+    track_threshold: float = 0.50
+
+
+@dataclass(slots=True)
 class TrainingConfig:
     """策略训练、日志和实验跟踪配置。
 
@@ -417,8 +430,10 @@ class TrainingConfig:
     wandb_project: str = "welding_path_vla"
     wandb_disable_artifact: bool = True
     amp_dtype: str = "bfloat16"
+    image_aug: bool = False
     resume: bool = False
     peft: dict[str, Any] | None = None
+    phase_sampling: PhaseSamplingConfig = field(default_factory=PhaseSamplingConfig)
 
 
 @dataclass(slots=True)
@@ -484,9 +499,6 @@ class DeploymentConfig:
         record_video: 是否记录全局与腕部相机视频。
         action_steps: 每次动作块预测后连续执行的动作数；``None`` 保留 checkpoint 配置。
         inference_steps: Flow Matching 去噪步数；``None`` 保留 checkpoint 配置。
-        completion_progress_min: 判定自然完成所需的最小焊缝进度。
-        completion_distance_m: 判定自然完成所允许的最大 TCP—焊缝距离。
-        terminal_frame_hold_s: 视频中终止状态的保留时间。
     """
 
     mode: str = "scene"
@@ -734,6 +746,15 @@ class AppConfig:
             raise ValueError("training.amp_dtype must be float16 or bfloat16")
         if self.training.wandb_mode not in {"online", "offline", "disabled"}:
             raise ValueError("training.wandb_mode must be online, offline, or disabled")
+        phase_ratios = (
+            self.training.phase_sampling.approach_ratio,
+            self.training.phase_sampling.track_ratio,
+            self.training.phase_sampling.retreat_ratio,
+        )
+        if any(value <= 0 for value in phase_ratios) or not math.isclose(sum(phase_ratios), 1.0):
+            raise ValueError("training phase sampling ratios must be positive and sum to 1")
+        if not 0 < self.training.phase_sampling.track_threshold <= 1:
+            raise ValueError("training phase sampling track_threshold must be in (0, 1]")
         overlap = set(self.training.include_tasks) & set(self.training.exclude_tasks)
         if overlap:
             raise ValueError(f"training task filters overlap: {sorted(overlap)}")
@@ -768,12 +789,6 @@ class AppConfig:
             )
         ):
             raise ValueError("deployment IK residual and target increment limits must be positive")
-        if not 0 <= self.deployment.completion_progress_min <= 1:
-            raise ValueError("deployment.completion_progress_min must be in [0, 1]")
-        if self.deployment.completion_distance_m <= 0:
-            raise ValueError("deployment.completion_distance_m must be positive")
-        if self.deployment.terminal_frame_hold_s < 0:
-            raise ValueError("deployment.terminal_frame_hold_s must be non-negative")
         export = self.lerobot_export
         if (
             export.start_episode is not None
