@@ -7,7 +7,12 @@ from typing import Any
 
 import numpy as np
 
-from welding_path_vla.core.config import AppConfig, DeploymentConfig
+from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.deployment_rules import (
+    COMPLETION_DISTANCE_M,
+    COMPLETION_EXIT_DISTANCE_M,
+    COMPLETION_PROGRESS_MIN,
+)
 
 
 def new_rollout_arrays() -> dict[str, list[Any]]:
@@ -65,41 +70,31 @@ def new_rollout_arrays() -> dict[str, list[Any]]:
 def seam_endpoint_reached(
     progress: float,
     seam_distance_m: float,
-    config: DeploymentConfig,
 ) -> bool:
     """判断 TCP 是否已走到焊缝末端，开始等待退出动作。"""
-    return (
-        progress >= config.completion_progress_min
-        and seam_distance_m <= config.completion_distance_m
-    )
+    return progress >= COMPLETION_PROGRESS_MIN and seam_distance_m <= COMPLETION_DISTANCE_M
 
 
 @dataclass(slots=True)
 class RolloutCompletion:
-    """先确认焊缝末端，再等待 TCP 到达专家退出目标。
+    """先确认焊缝末端，再等待 TCP 明显离开焊缝。
 
     Attributes:
-        config: 部署完成判定阈值。
-        retreat_target: 专家轨迹最后一个退出目标的世界坐标。
         endpoint_reached: 当前 episode 是否曾可靠到达焊缝末端。
+        closest_seam_distance_m: 到达末端后记录到的最小 TCP—焊缝距离。
     """
 
-    config: DeploymentConfig
-    retreat_target: np.ndarray
     endpoint_reached: bool = False
+    closest_seam_distance_m: float = float("inf")
 
-    def update(
-        self,
-        progress: float,
-        seam_distance_m: float,
-        tcp_position: np.ndarray,
-    ) -> bool:
-        """更新完成状态；只有退出动作执行到位后才返回 ``True``。"""
-        self.endpoint_reached |= seam_endpoint_reached(progress, seam_distance_m, self.config)
-        retreat_error = np.linalg.norm(np.asarray(tcp_position) - self.retreat_target)
-        return self.endpoint_reached and bool(
-            retreat_error <= self.config.completion_distance_m
-        )
+    def update(self, progress: float, seam_distance_m: float) -> bool:
+        """更新完成状态；末端锁定后离缝达到阈值才返回 ``True``。"""
+        if not self.endpoint_reached:
+            self.endpoint_reached = seam_endpoint_reached(progress, seam_distance_m)
+            if not self.endpoint_reached:
+                return False
+        self.closest_seam_distance_m = min(self.closest_seam_distance_m, seam_distance_m)
+        return bool(seam_distance_m - self.closest_seam_distance_m >= COMPLETION_EXIT_DISTANCE_M)
 
 
 def finite_max(values: np.ndarray) -> float | None:
@@ -118,7 +113,7 @@ def build_rollout_diagnostics(
     seam_end_normal: np.ndarray,
     retreat_target: np.ndarray,
     termination_reason: str,
-    video_recorded: bool,
+    terminal_video_frames: int,
 ) -> dict[str, Any]:
     """把逐步数组汇总为便于人工排查的结构化信息。
 
@@ -131,7 +126,7 @@ def build_rollout_diagnostics(
         seam_end_normal: 终点焊接法向。
         retreat_target: 专家轨迹最终退出目标的世界坐标。
         termination_reason: rollout 的自然退出或失败原因。
-        video_recorded: 是否同步写入了双相机视频。
+        terminal_video_frames: 视频末尾写入的终态帧数量；零表示未录制视频。
 
     Returns:
         包含终止、跟踪、控制、安全和视频状态的摘要。
@@ -162,11 +157,6 @@ def build_rollout_diagnostics(
             "natural": termination_reason == "completed",
             "timed_out": termination_reason == "timeout",
         },
-        "completion_rule": {
-            "progress_min": config.deployment.completion_progress_min,
-            "seam_distance_max_m": config.deployment.completion_distance_m,
-            "retreat_target_distance_max_m": config.deployment.completion_distance_m,
-        },
         "reference": {
             "seam_start_m": seam_start.tolist(),
             "seam_end_m": seam_end.tolist(),
@@ -177,9 +167,7 @@ def build_rollout_diagnostics(
         "tracking": {
             "frames": steps,
             "track_frames": int(np.sum(trajectory["track_mask"])),
-            "completion_zone_frames": int(
-                np.sum(distance <= config.deployment.completion_distance_m)
-            ),
+            "completion_zone_frames": int(np.sum(distance <= COMPLETION_DISTANCE_M)),
             "closest_seam_distance_m": float(np.min(distance)),
             "final_seam_distance_m": float(distance[-1]),
             "max_progress": float(np.max(progress)),
@@ -202,8 +190,9 @@ def build_rollout_diagnostics(
             "action_increment_frames": int(np.sum(trajectory["action_increment"])),
         },
         "video": {
-            "includes_terminal_state": video_recorded,
-            "frame_count": steps + 1 if video_recorded else 0,
+            "includes_terminal_state": terminal_video_frames > 0,
+            "terminal_frame_count": terminal_video_frames,
+            "frame_count": steps + terminal_video_frames if terminal_video_frames else 0,
             "alignment": "frame_0 is initial state; frame_n is state after action_n",
         },
     }

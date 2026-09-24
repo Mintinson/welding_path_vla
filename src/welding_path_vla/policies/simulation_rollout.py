@@ -46,7 +46,6 @@ from welding_path_vla.policies.rollout_diagnostics import (
     RolloutCompletion,
     build_rollout_diagnostics,
     new_rollout_arrays,
-    seam_endpoint_reached,
 )
 from welding_path_vla.robot import SafetyMonitor, SafetyViolation
 from welding_path_vla.simulation import ExpertTrajectory, WeldingEnv
@@ -98,6 +97,26 @@ class SimulationRolloutReport:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def terminal_video_frame_count(
+    termination_reason: str,
+    fps: int,
+) -> int:
+    """返回终态需要写入的视频帧数。
+
+    普通完成、超时和安全门终止只写一帧，用于保留最后一次动作后的真实状态；碰撞额外
+    按固定时长重复碰撞帧，方便逐帧定位接触发生时的机械臂姿态。
+
+    Args:
+        termination_reason: rollout 的终止原因。
+        fps: 视频帧率。
+    Returns:
+        需要追加到动作帧之后的终态帧数量。
+    """
+    if termination_reason != "collision":
+        return 1
+    return max(1, round(COLLISION_FRAME_HOLD_S * fps))
 
 
 def rollout_episode(
@@ -173,7 +192,7 @@ def rollout_episode(
             sample_initial_tcp_offset(simulation, config, rng)
             expert = ExpertTrajectory(config, simulation.tcp_pose(), seam)
 
-        completion = RolloutCompletion(config.deployment, expert.post)  # 完成条件判定器
+        completion = RolloutCompletion()  # 固定完成规则判定器
 
         # 固定场景不携带部署控制参数，安全限制统一来自用户配置。
         safety = SafetyMonitor(config.safety, simulation.joint_ranges)
@@ -344,22 +363,18 @@ def rollout_episode(
             ):
                 break
 
-            # 完成判定：有 scene 用统一的 endpoint 判定；否则用 RolloutCompletion。
-            # 两种方式都基于焊缝进度和距离，以及是否到达退出点。
-            finished = (
-                seam_endpoint_reached(alpha, seam_distance, config.deployment)
-                if scene is not None
-                else completion.update(alpha, seam_distance, next_state.tcp.position)
-            )
-            if finished:
+            # 两阶段完成判定：先到达焊缝末端，再等待 TCP 明显离开焊缝。
+            # 不约束退出方向，抬枪、侧移或越过终点均可完成。
+            if completion.update(alpha, seam_distance):
                 termination_reason = "completed"
                 break
 
+        terminal_frames = 0
         if recorder:
             terminal_images = simulation.images_from_observation(suite_observation)
-            terminal_frames = max(
-                1,
-                round(config.deployment.terminal_frame_hold_s * config.timing.policy_hz),
+            terminal_frames = terminal_video_frame_count(
+                termination_reason,
+                config.timing.policy_hz,
             )
             for _ in range(terminal_frames):
                 recorder.append(terminal_images)
@@ -420,7 +435,7 @@ def rollout_episode(
                 seam.end.normal,
                 expert.post,
                 termination_reason,
-                recorder is not None,
+                terminal_frames,
             )
             if config.evaluation.report_detailed_metrics
             else {
@@ -661,4 +676,5 @@ __all__ = [
     "deployment_task_configs",
     "rollout_episode",
     "rollout_metric_summary",
+    "terminal_video_frame_count",
 ]

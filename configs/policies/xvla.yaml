@@ -65,6 +65,3 @@ deployment:
   record_video: true
   # 仅仿真部署：将混合位姿 IK 残差停止线从默认 0.005 放宽到 0.010。
   max_ik_residual: 0.01
-  # 每个 30 Hz 控制步最大平移目标增量；默认 0.40/30=0.0133 m。
-  completion_progress_min: 0.85
-  completion_distance_m: 0.015

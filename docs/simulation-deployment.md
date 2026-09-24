@@ -249,19 +249,31 @@ IK 残差超过 `10 × robot.ik_tolerance`、关节命令越界、动作无法�
 
 ## 7. 终止原因与“成功”的区别
 
-rollout 的自然完成条件是
+rollout 使用两阶段自然完成判定。第一阶段确认 TCP 已到达焊缝末端区域：
 
 $$
-\mathrm{progress}\geq\mathrm{completion\_progress\_min}
+\mathrm{progress}\geq0.95
 \quad\land\quad
-\mathrm{seam\_distance}\leq\mathrm{completion\_distance\_m}.
+\mathrm{seam\_distance}\leq0.01\,\mathrm{m}.
 $$
+
+该条件只锁定“焊缝末端已到达”，不会立刻退出。随后记录此阶段 TCP 到焊缝的最小距离
+$d_{min}$，继续闭环执行，直至满足：
+
+$$
+\mathrm{seam\_distance}-d_{min}
+\geq0.01\,\mathrm{m}.
+$$
+
+此时才设置 `termination_reason=completed`。固定距离增量为 10 mm，不要求靠近专家轨迹的
+`post` 点，也不约束退出方向；抬枪、侧向离开或越过焊缝终点都可以完成。fixed scene 与
+random 模式使用同一判据。
 
 `termination_reason` 可能为：
 
 | 值 | 含义 |
 | --- | --- |
-| `completed` | 到达配置定义的焊缝末端区域，自然退出 |
+| `completed` | 已到达焊缝末端，随后明显离开焊缝 |
 | `timeout` | 执行到 `deployment.max_steps` 仍未自然完成 |
 | `collision` | 当前策略周期出现不允许的接触 |
 | `action_violation` | 9D 动作无法转换为有效位姿等动作错误 |
@@ -379,7 +391,8 @@ episode 报告包含：
 
 视频帧率等于 `timing.policy_hz`，默认使用 H.264、CRF 23、`veryfast`。视频包含初始状态和
 最后一次动作后的终止状态，因此帧数为 `steps + 1`；`frame_0` 是初始观测，`frame_n` 是
-执行第 $n$ 个动作后的状态。
+执行第 $n$ 个动作后的状态。碰撞终止是唯一例外：最后的碰撞状态会按固定规则重复写入
+1 秒，便于定位接触发生时的姿态；该时长会记录在 `deployment_rules.collision_frame_hold_s`。
 
 ## 10. 切换策略与任务
 
