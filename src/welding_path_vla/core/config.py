@@ -503,9 +503,6 @@ class DeploymentConfig:
     inference_steps: int | None = None
     max_ik_residual: float | None = None
     max_target_increment_m: float | None = None
-    completion_progress_min: float = 0.95
-    completion_distance_m: float = 0.01
-    terminal_frame_hold_s: float = 1.0
 
 
 @dataclass(slots=True)

@@ -60,5 +60,3 @@ deployment:
   max_steps: 3300
   seed: 20260730
   record_video: true
-  completion_progress_min: 0.85
-  completion_distance_m: 0.015

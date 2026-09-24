@@ -108,8 +108,12 @@ includes:
 | `deployment.max_steps` | 每条 episode 的最大策略步数 |
 | `deployment.seed` | 随机模式第 0 条 episode 的随机种子 |
 | `deployment.record_video` | 是否录制全局与腕部相机视频 |
-| `deployment.completion_progress_min` | 自然退出所需的最小焊缝进度 |
-| `deployment.completion_distance_m` | 自然退出时允许的最大焊缝距离 |
+
+焊缝完成判定阈值和碰撞帧保留时间由
+[`src/welding_path_vla/core/deployment_rules.py`](../src/welding_path_vla/core/deployment_rules.py)
+中的代码常量统一控制：焊缝进度至少 `0.85`、末端距离不超过 `0.015 m`、离缝距离增量至少
+`0.01 m`，碰撞帧保留 `1 s`，不接受配置文件或命令行覆盖。实际使用值会写入每个 episode 的
+`summary.json` 的 `diagnostics.deployment_rules` 字段；记录与详细指标开关无关。
 
 模型结构、归一化统计、`chunk_size` 和 `n_action_steps` 从 checkpoint 自身配置恢复。外层 YAML
 中的 `policy.action_horizon`、`policy.action_steps` 和 `policy.parameters` 主要用于训练构造，不能

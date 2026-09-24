@@ -57,6 +57,3 @@ deployment:
   max_steps: 3300
   seed: 20260729
   record_video: true
-  # SmolVLA 是对比基线；自然完成门槛与 ACT 保持一致。
-  completion_progress_min: 0.85
-  completion_distance_m: 0.015

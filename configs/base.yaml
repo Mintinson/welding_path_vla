@@ -229,7 +229,4 @@ deployment:
   # null 保留 checkpoint 的推理参数；部署时可用 CLI 单独覆盖，不影响训练配置。
   action_steps: null
   inference_steps: null
-  completion_progress_min: 0.95
-  completion_distance_m: 0.01
-  # 最后一帧保留 1 秒，便于直接查看最终到达位置。
-  terminal_frame_hold_s: 1.0
+  max_target_increment_m: 0.025
