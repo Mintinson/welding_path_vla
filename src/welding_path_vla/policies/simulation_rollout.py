@@ -25,6 +25,10 @@ import numpy as np
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.config_files import compose_config, merge_config
+from welding_path_vla.core.deployment_rules import (
+    COLLISION_FRAME_HOLD_S,
+    deployment_rules_metadata,
+)
 from welding_path_vla.core.domain import Phase
 from welding_path_vla.core.geometry import absolute_ee_action_to_pose
 from welding_path_vla.dataset.video import VideoRecorder
@@ -424,6 +428,7 @@ def rollout_episode(
                 "step_errors": sorted({str(value) for value in trajectory["step_error"] if value}),
             }
         )
+        diagnostics["deployment_rules"] = deployment_rules_metadata()
         if detailed is not None:
             diagnostics["detailed_evaluation"] = detailed
         videos = recorder.finish() if recorder else ()

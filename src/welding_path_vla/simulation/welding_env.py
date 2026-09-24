@@ -11,6 +11,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from welding_path_vla.core.config import AppConfig
+from welding_path_vla.core.deployment_rules import (
+    COMPLETION_DISTANCE_M,
+    COMPLETION_PROGRESS_MIN,
+)
 from welding_path_vla.core.domain import Pose, RobotState
 from welding_path_vla.core.geometry import (
     matrix_to_quaternion,
@@ -363,7 +367,7 @@ class WeldingEnv(MujocoEnv):
         return float(self._check_success())
 
     def _check_success(self) -> bool:
-        """判断 TCP 是否到达配置定义的自然完成区域。"""
+        """判断 TCP 是否到达固定部署规则定义的自然完成区域。"""
         projection = self.active_seam().project(
             self.tcp_pose().position,
             self.seam_progress_hint,
@@ -371,8 +375,8 @@ class WeldingEnv(MujocoEnv):
         if projection.distance_m <= self.config.evaluation.tracking_band_m:
             self.seam_progress_hint = projection.progress
         return (
-            projection.raw_progress >= self.config.deployment.completion_progress_min
-            and projection.distance_m <= self.config.deployment.completion_distance_m
+            projection.raw_progress >= COMPLETION_PROGRESS_MIN
+            and projection.distance_m <= COMPLETION_DISTANCE_M
         )
 
     def active_seam(self) -> SeamPath:
