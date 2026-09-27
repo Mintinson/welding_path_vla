@@ -94,7 +94,7 @@ def test_scene_include_tasks_filters_scene_without_switching_mode(
     config.deployment.scene_bank_path = str(path)
     calls: list[tuple[str, list[str], list[str]]] = []
 
-    def fake_deploy_task_episodes(task_config, runtime, selected_scenes):
+    def fake_deploy_task_episodes(task_config, runtime, selected_scenes, run_root):
         calls.append(
             (
                 task_config.deployment.mode,
@@ -115,11 +115,11 @@ def test_scene_include_tasks_filters_scene_without_switching_mode(
     assert calls == [("scene", ["pipe_top"], ["pipe_top"])]
 
 
-def test_all_tasks_write_subdirectories_and_combined_summary(
+def test_all_tasks_write_subdirectories_and_combined_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """批量部署应为每个任务建子目录，并在公共根目录写跨任务摘要。"""
+    """批量部署应为每个任务建子目录，并在公共根目录写跨任务指标。"""
     config = AppConfig.load("configs/deploy/smolvla.yaml")
     config.deployment.mode = "random"
     config.deployment.output_root = str(tmp_path)
@@ -151,11 +151,10 @@ def test_all_tasks_write_subdirectories_and_combined_summary(
 
     assert len(reports) == 6
     root = next((tmp_path / "smolvla_weldpath_relative_v1").iterdir())
-    assert all(
-        (root / report.task / "summary.json").exists()
-        for report in reports
-    )
-    assert (root / "summary.json").exists()
+    assert (root / "metrics_summary.json").exists()
+    assert not (root / "summary.json").exists()
+    assert all(not (root / report.task / "metrics_summary.json").exists() for report in reports)
+    assert all(not (root / report.task / "summary.json").exists() for report in reports)
 
 
 def test_unreachable_staging_does_not_abort_remaining_episodes(
@@ -200,13 +199,10 @@ def test_unreachable_staging_does_not_abort_remaining_episodes(
         / "episode_000000"
         / "summary.json"
     ).exists()
-    assert (
-        root / "summary.json"
-    ).exists()
-    metrics = json.loads((root / "metrics_summary.json").read_text())
-    assert metrics["complete_rate"] == 0.5
-    assert config.deployment.max_ik_residual == 0.01
-    assert config.deployment.max_target_increment_m == 0.02
+    assert not (root / "summary.json").exists()
+    assert not (root / "metrics_summary.json").exists()
+    metrics = rollout_metric_summary(config, reports)
+    assert metrics["metrics"]["complete_rate"] == 0.5
 
 
 def test_fixed_scene_bank_uses_user_deployment_config_for_every_episode(
@@ -271,16 +267,29 @@ def test_fixed_scene_bank_uses_user_deployment_config_for_every_episode(
              "tracking_frames": 1, "cte_p95_m": 0.001},
         )
 
+    output_calls = 0
+
+    def unique_output(config):
+        nonlocal output_calls
+        output_calls += 1
+        return tmp_path / "outputs" / "checkpoint-a" / f"run-{output_calls}"
+
     monkeypatch.setattr(simulation_rollout, "rollout_episode", fake_rollout)
+    monkeypatch.setattr(simulation_rollout, "deployment_output_dir", unique_output)
     reports = deploy_episodes(model, object())
     assert seen == [(0, 1, 0.001), (1, 1, 0.001)]
     assert len(reports) == 2
-    metric_files = list((tmp_path / "outputs").rglob("metrics_summary.json"))
-    assert len(metric_files) == 2
-    global_metrics = next(
-        path for path in metric_files if path.parent.parent.name == "checkpoint-a"
-    )
-    assert json.loads(global_metrics.read_text())["success_rate"] == 0.5
+    experiment = tmp_path / "outputs" / "checkpoint-a"
+    run_roots = list(experiment.iterdir())
+    assert len(run_roots) == 1
+    assert output_calls == 1
+    root = run_roots[0]
+    assert (root / "metrics_summary.json").exists()
+    assert not (root / "l_joint" / "metrics_summary.json").exists()
+    assert not (root / "summary.json").exists()
+    assert not (root / "l_joint" / "summary.json").exists()
+    summary = json.loads((root / "metrics_summary.json").read_text())
+    assert summary["metrics"]["success_rate"] == 0.5
 
 
 def test_rollout_metric_summary_reports_arrival_timeout_and_tracking_cte() -> None:
@@ -311,15 +320,44 @@ def test_rollout_metric_summary_reports_arrival_timeout_and_tracking_cte() -> No
         SimulationRolloutReport(
             "l_joint", 2, 2, 0, False, "setup_failure", False, "", (), {}, None
         ),
+        SimulationRolloutReport(
+            "l_joint", 3, 3, 4, False, "collision", True, "", (), {},
+            {
+                "success": False,
+                "coverage_ratio": 0.2,
+                "direction_ratio": 0.5,
+                "reached_start": True,
+                "tracking_frames": 3,
+                "cte_p95_m": 0.004,
+            },
+        ),
     ]
 
-    summary = rollout_metric_summary(reports)
+    config = AppConfig.load("configs/deploy/smolvla.yaml")
+    summary = rollout_metric_summary(config, reports)
 
-    assert summary["episodes"] == 3
-    assert summary["arrival_episodes"] == 1
-    assert summary["arrival_rate"] == pytest.approx(1 / 3)
-    assert summary["timeout_episodes"] == 1
-    assert summary["timeout_rate"] == pytest.approx(1 / 3)
-    assert summary["coverage_ratio_mean"] == pytest.approx(1 / 3)
-    assert summary["cte_p95_mean_m"] == pytest.approx(0.002)
-    assert summary["cte_observed_episodes"] == 1
+    assert list(summary) == [
+        "checkpoint",
+        "config_path",
+        "metrics",
+        "episode_groups",
+    ]
+    assert summary["checkpoint"] == config.policy.checkpoint
+    assert summary["config_path"] == "configs/deploy/smolvla.yaml"
+    metrics = summary["metrics"]
+    assert metrics["episodes"] == 4
+    assert metrics["arrival_episodes"] == 2
+    assert metrics["arrival_rate"] == pytest.approx(1 / 2)
+    assert metrics["timeout_episodes"] == 1
+    assert metrics["timeout_rate"] == pytest.approx(1 / 4)
+    assert metrics["collision_episodes"] == 1
+    assert metrics["collision_rate"] == pytest.approx(1 / 4)
+    assert metrics["coverage_ratio_mean"] == pytest.approx(0.3)
+    assert metrics["cte_p95_mean_m"] == pytest.approx(0.003)
+    assert metrics["cte_observed_episodes"] == 2
+    assert summary["episode_groups"] == {
+        "complete": [{"task": "l_joint", "episode": 0}],
+        "success": [{"task": "l_joint", "episode": 0}],
+        "timeout": [{"task": "l_joint", "episode": 1}],
+        "collision": [{"task": "l_joint", "episode": 3}],
+    }

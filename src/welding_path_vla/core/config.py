@@ -536,6 +536,8 @@ class AppConfig:
     policy_evaluation: PolicyEvaluationConfig = field(default_factory=PolicyEvaluationConfig)
     lerobot_export: LeRobotExportConfig = field(default_factory=LeRobotExportConfig)
     deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
+    # 仅记录用户指定的入口 YAML；不参与配置合并、序列化或模型行为。
+    source_config_path: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """构造后立即检查跨模块配置约束。"""
@@ -545,7 +547,9 @@ class AppConfig:
     def load(cls, path: str | Path) -> AppConfig:
         """组合 YAML 模块后通过 Draccus 完成类型解析。"""
         with materialized_config(path) as config_path:
-            return parse(cls, config_path=config_path, args=[])
+            config = parse(cls, config_path=config_path, args=[])
+        config.source_config_path = str(path)
+        return config
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> AppConfig:
@@ -816,4 +820,6 @@ class AppConfig:
             raise ValueError("task.staging_clearance_m must exceed approach_distance_m")
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        values = asdict(self)
+        values.pop("source_config_path")
+        return values

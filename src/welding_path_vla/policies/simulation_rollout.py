@@ -486,7 +486,9 @@ def deployment_task_configs(config: AppConfig) -> tuple[AppConfig, ...]:
     for path in task_paths:
         values = merge_config(config.as_dict(), compose_config(path))
         values["deployment"]["include_tasks"] = [path.stem]
-        configurations.append(AppConfig.from_dict(values))
+        task_config = AppConfig.from_dict(values)
+        task_config.source_config_path = config.source_config_path
+        configurations.append(task_config)
     return tuple(configurations)
 
 
@@ -507,56 +509,91 @@ def deployment_output_dir(config: AppConfig) -> Path:
     )
 
 
-def rollout_metric_summary(reports: list[SimulationRolloutReport]) -> dict[str, Any]:
-    """按全部计划 episode 汇总完成率、到达率、超时率和跟踪指标。
+def rollout_metric_summary(
+    config: AppConfig,
+    reports: list[SimulationRolloutReport],
+) -> dict[str, Any]:
+    """汇总部署来源、整体指标和 episode 分类索引。
 
     关键点：分母是 len(reports)（全部计划 episode），而非仅有评估的 episode。
     这样 setup 失败、无评估的 episode 也会拉低成功率，避免"失败被剔除"导致指标虚高。
 
     Args:
+        config: 本次部署使用的模型与入口配置。
         reports: 全部 episode 的报告列表。
 
     Returns:
-        包含成功率、覆盖率均值、到达率、超时率和 tracking CTE 均值的字典。
+        指标在前、episode 分类索引在后的可比较字典。
     """
     metrics = [report.evaluation or {} for report in reports]
     cte = [item["cte_p95_m"] for item in metrics if item.get("cte_p95_m") is not None]
     count = len(reports)
     evaluated = [report.evaluation for report in reports if report.evaluation is not None]
+    complete = [report for report in reports if report.completed]
+    success = [
+        report
+        for report in reports
+        if report.evaluation and bool(report.evaluation.get("success", False))
+    ]
+    timeout = [report for report in reports if report.termination_reason == "timeout"]
+    collision = [report for report in reports if report.collision]
+
+    def episode_refs(items: list[SimulationRolloutReport]) -> list[dict[str, str | int]]:
+        """返回跨任务也不会混淆的 episode 索引。"""
+        return [{"task": report.task, "episode": report.episode} for report in items]
+
     return {
-        "episodes": count,
-        "complete_rate": sum(report.completed for report in reports) / count if count else 0.0,
-        "success_rate": sum(bool(item.get("success", False)) for item in metrics) / count
-        if count
-        else 0.0,
-        "arrival_rate": sum(bool(item.get("reached_start", False)) for item in metrics) / count
-        if count
-        else 0.0,
-        "arrival_episodes": sum(bool(item.get("reached_start", False)) for item in metrics),
-        "timeout_rate": sum(report.termination_reason == "timeout" for report in reports) / count
-        if count
-        else 0.0,
-        "timeout_episodes": sum(report.termination_reason == "timeout" for report in reports),
-        "coverage_ratio_mean": sum(float(item.get("coverage_ratio", 0.0)) for item in metrics)
-        / count
-        if count
-        else 0.0,
-        "direction_ratio_mean": sum(float(item.get("direction_ratio", 0.0)) for item in metrics)
-        / count
-        if count
-        else 0.0,
-        "cte_p95_mean_m": float(np.mean(cte)) if cte else None,
-        "cte_observed_episodes": len(cte),
-        "tracking_frames_mean": float(
-            np.mean([int(item.get("tracking_frames", 0)) for item in evaluated])
-        )
-        if evaluated
-        else 0.0,
+        "checkpoint": config.policy.checkpoint,
+        "config_path": config.source_config_path,
+        "metrics": {
+            "episodes": count,
+            "complete_rate": len(complete) / count if count else 0.0,
+            "complete_episodes": len(complete),
+            "success_rate": len(success) / count if count else 0.0,
+            "success_episodes": len(success),
+            "arrival_rate": sum(bool(item.get("reached_start", False)) for item in metrics)
+            / count
+            if count
+            else 0.0,
+            "arrival_episodes": sum(bool(item.get("reached_start", False)) for item in metrics),
+            "timeout_rate": len(timeout) / count if count else 0.0,
+            "timeout_episodes": len(timeout),
+            "collision_rate": len(collision) / count if count else 0.0,
+            "collision_episodes": len(collision),
+            "coverage_ratio_mean": sum(
+                float(item.get("coverage_ratio", 0.0)) for item in metrics
+            )
+            / count
+            if count
+            else 0.0,
+            "direction_ratio_mean": sum(
+                float(item.get("direction_ratio", 0.0)) for item in metrics
+            )
+            / count
+            if count
+            else 0.0,
+            "cte_p95_mean_m": float(np.mean(cte)) if cte else None,
+            "cte_observed_episodes": len(cte),
+            "tracking_frames_mean": float(
+                np.mean([int(item.get("tracking_frames", 0)) for item in evaluated])
+            )
+            if evaluated
+            else 0.0,
+        },
+        "episode_groups": {
+            "complete": episode_refs(complete),
+            "success": episode_refs(success),
+            "timeout": episode_refs(timeout),
+            "collision": episode_refs(collision),
+        },
     }
 
 
 def deploy_task_episodes(
-    config: AppConfig, runtime: Policy, scenes: list[dict[str, Any]] | None = None
+    config: AppConfig,
+    runtime: Policy,
+    scenes: list[dict[str, Any]] | None = None,
+    run_root: Path | None = None,
 ) -> list[SimulationRolloutReport]:
     """在一个任务的自动目录中连续运行多个 episode。
 
@@ -572,6 +609,7 @@ def deploy_task_episodes(
         config: 任务配置。
         runtime: 策略运行时。
         scenes: 可选场景列表。
+        run_root: 本次部署唯一的时间戳根目录；直接调用时自动创建。
 
     Returns:
         全部 episode 的报告列表。
@@ -579,7 +617,7 @@ def deploy_task_episodes(
     if scenes is not None and not scenes:
         raise ValueError(f"scene bank has no scenes for task: {config.task.task_id}")
     task_config = config_for_scene(config, scenes[0]) if scenes else config
-    root = deployment_output_dir(task_config) / task_config.task.task_id
+    root = (run_root or deployment_output_dir(task_config)) / task_config.task.task_id
     root.mkdir(parents=True, exist_ok=True)
     reports = []
     episode_items = (
@@ -619,18 +657,13 @@ def deploy_task_episodes(
                 json.dumps(report.as_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
             )
         reports.append(report)
-    (root / "summary.json").write_text(
-        json.dumps([report.as_dict() for report in reports], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    (root / "metrics_summary.json").write_text(
-        json.dumps(rollout_metric_summary(reports), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
     return reports
 
 
 def deploy_episodes(config: AppConfig, runtime: Policy) -> list[SimulationRolloutReport]:
     """按固定场景或随机模式执行全部任务，或执行指定任务 ID。"""
+    root = deployment_output_dir(config)
+    root.mkdir(parents=True, exist_ok=True)
     if config.deployment.mode == "scene":
         if not config.deployment.scene_bank_path:
             raise ValueError("scene mode requires deployment.scene_bank_path")
@@ -645,24 +678,19 @@ def deploy_episodes(config: AppConfig, runtime: Policy) -> list[SimulationRollou
                 config,
                 runtime,
                 [scene for scene in bank["scenes"] if scene["task"]["task_id"] == task],
+                root,
             )
         ]
     elif config.deployment.mode == "random":
         reports = [
             report
             for task_config in deployment_task_configs(config)
-            for report in deploy_task_episodes(task_config, runtime)
+            for report in deploy_task_episodes(task_config, runtime, run_root=root)
         ]
     else:
         raise ValueError(f"unsupported deployment mode: {config.deployment.mode}")
-    root = deployment_output_dir(config)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "summary.json").write_text(
-        json.dumps([report.as_dict() for report in reports], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     (root / "metrics_summary.json").write_text(
-        json.dumps(rollout_metric_summary(reports), ensure_ascii=False, indent=2),
+        json.dumps(rollout_metric_summary(config, reports), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return reports

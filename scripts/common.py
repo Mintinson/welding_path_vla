@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 from typing import cast
 
@@ -15,9 +16,19 @@ from welding_path_vla.core.config_files import materialized_config
 
 def cli[Config](command: Callable[[Config], None]) -> Callable[[], None]:
     """组合 YAML 模块，再由 Draccus 解析类型和命令行覆盖。"""
-    wrapped = cast(Callable[[], None], wrap()(command))
+    source_config_path: str | None = None
+
+    @wraps(command)
+    def configured_command(config: Config) -> None:
+        """在执行脚本前保存用户实际传入的入口 YAML 路径。"""
+        if source_config_path is not None and hasattr(config, "source_config_path"):
+            config.source_config_path = source_config_path
+        command(config)
+
+    wrapped = cast(Callable[[], None], wrap()(configured_command))
 
     def entrypoint() -> None:
+        nonlocal source_config_path
         config_argument = next(
             (argument for argument in sys.argv[1:] if argument.startswith("--config_path=")),
             None,
@@ -27,6 +38,7 @@ def cli[Config](command: Callable[[Config], None]) -> Callable[[], None]:
             return
 
         source = config_argument.split("=", 1)[1]
+        source_config_path = source
         with materialized_config(source) as config_path:
             arguments = sys.argv
             sys.argv = [
@@ -37,6 +49,7 @@ def cli[Config](command: Callable[[Config], None]) -> Callable[[], None]:
                 wrapped()
             finally:
                 sys.argv = arguments
+                source_config_path = None
 
     return entrypoint
 

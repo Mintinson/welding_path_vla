@@ -63,8 +63,10 @@ v2 对所有模型统一使用 25 mm 单步目标位移上限、10 mm IK 残差�
 
 视频始终写入最后一次动作后的真实终态帧；只有碰撞终止会额外保留碰撞帧 1 秒，便于逐帧排查。
 
-每个模型任务目录有 `summary.json`（逐 episode）与 `metrics_summary.json`（完成率、到达率、超时率及 tracking 指标汇总）。
-跨任务文件位于 `outputs/deploy/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/`，目录名直接使用 checkpoint 的训练实验目录；
-覆盖、方向、成功率、到达率和超时率的分母包含全部 25 条场景。`cte_p95_mean_m` 只对至少
+每个 episode 目录保留自身的 `summary.json`，时间戳根目录只生成一份总分结构的
+`metrics_summary.json`。该文件记录 checkpoint、入口 config、整体指标以及 complete/success/timeout/
+collision episode 分类；完整报告只保存在各 episode 目录中。跨任务文件位于
+`outputs/deploy/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/`，目录名直接使用 checkpoint 的训练实验目录；
+覆盖、方向、成功率、到达率、超时率和碰撞率的分母包含全部 25 条场景。`cte_p95_mean_m` 只对至少
 有一个 tracking 帧的 episode 求均值，并通过 `cte_observed_episodes` 给出实际分母。初始化失败、
 未进入 tracking 带或没有轨迹点的 episode 不贡献 CTE 均值，但仍保留在其他比率的分母中。

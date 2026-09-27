@@ -317,10 +317,8 @@ coverage、到达和方向，只有没有 tracking 帧时才将 `cte_p95_m` 写�
 outputs/deploy/
 └── trajvla_cross_with_dense_prompt_v3_2/
     └── 2026-09-17-10-30/
-        ├── summary.json              # 全部任务的报告列表
-        ├── metrics_summary.json      # 全部任务的汇总指标
+        ├── metrics_summary.json      # 来源、总指标和分类索引
         └── pipe_top/
-            ├── summary.json            # 所有 episode 的报告列表
             ├── episode_000000/
             │   ├── config.json         # 本次执行的完整合并配置
             │   ├── rollout.npz         # 逐策略步轨迹和诊断原始量
@@ -335,7 +333,7 @@ outputs/deploy/
 含有同一 checkpoint、同一任务 episode 的目录；新一轮实验应使用新的 checkpoint 实验目录或先把旧结果移动到
 归档位置。双相机分别由独立后台线程编码，每路 H.264 编码器使用 2 个线程，主 rollout 线程不等待
 逐帧压缩。
-若中途异常退出，已经完成的 episode 会保留，但根目录 `summary.json` 可能尚未生成。
+若中途异常退出，已经完成的 episode 会保留，但根目录 `metrics_summary.json` 只在全部计划任务结束后生成。
 
 批量模式在同一个 checkpoint 实验目录的日期目录中建立六个任务子目录，并额外写入跨任务摘要：
 
@@ -349,17 +347,38 @@ outputs/deploy/
         ├── curve_plate/
         ├── trihedral_horizontal/
         ├── trihedral_vertical/
-        ├── summary.json
         └── metrics_summary.json
 ```
 
-每条 report 新增 `task` 字段，根摘要可以直接按任务分组。各任务仍拥有自己的 `summary.json`、
-episode 目录和视频。每个 `metrics_summary.json` 都包含 `complete_rate`，即
-`completed=true` 的 episode 数除以该任务全部计划 episode 数；它与 `evaluation.success` 的
-`success_rate` 分开统计，并额外包含 `arrival_rate`、`timeout_rate`、
-`coverage_ratio_mean`、`direction_ratio_mean`、`cte_p95_mean_m` 和
-`cte_observed_episodes`。其中到达率、超时率和 coverage/direction 均以全部计划 episode 为
-分母，CTE 均值只以实际出现 tracking 帧的 episode 为分母。
+根目录只生成一份 `metrics_summary.json`，不会再次计算时间戳，也不再生成聚合
+`summary.json`。文件按总分结构组织：顶部记录 checkpoint 和入口 config 路径；`metrics` 放置
+便于跨实验比较的整体指标；`episode_groups` 列出 complete、success、timeout 和 collision 对应的
+任务及 episode 编号。单条 episode 的完整报告只保存在对应目录的 `summary.json`，避免聚合文件
+重复存储。`complete_rate` 与
+`evaluation.success` 的 `success_rate` 分开统计，并额外包含 `arrival_rate`、`timeout_rate`、
+`collision_rate`、`coverage_ratio_mean`、`direction_ratio_mean`、`cte_p95_mean_m` 和
+`cte_observed_episodes`。比率均以全部计划 episode 为分母，CTE 均值只以实际出现 tracking 帧的
+episode 为分母。
+
+```json
+{
+  "checkpoint": "outputs/train/RUN/checkpoints/last/pretrained_model",
+  "config_path": "configs/deploy/MODEL_TASK.yaml",
+  "metrics": {
+    "episodes": 25,
+    "complete_rate": 0.96,
+    "success_rate": 0.88,
+    "timeout_rate": 0.0,
+    "collision_rate": 0.04
+  },
+  "episode_groups": {
+    "complete": [{"task": "l_joint", "episode": 0}],
+    "success": [{"task": "l_joint", "episode": 0}],
+    "timeout": [],
+    "collision": [{"task": "l_joint", "episode": 12}]
+  }
+}
+```
 
 ### 9.1 `rollout.npz`
 
@@ -378,7 +397,7 @@ episode 目录和视频。每个 `metrics_summary.json` 都包含 `complete_rate
 `tcp_position` 是执行一个策略周期后的真实反馈。三者同时保存是为了区分“模型预测有误”、
 “安全门修改了命令”和“仿真执行没有跟上命令”。
 
-### 9.2 `summary.json`
+### 9.2 episode `summary.json`
 
 episode 报告包含：
 
@@ -496,7 +515,7 @@ GPU 时可能污染渲染缓冲区，因此默认让策略在 GPU 0 推理、EGL
 2. 检查双相机视频以及 episode `summary.json`；
 3. 检查 `rollout.npz` 中动作、命令、反馈和安全字段；
 4. 固定策略、任务、随机种子、阈值和 episode 数执行正式评估；
-5. 用根目录 `summary.json` 汇总结果，并保留每条 episode 的配置和轨迹以便复查。
+5. 用根目录 `metrics_summary.json` 比较总指标和分类 episode，并保留每条 episode 的配置和轨迹以便复查。
 
 不同策略对比时，应保持任务配置、seed、episode 数、相机、`relative_action` 语义、自然退出
 条件和论文评估阈值一致。模型特有的图像尺寸、tokenizer 和去噪步数由各自 checkpoint 保持。
