@@ -5,8 +5,10 @@ from typing import Any
 
 import pytest
 import torch
+from accelerate import Accelerator
 from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 from lerobot.processor import PolicyProcessorPipeline
+from lerobot.scripts.lerobot_train import update_policy
 from lerobot.transforms import ImageTransforms
 from lerobot.utils.constants import (
     ACTION,
@@ -19,7 +21,10 @@ from safetensors.torch import load_file
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.policies.checkpoint import ensure_peft_base_reference
 from welding_path_vla.policies.factory import get_policy_pipeline
-from welding_path_vla.policies.lerobot_training import apply_training_overrides, make_train_config
+from welding_path_vla.policies.lerobot_training import (
+    FiniteGradientAccelerator,
+    make_train_config,
+)
 from welding_path_vla.policies.spec import VLA_ADAPTER
 from welding_path_vla.policies.vla_adapter.bridge import ProBridgeBlock
 from welding_path_vla.policies.vla_adapter.configuration_vla_adapter import (
@@ -118,91 +123,40 @@ def test_vla_adapter_configs_register_both_heads() -> None:
     assert l1.policy.parameters["num_action_queries"] == 64
     assert l1.policy.parameters["num_bridge_layers"] == 24
     assert l1.policy.parameters["use_vision_lora"] is True
-    assert l1.policy.parameters["compile_model"] is False
-    assert l1.policy.parameters["compile_mode"] == "reduce-overhead"
-    assert a100.policy.parameters["compile_model"] is False
+    assert "compile_model" not in l1.policy.parameters
+    assert "compile_model" not in a100.policy.parameters
     assert l1.training.image_aug and a100.training.image_aug and flow.training.image_aug
     assert get_policy_pipeline("vla_adapter").spec is VLA_ADAPTER
 
 
-@pytest.mark.parametrize(
-    ("action_head", "expected_methods"),
-    [("l1", ["forward"]), ("flow_matching", ["forward", "sample_flow"])],
-)
-def test_compile_model_wraps_expected_methods(
-    action_head: str,
-    expected_methods: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """编译开关只包装训练前向，并在 Flow 头时编译采样路径。"""
-    from welding_path_vla.policies.vla_adapter import modeling_vla_adapter
-    from welding_path_vla.policies.vla_adapter.modeling_vla_adapter import VLAAdapterPolicy
-
-    monkeypatch.setattr(modeling_vla_adapter, "VLAAdapterBackbone", TinyBackbone)
-    calls: list[tuple[str, str]] = []
-
-    def compile_method(method: Any, *, mode: str) -> Any:
-        calls.append((method.__name__, mode))
-        return method
-
-    monkeypatch.setattr(modeling_vla_adapter.torch, "compile", compile_method)
-    monkeypatch.setattr(modeling_vla_adapter.torch, "set_float32_matmul_precision", lambda _: None)
-
-    config = make_tiny_config(action_head)
-    config.compile_model = True
-    config.compile_mode = "reduce-overhead"
-    VLAAdapterPolicy(config)
-
-    assert [name for name, _ in calls] == expected_methods
-    assert all(mode == "reduce-overhead" for _, mode in calls)
+def test_nonfinite_gradient_stops_before_optimizer_step(monkeypatch: Any) -> None:
+    """梯度裁剪返回非有限范数时，训练必须立即失败。"""
+    accelerator = object.__new__(FiniteGradientAccelerator)
+    monkeypatch.setattr(Accelerator, "clip_grad_norm_", lambda *args: torch.tensor(float("nan")))
+    with pytest.raises(FloatingPointError, match="optimizer step skipped"):
+        accelerator.clip_grad_norm_([], 10)
 
 
-def test_compile_settings_override_resumed_config() -> None:
-    """恢复训练时应使用当前 YAML 指定的编译开关与模式。"""
-    app = AppConfig.load("configs/vla_adapter.yaml")
-    app.policy.parameters["compile_model"] = True
-    app.policy.parameters["compile_mode"] = "reduce-overhead"
-    config = SimpleNamespace(
-        output_dir=Path("outputs/train/test"),
-        steps=1,
-        seed=0,
-        num_workers=0,
-        persistent_workers=False,
-        batch_size=1,
-        log_freq=1,
-        eval_steps=1,
-        max_eval_samples=1,
-        save_freq=1,
-        resume=True,
-        wandb=SimpleNamespace(
-            enable=False,
-            mode="offline",
-            project="test",
-            disable_artifact=True,
-            run_id="existing-run",
-        ),
-        dataset=SimpleNamespace(
-            repo_id=None,
-            root=None,
-            video_backend=None,
-            episodes=None,
-            eval_split=0.0,
-            image_transforms=None,
-        ),
-        policy=SimpleNamespace(
-            device="cpu",
-            scheduler_warmup_steps=0,
-            scheduler_decay_steps=0,
-            compile_model=False,
-            compile_mode="default",
-            optimizer_lr=0.0,
-        ),
-    )
+def test_nonfinite_gradient_preserves_trainable_weight() -> None:
+    """真实训练步骤中，NaN 梯度不能进入优化器。"""
 
-    apply_training_overrides(config, app.policy, app.training)
+    class NonfinitePolicy(torch.nn.Module):
+        """返回 NaN 梯度的最小策略。"""
 
-    assert config.policy.compile_model
-    assert config.policy.compile_mode == "reduce-overhead"
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(()))
+
+        def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict]:
+            """构造非有限损失。"""
+            return self.weight * torch.tensor(float("nan")), {}
+
+    policy = NonfinitePolicy()
+    optimizer = torch.optim.SGD(policy.parameters(), lr=0.1)
+    accelerator = FiniteGradientAccelerator(cpu=True)
+    with pytest.raises(FloatingPointError, match="optimizer step skipped"):
+        update_policy(SimpleNamespace(), policy, {}, optimizer, 10, accelerator)
+    assert policy.weight.item() == 1.0
 
 
 def test_image_augmentation_uses_photometric_transforms_only() -> None:
@@ -220,7 +174,7 @@ def test_image_augmentation_uses_photometric_transforms_only() -> None:
 
 
 def test_vla_adapter_config_round_trip(tmp_path: Path) -> None:
-    """动作头与 Bridge 结构字段应随 checkpoint 稳定保存。"""
+    """动作头及旧编译字段应随 checkpoint 稳定加载。"""
     config = make_tiny_config("flow_matching")
     config.compile_model = True
     config.compile_mode = "reduce-overhead"
@@ -232,6 +186,21 @@ def test_vla_adapter_config_round_trip(tmp_path: Path) -> None:
     assert restored.num_bridge_layers == 2
     assert restored.compile_model
     assert restored.compile_mode == "reduce-overhead"
+
+
+def test_legacy_compile_flag_does_not_compile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧 checkpoint 即使记录编译开关，也始终使用普通前向。"""
+    from welding_path_vla.policies.vla_adapter import modeling_vla_adapter
+
+    monkeypatch.setattr(modeling_vla_adapter, "VLAAdapterBackbone", TinyBackbone)
+    monkeypatch.setattr(
+        modeling_vla_adapter.torch,
+        "compile",
+        lambda *args, **kwargs: pytest.fail("VLA-Adapter must not compile"),
+    )
+    config = make_tiny_config()
+    config.compile_model = True
+    modeling_vla_adapter.VLAAdapterPolicy(config)
 
 
 def test_pro_bridge_uses_three_sources_and_backpropagates_gate() -> None:

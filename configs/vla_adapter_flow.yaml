@@ -1,7 +1,7 @@
 includes:
   - base.yaml
   - tasks/l_joint.yaml
-  - policies/vla_adapter.yaml
+  - policies/vla_adapter_a100.yaml
 
 policy:
   parameters:

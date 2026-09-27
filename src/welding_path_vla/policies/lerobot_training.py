@@ -5,7 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+import torch
+from accelerate import Accelerator
 
 from welding_path_vla.core.config import PolicyConfig, TrainingConfig
 from welding_path_vla.policies.action_processors import (
@@ -29,6 +32,17 @@ from welding_path_vla.policies.process import (
     synchronized_lerobot_config_validation,
 )
 from welding_path_vla.policies.spec import LeRobotPolicySpec
+
+
+class FiniteGradientAccelerator(Accelerator):
+    """梯度非有限时在优化器更新前停止，避免污染可恢复的权重。"""
+
+    def clip_grad_norm_(self, parameters: Any, max_norm: float, norm_type: int = 2) -> Any:
+        """裁剪梯度，并在 NaN/Inf 出现时拒绝本次参数更新。"""
+        norm = super().clip_grad_norm_(parameters, max_norm, norm_type)
+        if norm is None or not torch.isfinite(norm):
+            raise FloatingPointError(f"non-finite gradient norm ({norm}); optimizer step skipped")
+        return norm
 
 
 def require_grounding_checkpoint(source: str) -> None:
@@ -164,7 +178,7 @@ def resumed_train_config(
     if config.policy.use_peft and not config.policy.pretrained_path:
         policy_class = spec.policy_class()
         if callable(getattr(policy_class, "make_peft_base", None)):
-            ensure_peft_base_reference(checkpoint.model, config.policy.prismatic_repo_id)
+            ensure_peft_base_reference(checkpoint.model, cast(Any, config.policy).prismatic_repo_id)
     config.resume = True
     config.checkpoint_path = checkpoint.root
     config.policy.pretrained_path = checkpoint.model
@@ -301,12 +315,12 @@ def train(policy: PolicyConfig, training: TrainingConfig, spec: LeRobotPolicySpe
     config = make_train_config(policy, training, spec)
     accelerator = None
     if spec.explicit_mixed_precision:
-        from accelerate import Accelerator, DataLoaderConfiguration
+        from accelerate import DataLoaderConfiguration
         from accelerate.utils import DistributedDataParallelKwargs
 
         enabled = policy.parameters.get("use_amp", True)
         precision = policy.parameters.get("dtype", training.amp_dtype) if enabled else "float32"
-        accelerator = Accelerator(
+        accelerator = FiniteGradientAccelerator(
             step_scheduler_with_optimizer=False,
             mixed_precision={"bfloat16": "bf16", "float16": "fp16"}.get(precision, "no"),
             dataloader_config=DataLoaderConfiguration(

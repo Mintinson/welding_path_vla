@@ -51,6 +51,7 @@ class VLAAdapterConfig(PreTrainedConfig):
     train_language_last_n_layers: int = 0
     frozen_vision_dtype: str = "float32"
     gradient_checkpointing_qwen: bool = False
+    # 仅为读取旧 checkpoint 保留；VLA-Adapter 不再执行 torch.compile。
     compile_model: bool = False
     compile_mode: str = "reduce-overhead"
     use_amp: bool = True

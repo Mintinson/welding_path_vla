@@ -27,8 +27,6 @@ policy:
     num_bridge_layers: 24
     bridge_num_heads: 8
     num_steps: 10            # 只影响 Flow 推理
-    compile_model: false     # 可选 torch.compile 加速训练前向
-    compile_mode: reduce-overhead
 ```
 
 `configs/vla_adapter.yaml` 是默认 L1 入口，`configs/vla_adapter_flow.yaml` 提供 Flow 示例，
@@ -36,9 +34,8 @@ policy:
 初始化，不导入面向 LIBERO/CALVIN 的 7D 动作头；当前焊接数据的 13D state 和 9D action
 由 LeRobot feature schema 自动确定。
 
-`compile_model` 默认关闭以保持启动和 checkpoint 行为简单；设为 `true` 时会编译训练前向，
-Flow 头还会编译 Euler 采样函数。首次调用有编译开销，建议先短跑比较稳定后的 `updt_s`，
-并留意显存峰值；L1 训练不执行 Flow 采样。
+VLA-Adapter 策略本身不调用 `torch.compile`。旧 checkpoint 中的 `compile_model` 和
+`compile_mode` 字段仅用于兼容配置加载，不再触发策略内部编译。
 
 训练默认冻结视觉编码器和 Qwen 基座原权重，对 Qwen 和视觉编码器的线性层应用 rank-64
 LoRA；ActionQuery、状态投影、完整 Bridge、动作头和 Prismatic projector 作为 checkpoint

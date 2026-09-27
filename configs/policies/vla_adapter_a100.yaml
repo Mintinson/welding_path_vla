@@ -14,4 +14,4 @@ training:
   num_workers: 8
   eval_steps: 10000
   save_freq: 20000
-  resume: true
+  resume: false

@@ -29,8 +29,6 @@ policy:
     train_language_last_n_layers: 0
     frozen_vision_dtype: float32
     gradient_checkpointing_qwen: false
-    compile_model: false
-    compile_mode: reduce-overhead
     num_steps: 10
     use_amp: true
     scheduler_warmup_steps: 18000

@@ -372,14 +372,6 @@ class VLAAdapterPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
         self.model = VLAAdapterModel(config)
-        if config.compile_model:
-            torch.set_float32_matmul_precision("high")
-            self.forward = torch.compile(self.forward, mode=config.compile_mode)
-            if config.action_head == "flow_matching":
-                self.model.sample_flow = torch.compile(
-                    self.model.sample_flow,
-                    mode=config.compile_mode,
-                )
         self.reset()
 
     @classmethod
