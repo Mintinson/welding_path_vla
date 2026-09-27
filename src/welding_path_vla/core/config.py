@@ -174,7 +174,7 @@ class TaskConfig:
         retreat_distance_m: 焊缝终点外的退出距离。
         staging_clearance_m: 空中转移点高于焊缝的最小距离。
         tcp_clearance_m: TCP 相对理论焊缝中心的安全净空。
-        weld_success_distance_m: TCP 将附近焊缝标记为已焊白色的距离阈值。
+        weld_success_distance_m: 可视焊缝标白的任务距离阈值；实际口径不小于 coverage 容差。
         seam_length_m: 直线焊缝长度。
         curve_kind: 平板曲线类型，取 ``sine`` 或 ``cosine``。
         curve_amplitude_m: 曲线横向振幅，单位为米。

@@ -951,6 +951,40 @@ def test_weld_visuals_turn_white_near_tcp_and_reset_to_black() -> None:
         simulation.close()
 
 
+def test_weld_visuals_use_true_seam_coverage_instead_of_render_offset() -> None:
+    """覆盖容差内的 TCP 应标白真实焊缝，不受显示线法向偏移影响。"""
+    config = AppConfig.load("configs/default.yaml")
+    simulation = WeldingEnv(config, camera_observations=False, ignore_done=True)
+    try:
+        seam = simulation.active_seam()
+        offset_m = 0.8 * config.evaluation.coverage_tolerance_m
+        for progress in np.linspace(0, 1, 201):
+            frame = seam.sample(float(progress))
+            simulation.update_weld_visuals(frame.position + offset_m * frame.normal)
+
+        colors = simulation.mj_model.geom_rgba[simulation.weld_visual_geom_ids]
+        np.testing.assert_allclose(
+            colors,
+            np.tile(SEAM_WELDED_RGBA, (len(colors), 1)),
+        )
+
+        simulation.reset_weld_visuals()
+        far_offset_m = 1.2 * max(
+            config.task.weld_success_distance_m,
+            config.evaluation.coverage_tolerance_m,
+        )
+        for progress in np.linspace(0, 1, 201):
+            frame = seam.sample(float(progress))
+            simulation.update_weld_visuals(frame.position + far_offset_m * frame.normal)
+        colors = simulation.mj_model.geom_rgba[simulation.weld_visual_geom_ids]
+        np.testing.assert_allclose(
+            colors,
+            np.tile(SEAM_PENDING_RGBA, (len(colors), 1)),
+        )
+    finally:
+        simulation.close()
+
+
 def test_trihedral_horizontal_expert_execution_passes_quality_gate() -> None:
     """水平转角的实际控制轨迹应通过数据采集使用的质量门槛。"""
     base = AppConfig.load("configs/trihedral_horizontal.yaml")

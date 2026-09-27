@@ -99,6 +99,8 @@ class WorkpieceObject(MujocoObject):
         self.config = config
         self._name = "workpiece"
         self.weld_visual_names: list[str] = []
+        # 与 weld_visual_names 严格对齐，记录每段在有向焊缝上的起止进度。
+        self.weld_visual_progress_ranges: list[tuple[float, float]] = []
         ET.SubElement(
             self.asset,
             "texture",
@@ -330,10 +332,14 @@ class WorkpieceObject(MujocoObject):
                     progress = progress_start + index / count * (progress_end - progress_start)
                     frame = seam.sample(progress)
                     points.append(frame.position - task.tcp_clearance_m * frame.normal)
-                for start, end in pairwise(points):
+                step = (progress_end - progress_start) / count
+                for index, (start, end) in enumerate(pairwise(points)):
                     name = f"{SEAM_VISUAL_PREFIX}{task.seam_id}_{visual_index:03d}"
                     append_seam_visual(body, name, start, end)
                     self.weld_visual_names.append(name)
+                    self.weld_visual_progress_ranges.append(
+                        (progress_start + index * step, progress_start + (index + 1) * step)
+                    )
                     visual_index += 1
 
     def append_seam_sites(self, body: ET.Element) -> None:
