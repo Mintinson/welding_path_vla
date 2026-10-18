@@ -53,6 +53,12 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             resampler.requires_grad_(True)
             self.geometry_grounding_heads.requires_grad_(True)
 
+    def scale_context_embedding(self, embedding: Tensor) -> Tensor:
+        """按配置取消语义图像和文本的额外缩放，不改变原始 DINO 几何特征。"""
+        if not self.config.scale_context_embeddings:
+            return embedding
+        return super().scale_context_embedding(embedding)
+
     def embed_context_image(self, image: Tensor) -> tuple[Tensor, Tensor | None]:
         """启用几何支路时同时取得压缩前 DINOv2 patch。"""
         if not self.config.use_geometry_branch:

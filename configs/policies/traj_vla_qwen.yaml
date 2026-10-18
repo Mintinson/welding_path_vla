@@ -21,6 +21,8 @@ policy:
     load_prismatic_weights: true
     # MiniVLA finetune checkpoint 不保存冻结的 DINOv2/SigLIP，需加载 TIMM 权重。
     load_base_weights: true
+    # 保留现有输入缩放；独立 unscaled 实验配置关闭此项。
+    scale_context_embeddings: true
     num_vlm_layers: 16
     num_expert_layers: 16
     expert_width_multiplier: 0.75

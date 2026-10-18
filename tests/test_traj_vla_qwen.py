@@ -26,6 +26,7 @@ from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
     geometry_grounding_losses,
 )
 from welding_path_vla.policies.traj_vla_qwen.modeling_traj_vla_qwen import (
+    QwenTrajectoryFlowModel,
     TrajVLAQwenPolicy,
 )
 from welding_path_vla.policies.traj_vla_qwen.motion_latent import (
@@ -49,6 +50,7 @@ from welding_path_vla.policies.traj_vla_qwen.qwen_with_expert import (
     make_expert_decoder,
 )
 from welding_path_vla.policies.trajectory_vla.flow_matching import (
+    TrajectoryFlowModel,
     make_attention_masks,
 )
 
@@ -115,6 +117,126 @@ def make_geometry_context(batch_size: int = 1) -> DenseGeometryContext:
         patch_mask=torch.tensor([[True, True]] * batch_size)[:, :, None].expand(-1, -1, 4).clone(),
         language_mask=torch.tensor([[True, True, False]] * batch_size),
         state_mask=torch.tensor([[False, False, True]] * batch_size),
+    )
+
+
+def test_context_scaling_config_and_profile(tmp_path: Path) -> None:
+    """缩放开关随 checkpoint 恢复；缺少字段时保留旧行为，短实验保留原 LR 周期。"""
+    TrajVLAQwenConfig(scale_context_embeddings=False).save_pretrained(tmp_path)
+    assert not PreTrainedConfig.from_pretrained(tmp_path).scale_context_embeddings
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text())
+    saved.pop("scale_context_embeddings")
+    path.write_text(json.dumps(saved))
+    assert PreTrainedConfig.from_pretrained(tmp_path).scale_context_embeddings
+
+    profile = AppConfig.load("configs/traj_vla_qwen_unscaled_a100.yaml")
+    parameters = profile.policy.parameters
+    assert not parameters["scale_context_embeddings"]
+    assert parameters["geometry_num_queries"] == 16
+    assert not parameters["use_dense_geometry_attention"]
+    assert not parameters["use_geometry_grounding"]
+    assert not parameters["use_motion_latent"]
+    assert parameters["scheduler_warmup_steps"] == 4000
+    assert parameters["scheduler_decay_steps"] == 200000
+    assert profile.policy.checkpoint is None
+    assert profile.training.image_aug
+    assert profile.training.steps == 40000
+    assert profile.training.save_freq == 20000
+    assert profile.training.include_tasks == ["curve_plate"]
+    assert profile.training.peft is None
+    assert not profile.training.resume
+    assert profile.deployment.mode == "scene"
+    assert profile.deployment.action_steps == 8
+
+
+@pytest.mark.parametrize("geometry", [False, True])
+def test_context_scaling_changes_only_semantic_embeddings(monkeypatch, geometry: bool) -> None:
+    """真实 prefix 组装仅改变语义 token 及其梯度，状态、动作、几何和 mask 保持不变。"""
+    import math
+
+    from welding_path_vla.policies.traj_vla_qwen import modeling_traj_vla_qwen
+
+    class TinyBackbone(torch.nn.Module):
+        """以可训练查表替代大模型加载，保留语义与几何两种图像接口。"""
+
+        language_hidden_size = 8
+        expert_hidden_size = 8
+
+        def __init__(self, config) -> None:
+            super().__init__()
+            self.tokens = torch.nn.Embedding(8, self.language_hidden_size)
+
+        def embed_language_tokens(self, tokens):
+            """返回原始文本 embedding。"""
+            return self.tokens(tokens)
+
+        def embed_image(self, image):
+            """把输入当成 patch 索引，便于精确检查幅值和梯度。"""
+            return self.tokens(image)
+
+        def embed_image_with_geometry(self, image):
+            """几何 patch 不应跟随语义 token 一起缩放。"""
+            tokens = self.embed_image(image)
+            return tokens, tokens
+
+    monkeypatch.setattr(modeling_traj_vla_qwen, "PrismaticQwenWithExpert", TinyBackbone)
+    scaled = QwenTrajectoryFlowModel(
+        TrajVLAQwenConfig(
+            attention_mode="cross_attn",
+            use_geometry_branch=geometry,
+            prefix_length=10,
+        )
+    )
+    unscaled = deepcopy(scaled)
+    unscaled.config.scale_context_embeddings = False
+    # 开关没有新参数，两个方向都能严格加载同一份 state dict。
+    unscaled.load_state_dict(scaled.state_dict(), strict=True)
+    scaled.load_state_dict(unscaled.state_dict(), strict=True)
+    args = (
+        [torch.tensor([[0, 1]]), torch.tensor([[2, 3]])],
+        [torch.tensor([True]), torch.tensor([False])],
+        torch.tensor([[4, 5]]),
+        torch.tensor([[True, False]]),
+        torch.randn(1, 32),
+    )
+    original, changed = scaled.encode_context(*args), unscaled.encode_context(*args)
+    factor = math.sqrt(TinyBackbone.language_hidden_size)
+    torch.testing.assert_close(original.embeddings[:, :6], changed.embeddings[:, :6] * factor)
+    torch.testing.assert_close(
+        original.embeddings[:, 6:], changed.embeddings[:, 6:], rtol=0, atol=0
+    )
+    assert torch.equal(original.padding_mask, changed.padding_mask)
+    assert torch.equal(original.attention_ar, changed.attention_ar)
+    if geometry:
+        for name in ("patch_tokens", "patch_mask", "language_mask", "state_mask"):
+            assert torch.equal(
+                getattr(original.expert_context, name), getattr(changed.expert_context, name)
+            )
+    # 开关开启时必须逐位等于公共 Smol 路径；该路径不读取 Qwen 配置项。
+    monkeypatch.setattr(
+        unscaled,
+        "scale_context_embedding",
+        lambda value: TrajectoryFlowModel.scale_context_embedding(unscaled, value),
+    )
+    torch.testing.assert_close(
+        unscaled.encode_context(*args).embeddings, original.embeddings, rtol=0, atol=0
+    )
+    original.embeddings.sum().backward()
+    changed.embeddings.sum().backward()
+    torch.testing.assert_close(
+        scaled.vlm_with_expert.tokens.weight.grad,
+        unscaled.vlm_with_expert.tokens.weight.grad * factor,
+    )
+    torch.testing.assert_close(
+        scaled.state_proj.weight.grad, unscaled.state_proj.weight.grad, rtol=0, atol=0
+    )
+    action_args = (torch.randn(1, 2, 32), torch.tensor([0.5]))
+    torch.testing.assert_close(
+        scaled.encode_action_tokens(*action_args).embeddings,
+        unscaled.encode_action_tokens(*action_args).embeddings,
+        rtol=0,
+        atol=0,
     )
 
 
@@ -295,6 +417,7 @@ def test_qwen_config_and_policy_are_registered() -> None:
     assert not config.policy.parameters["gradient_checkpointing_expert"]
     assert config.policy.parameters["use_geometry_branch"] is True
     assert config.policy.parameters["geometry_num_queries"] == 16
+    assert config.policy.parameters["scale_context_embeddings"]
     assert config.policy.parameters["geometry_num_heads"] == 8
     assert not config.policy.parameters["use_dense_geometry_attention"]
     assert not config.policy.parameters["use_geometry_grounding"]

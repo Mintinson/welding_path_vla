@@ -363,6 +363,17 @@ class TrajectoryFlowModel(nn.Module):
         # [1, L, D] → [B, L, D]：同一 batch 的每张图使用相同的边界 token
         return embedding.unsqueeze(0).expand(batch_size, -1, -1)
 
+    def scale_context_embedding(self, embedding: Tensor) -> Tensor:
+        """按 SmolVLM 约定缩放语义图像与文本 embedding，允许主干变体覆盖。
+
+        Args:
+            embedding: 进入 VLM 的语义 token，最后一维为主干宽度。
+
+        Returns:
+            乘以宽度平方根的 token；不涉及状态或动作投影。
+        """
+        return embedding * math.sqrt(embedding.shape[-1])
+
     def embed_context_image(self, image: Tensor) -> tuple[Tensor, Any | None]:
         """编码一张上下文图像，并允许模型变体返回额外的稠密特征。
 
@@ -438,10 +449,10 @@ class TrajectoryFlowModel(nn.Module):
                 padding_masks.append(torch.ones_like(special[:, :, 0], dtype=torch.bool))
                 attention_blocks.extend([0] * special.shape[1])
 
-            # 视觉塔 + connector 输出 patch 级 token；开方缩放对齐语言 token 量纲
+            # 视觉塔 + connector 输出语义 token；缩放约定由主干变体决定。
             image_embedding, image_feature = self.embed_context_image(image)
             image_features.append(image_feature)
-            image_embedding = image_embedding * math.sqrt(image_embedding.shape[-1])
+            image_embedding = self.scale_context_embedding(image_embedding)
             # image_mask: [B] 该相机是否有效 → 沿 patch 维展开成 [B, num_patches]
             mask = image_mask[:, None].expand(image.shape[0], image_embedding.shape[1])
             embeddings.append(image_embedding)
@@ -455,10 +466,10 @@ class TrajectoryFlowModel(nn.Module):
                 padding_masks.append(torch.ones_like(special[:, :, 0], dtype=torch.bool))
                 attention_blocks.extend([0] * special.shape[1])
 
-        # 语言指令 token 化后的 embedding，同样开方缩放保持量纲一致
+        # 文本 embedding 与语义视觉 token 使用同一主干缩放约定。
         language_start = sum(embedding.shape[1] for embedding in embeddings)
         language_embedding = self.vlm_with_expert.embed_language_tokens(language_tokens)
-        language_embedding = language_embedding * math.sqrt(language_embedding.shape[-1])
+        language_embedding = self.scale_context_embedding(language_embedding)
         embeddings.append(language_embedding)
         padding_masks.append(language_mask)
         attention_blocks.extend([0] * language_embedding.shape[1])

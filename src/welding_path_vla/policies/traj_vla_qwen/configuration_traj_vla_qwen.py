@@ -6,7 +6,28 @@ from dataclasses import dataclass, field
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
 from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
+from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.utils.constants import OBS_IMAGES
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
+
+
+@LRSchedulerConfig.register_subclass("fixed_cosine_decay_with_warmup")
+@dataclass
+class FixedCosineDecayWithWarmupSchedulerConfig(CosineDecayWithWarmupSchedulerConfig):
+    """固定 warmup/decay 周期，使提前停止和恢复训练不重排学习率曲线。"""
+
+    def build(self, optimizer: Optimizer, num_training_steps: int) -> LambdaLR:
+        """复用 LeRobot 的余弦公式，仅阻止短实验自动压缩周期。
+
+        Args:
+            optimizer: 当前训练使用的优化器。
+            num_training_steps: 本次停止步数，不参与缩短配置中的调度周期。
+
+        Returns:
+            保留显式 warmup/decay 周期的调度器。
+        """
+        return super().build(optimizer, max(num_training_steps, self.num_decay_steps))
 
 
 @PreTrainedConfig.register_subclass("traj_vla_qwen")
@@ -53,6 +74,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     load_prismatic_weights: bool = True
     load_base_weights: bool = True
     num_extra_tokens: int = 256
+    # 默认保留已有 checkpoint 的 sqrt(hidden_size) 缩放；false 使用原始 Qwen 输入幅值。
+    scale_context_embeddings: bool = True
 
     dino_model_name: str = "vit_large_patch14_reg4_dinov2.lvd142m"
     siglip_model_name: str = "vit_so400m_patch14_siglip_224"
@@ -137,6 +160,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     scheduler_warmup_steps: int = 1_000
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
+    # 保留已有训练的自动压缩行为；false 使短实验沿原周期提前停止。
+    scheduler_auto_scale: bool = True
 
     compile_model: bool = False
     compile_mode: str = "max-autotune"
@@ -268,8 +293,13 @@ class TrajVLAQwenConfig(PreTrainedConfig):
         )
 
     def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
-        """返回 warmup 与余弦衰减调度器。"""
-        return CosineDecayWithWarmupSchedulerConfig(
+        """按配置选择自动压缩或固定周期的 warmup 与余弦调度器。"""
+        scheduler_class = (
+            CosineDecayWithWarmupSchedulerConfig
+            if self.scheduler_auto_scale
+            else FixedCosineDecayWithWarmupSchedulerConfig
+        )
+        return scheduler_class(
             peak_lr=self.optimizer_lr,
             decay_lr=self.scheduler_decay_lr,
             num_warmup_steps=self.scheduler_warmup_steps,

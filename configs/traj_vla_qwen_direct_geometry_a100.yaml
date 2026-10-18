@@ -17,6 +17,9 @@ policy:
     geometry_readout_from_latents: false
     use_motion_latent: false
     training_stage: standard
+    # 保持原基线的输入约定和学习率轨迹，只进行视觉架构升级。
+    scale_context_embeddings: true
+    scheduler_auto_scale: false
 
 training:
   output_dir: outputs/train_v2/traj_vla_qwen_direct_geometry_curve_plate

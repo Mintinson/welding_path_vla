@@ -1,0 +1,11 @@
+includes:
+  - traj_vla_qwen_unscaled_a100.yaml
+
+policy:
+  parameters:
+    # 与原 aug_curve_plate 的前 40k 学习率严格一致，不受训练停止步数影响。
+    scheduler_auto_scale: false
+
+training:
+  # 新实验从 Prismatic 初始化；不覆盖或续训已走完 40k 短周期的权重。
+  output_dir: outputs/train_v2/traj_vla_qwen_unscaled_fixedlr_curve_plate

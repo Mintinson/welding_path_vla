@@ -1,0 +1,33 @@
+includes:
+  - traj_vla_qwen_a100.yaml
+
+policy:
+  checkpoint: null
+  parameters:
+    # 对照 aug_curve_plate 的 16-query 基线，仅取消语义图像/文本的 sqrt(D) 缩放。
+    scale_context_embeddings: false
+    geometry_num_queries: 16
+    use_dense_geometry_attention: false
+    use_geometry_grounding: false
+    geometry_readout_from_latents: false
+    use_motion_latent: false
+    training_stage: standard
+    # 自动压缩后实际为 800 warmup / 40k decay；固定周期对照使用 fixedlr 配置。
+    scheduler_auto_scale: true
+    scheduler_warmup_steps: 4000
+    scheduler_decay_steps: 200000
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_unscaled_curve_plate
+  include_tasks: [curve_plate]
+  image_aug: true
+  steps: 40000
+  save_freq: 20000
+  resume: false
+  peft: null
+
+deployment:
+  mode: scene
+  include_tasks: [curve_plate]
+  # 与原 16-query 基线一致，每次执行 8 步，避免混入闭环频率差异。
+  action_steps: 8

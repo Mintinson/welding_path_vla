@@ -1,0 +1,15 @@
+includes:
+  - traj_vla_qwen_unscaled_a100.yaml
+
+policy:
+  parameters:
+    # 补齐缩放×调度的对照：保留 sqrt(D) 缩放，匹配 unscaled 短周期的实际 LR。
+    scale_context_embeddings: true
+    # 显式声明实际周期，不再依赖 LeRobot 根据 training.steps 自动压缩。
+    scheduler_auto_scale: false
+    scheduler_warmup_steps: 800
+    scheduler_decay_steps: 40000
+
+training:
+  # 从 Prismatic 初始化，不加载任何已经训练过的动作 checkpoint。
+  output_dir: outputs/train_v2/traj_vla_qwen_scaled_shortlr_curve_plate
