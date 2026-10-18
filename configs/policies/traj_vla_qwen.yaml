@@ -28,12 +28,17 @@ policy:
     # 改为 self_attn 可恢复第一版每层联合注意力结构。
     attention_mode: cross_attn
     self_attn_every_n_layers: 2
-    # 从现有冻结 DINOv2-L 分叉 256 patch，并重采样为 16 个动作几何 token。
+    # 从现有冻结 DINOv2-L 分叉 256 patch，再按 geometry_num_queries 重采样。
     use_geometry_branch: true
     geometry_num_queries: 16
     geometry_num_heads: 8
+    # 可选的局部视觉捷径；层编号从 0 开始，仅允许 CA 层。
+    use_dense_geometry_attention: false
+    dense_geometry_attention_layers: [7, 15]
     # XS-VLA 启发的三项增强默认关闭；使用独立 Stage 1/2 YAML 显式启用。
     use_geometry_grounding: false
+    # 关闭时保留现有 readout→patch 结构；两阶段 grounding 配置显式开启。
+    geometry_readout_from_latents: false
     use_motion_latent: false
     training_stage: standard
     token_merge_factor: 2

@@ -4,6 +4,7 @@ includes:
 policy:
   parameters:
     use_geometry_grounding: true
+    geometry_readout_from_latents: true
     use_motion_latent: false
     training_stage: grounding_warmup
     geometry_aux_loss_weights: [1.0, 0.5, 0.5]

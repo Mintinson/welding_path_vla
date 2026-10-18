@@ -42,6 +42,7 @@ class SeamQueryOutput:
         latent_tokens: ``[B,K,D_expert]``，供 Action Expert 使用的几何 token。
         readout_tokens: ``[B,3,D_expert]``，依次对应焊缝、切向和姿态。
         attention_weights: ``[B,K+3,C,P]``，query 对稠密 patch 的注意力。
+            readout 经 latent 读取时，后三项为两级注意力的乘积，仅用于可视化。
     """
 
     patch_tokens: Tensor
@@ -61,6 +62,61 @@ class SeamQueryOutput:
         }
 
 
+@dataclass(slots=True)
+class DirectGeometryMemory:
+    """不经 query 重采样的几何 memory。
+
+    Attributes:
+        tokens: ``[B,C*P,D_expert]``，按相机与行列顺序展平的完整 patch。
+        mask: ``[B,C*P]``，真实相机的有效 patch 标记。
+    """
+
+    tokens: Tensor
+    mask: Tensor
+
+    def auxiliary_outputs(self) -> dict[str, Tensor]:
+        """暴露实际被动作读取的 memory，不伪造 latent/readout 输出。"""
+        return {"geometry.patch_tokens": self.tokens, "geometry.patch_mask": self.mask}
+
+
+class DirectGeometryEncoder(nn.Module):
+    """保留全部 DINO patch，加入显式二维位置和相机编码后供动作直接读取。"""
+
+    def __init__(self, patch_size: int, output_size: int, num_cameras: int, grid_size: int) -> None:
+        """构造不改变 patch 数量的投影器。
+
+        Args:
+            patch_size: DINO patch 的输入宽度。
+            output_size: Action Expert 的隐藏宽度。
+            num_cameras: 输入相机数量。
+            grid_size: 单路相机 patch 网格的边长。
+        """
+        super().__init__()
+        self.patch_projection = nn.Linear(patch_size, output_size)
+        self.camera_embedding = nn.Embedding(num_cameras, output_size)
+        self.position_projection = nn.Linear(2, output_size, bias=False)
+        self.output_norm = nn.LayerNorm(output_size)
+        # 归一化 patch 中心坐标，展平顺序与 ViT 的行优先 token 顺序相同。
+        centers = (torch.arange(grid_size, dtype=torch.float32) + 0.5) * (2 / grid_size) - 1
+        y, x = torch.meshgrid(centers, centers, indexing="ij")
+        self.register_buffer("patch_coordinates", torch.stack((x, y), dim=-1).flatten(0, 1))
+
+    def forward(self, geometry: DenseGeometryContext) -> DirectGeometryMemory:
+        """编码每次观测的完整几何 memory；后续去噪复用逐层 K/V 缓存。"""
+        patches = geometry.patch_tokens
+        if patches.shape[2] != self.patch_coordinates.shape[0]:
+            raise ValueError("direct geometry patch count must match vision_patch_grid squared")
+        dense = self.patch_projection(patches.to(self.patch_projection.weight.dtype))
+        cameras = torch.arange(patches.shape[1], device=patches.device)
+        position = self.position_projection(
+            self.patch_coordinates.to(self.position_projection.weight.dtype)
+        )
+        dense = dense + position[None, None] + self.camera_embedding(cameras)[None, :, None]
+        return DirectGeometryMemory(
+            self.output_norm(dense).flatten(1, 2), geometry.patch_mask.flatten(1, 2)
+        )
+
+
 class SeamQueryResampler(nn.Module):
     """用任务与状态条件 query 从稠密 DINO patch 中提取焊缝几何。"""
 
@@ -72,6 +128,7 @@ class SeamQueryResampler(nn.Module):
         num_cameras: int,
         num_queries: int = 16,
         num_heads: int = 8,
+        readout_from_latents: bool = False,
     ) -> None:
         """构造单层 task-conditioned cross-attention resampler。
 
@@ -82,6 +139,7 @@ class SeamQueryResampler(nn.Module):
             num_cameras: 模型配置中的相机数量。
             num_queries: 供动作专家使用的 latent query 数量。
             num_heads: Resampler Cross-Attention 头数。
+            readout_from_latents: 是否让辅助 readout 读取动作 latent，而非直接读取 patch。
         """
         super().__init__()
         if min(num_cameras, num_queries, num_heads) < 1:
@@ -89,6 +147,7 @@ class SeamQueryResampler(nn.Module):
         if output_size % num_heads:
             raise ValueError("geometry output size must be divisible by num_heads")
         self.num_queries = num_queries
+        self.readout_from_latents = readout_from_latents
         self.patch_projection = nn.Linear(patch_size, output_size)
         self.task_projection = nn.Linear(context_size, output_size)
         self.state_projection = nn.Linear(context_size, output_size)
@@ -116,6 +175,30 @@ class SeamQueryResampler(nn.Module):
         """按 Context mask 对语言 token 或者状态 token 分别做均值池化，得到两个总结向量。"""
         weights = mask.to(hidden.dtype).unsqueeze(-1)
         return (hidden * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1)
+
+    def attend(
+        self, queries: Tensor, memory: Tensor, padding_mask: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        """复用同一注意力和前馈层读取 patch 或动作 latent，不增加 checkpoint 参数。
+
+        Args:
+            queries: 带任务与状态条件的查询，形状为 ``[B,Q,D]``。
+            memory: 待读取的 patch 或 latent，形状为 ``[B,N,D]``。
+            padding_mask: 可选的无效 memory 掩码，``True`` 表示忽略。
+
+        Returns:
+            更新后的 query 与按注意力头平均的权重。
+        """
+        memory = self.patch_norm(memory)
+        attended, attention = self.cross_attention(
+            self.query_norm(queries),
+            memory,
+            memory,
+            key_padding_mask=padding_mask,
+            need_weights=True,
+        )
+        output = queries + attended
+        return self.output_norm(output + self.mlp(self.mlp_norm(output))), attention
 
     def forward(self, context_hidden: Tensor, geometry: DenseGeometryContext) -> SeamQueryOutput:
         """把多相机稠密 patch 重采样成固定数量的几何 query。
@@ -147,26 +230,30 @@ class SeamQueryResampler(nn.Module):
         condition = condition + self.state_projection(state.to(self.state_projection.weight.dtype))
 
         # 生成 queries
-        learned = torch.cat([self.latent_queries, self.readout_queries], dim=0)
+        learned = (
+            self.latent_queries
+            if self.readout_from_latents
+            else torch.cat([self.latent_queries, self.readout_queries], dim=0)
+        )
         queries = learned[None].expand(batch, -1, -1) + condition[:, None]
 
-        # attention
-        normalized_patches = self.patch_norm(dense_flat)
-        attended, attention = self.cross_attention(
-            self.query_norm(queries),
-            normalized_patches,
-            normalized_patches,
-            key_padding_mask=~patch_mask,
-            need_weights=True,
+        output, attention = self.attend(queries, dense_flat, ~patch_mask)
+        latent = output[:, : self.num_queries]
+        readout = output[:, self.num_queries :]
+        if self.readout_from_latents:
+            # 与 Action Expert 使用同一 latent 张量，不 detach，保证辅助损失直接回传。
+            readout_queries = self.readout_queries[None].expand(batch, -1, -1) + condition[:, None]
+            readout, readout_attention = self.attend(readout_queries, latent)
+            # 保留诊断张量形状；两级权重乘积不是端到端归因或直接 patch 注意力。
+            attention = torch.cat((attention, readout_attention @ attention), dim=1)
+        attention = attention.view(
+            batch, self.num_queries + len(GEOMETRY_READOUT_NAMES), cameras, patches
         )
-        output = queries + attended
-        output = self.output_norm(output + self.mlp(self.mlp_norm(output)))
-        attention = attention.view(batch, output.shape[1], cameras, patches)
         return SeamQueryOutput(
             patch_tokens=dense,
             patch_mask=geometry.patch_mask,
-            latent_tokens=output[:, : self.num_queries],
-            readout_tokens=output[:, self.num_queries :],
+            latent_tokens=latent,
+            readout_tokens=readout,
             attention_weights=attention,
         )
 
@@ -308,6 +395,8 @@ class PrismaticProjector(nn.Module):
 __all__ = [
     "GEOMETRY_READOUT_NAMES",
     "DenseGeometryContext",
+    "DirectGeometryEncoder",
+    "DirectGeometryMemory",
     "PrismaticProjector",
     "PrismaticVisionEncoder",
     "SeamQueryOutput",

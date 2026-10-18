@@ -1,3 +1,5 @@
+import json
+import re
 from copy import deepcopy
 from pathlib import Path
 
@@ -40,11 +42,15 @@ from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
     QwenPromptProcessorStep,
 )
 from welding_path_vla.policies.traj_vla_qwen.qwen_with_expert import (
+    GatedDenseGeometryAttention,
     InterleavedSACADecoder,
     PairedLayerDecoder,
     Qwen25DecoderAdapter,
+    make_expert_decoder,
 )
-from welding_path_vla.policies.trajectory_vla.flow_matching import make_attention_masks
+from welding_path_vla.policies.trajectory_vla.flow_matching import (
+    make_attention_masks,
+)
 
 
 def make_tiny_paired_decoder(
@@ -54,6 +60,9 @@ def make_tiny_paired_decoder(
     use_geometry_branch: bool = False,
     use_motion_latent: bool = False,
     num_layers: int = 2,
+    geometry_readout_from_latents: bool = False,
+    dense_geometry_attention_layers: tuple[int, ...] = (),
+    geometry_attention_mode: str = "latent",
 ) -> PairedLayerDecoder:
     """构造无需下载权重的两层 Qwen2.5 双流网络。"""
     transformers = pytest.importorskip("transformers")
@@ -89,6 +98,10 @@ def make_tiny_paired_decoder(
             geometry_num_cameras=2,
             geometry_num_queries=4,
             geometry_num_heads=4,
+            geometry_readout_from_latents=geometry_readout_from_latents,
+            dense_geometry_attention_layers=dense_geometry_attention_layers,
+            geometry_attention_mode=geometry_attention_mode,
+            geometry_patch_grid=2,
             motion_action_size=32 if use_motion_latent else None,
             motion_latent_size=8,
         )
@@ -105,6 +118,170 @@ def make_geometry_context(batch_size: int = 1) -> DenseGeometryContext:
     )
 
 
+def test_dense_geometry_config_and_profile(tmp_path: Path) -> None:
+    """稠密连接开关应保存恢复，拒绝无效层，且缺省不影响已有配置。"""
+    config = TrajVLAQwenConfig(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        use_dense_geometry_attention=True,
+        dense_geometry_attention_layers=(7, 15),
+    )
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.use_dense_geometry_attention
+    assert tuple(restored.dense_geometry_attention_layers) == (7, 15)
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text())
+    for key in ("use_dense_geometry_attention", "dense_geometry_attention_layers"):
+        saved.pop(key)
+    path.write_text(json.dumps(saved))
+    assert not PreTrainedConfig.from_pretrained(tmp_path).use_dense_geometry_attention
+    for layers in ((), (0,), (16,), (-1,), (1, 1)):
+        with pytest.raises(ValueError, match="dense geometry"):
+            TrajVLAQwenConfig(
+                attention_mode="cross_attn",
+                use_geometry_branch=True,
+                use_dense_geometry_attention=True,
+                dense_geometry_attention_layers=layers,
+            )
+    with pytest.raises(ValueError, match="dense geometry"):
+        TrajVLAQwenConfig(use_dense_geometry_attention=True)
+    profile = AppConfig.load("configs/traj_vla_qwen_dense_a100.yaml")
+    assert profile.policy.parameters["use_dense_geometry_attention"]
+    assert profile.policy.parameters["geometry_num_queries"] == 16
+    assert not profile.policy.parameters["use_geometry_grounding"]
+    assert not profile.policy.parameters["use_motion_latent"]
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_dense_geometry_is_gated_and_bypasses_latents(checkpointed: bool) -> None:
+    """零门控保留原结果；打开门控后，动作梯度可绕过 latent 直接抵达 patch。"""
+    from dataclasses import replace
+
+    torch.manual_seed(71)
+    legacy = make_tiny_paired_decoder(attention_mode="cross_attn", use_geometry_branch=True)
+    dense = make_tiny_paired_decoder(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        dense_geometry_attention_layers=(1,),
+        checkpoint_qwen=checkpointed,
+        checkpoint_expert=checkpointed,
+    )
+    missing, unexpected = dense.load_state_dict(legacy.state_dict(), strict=False)
+    assert missing == ["dense_geometry_attention.1.gate"]
+    assert unexpected == []
+    off = make_tiny_paired_decoder(attention_mode="cross_attn", use_geometry_branch=True)
+    off.load_state_dict(legacy.state_dict(), strict=True)
+    context, action = torch.randn(1, 3, 32), torch.randn(1, 2, 24)
+    geometry = make_geometry_context()
+    mask = make_attention_masks(
+        torch.ones(1, 5, dtype=torch.bool), torch.tensor([[False, False, False, True, True]])
+    )
+    args = (mask, torch.arange(5)[None], None, [context, action], False, False)
+    expected = legacy(*args, expert_context=geometry)[0][1]
+    actual = dense(*args, expert_context=geometry)[0][1]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    target = torch.randn_like(actual)
+    (actual * target).sum().backward()
+    gate = dense.dense_geometry_attention["1"].gate
+    assert gate.grad.abs() > 0
+    dense.zero_grad()
+    with torch.no_grad():
+        gate.fill_(0.5)
+    dense.geometry_resampler.register_forward_hook(
+        lambda module, inputs, output: replace(output, latent_tokens=output.latent_tokens.detach())
+    )
+    changed = dense(*args, expert_context=geometry)[0][1]
+    assert not torch.allclose(changed, expected)
+    (changed * target).sum().backward()
+    assert dense.geometry_resampler.patch_projection.weight.grad.abs().sum() > 0
+    assert dense.geometry_resampler.latent_queries.grad is None
+
+
+def test_dense_geometry_attention_masks_and_peft(tmp_path: Path) -> None:
+    """无效相机不得影响稠密读取，门控须在 PEFT 下可训练且能保存恢复。"""
+    from peft import LoraConfig, PeftModel, get_peft_model
+
+    gate = GatedDenseGeometryAttention()
+    with torch.no_grad():
+        gate.gate.fill_(0.5)
+    query, key, value = torch.randn(2, 4, 3, 8), torch.randn(2, 2, 8, 8), torch.randn(2, 2, 8, 8)
+    mask = torch.tensor([[True] * 4 + [False] * 4, [False] * 8])
+    expected = gate(query, key, value, mask)
+    key[:, :, 4:] += 100
+    value[:, :, 4:] += 100
+    torch.testing.assert_close(gate(query, key, value, mask), expected)
+    assert torch.count_nonzero(expected[1]) == 0
+
+    class TinyGateModel(torch.nn.Module):
+        """仅保留真实稠密模块和一个 LoRA 投影的 PEFT 测试边界。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.dense = GatedDenseGeometryAttention()
+
+        def forward(self, query: torch.Tensor) -> torch.Tensor:
+            """以相同 patch 构造键值，使门控参与动作输出。"""
+            return self.dense(self.proj(query), key, value, mask)
+
+    base = TinyGateModel()
+    original = deepcopy(base.state_dict())
+    wrapped = get_peft_model(
+        base, LoraConfig(r=2, target_modules=["proj"], modules_to_save=["dense"])
+    )
+    output = wrapped(query)
+    (output * torch.randn_like(output)).sum().backward()
+    trained_gate = wrapped.base_model.model.dense.modules_to_save.default.gate
+    assert trained_gate.requires_grad and trained_gate.grad.abs() > 0
+    with torch.no_grad():
+        trained_gate.fill_(0.3)
+    expected = wrapped(query)
+    wrapped.save_pretrained(tmp_path)
+    restored_base = TinyGateModel()
+    restored_base.load_state_dict(original)
+    restored = PeftModel.from_pretrained(restored_base, tmp_path)
+    torch.testing.assert_close(restored(query), expected)
+
+
+def test_dense_geometry_compilation_matches_eager() -> None:
+    """实际双流 decoder 的新路径应支持整图编译，且输出与梯度保持一致。"""
+    torch.manual_seed(83)
+    eager = make_tiny_paired_decoder(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        dense_geometry_attention_layers=(1,),
+    )
+    with torch.no_grad():
+        eager.dense_geometry_attention["1"].gate.fill_(0.3)
+    compiled_base = deepcopy(eager)
+    compiled = torch.compile(compiled_base, backend="aot_eager", fullgraph=True)
+    mask = make_attention_masks(
+        torch.ones(1, 5, dtype=torch.bool),
+        torch.tensor([[False, False, False, True, True]]),
+    )
+    args = (
+        mask,
+        torch.arange(5)[None],
+        None,
+        [torch.randn(1, 3, 32), torch.randn(1, 2, 24)],
+        False,
+        False,
+    )
+    geometry = make_geometry_context()
+    expected = eager(*args, expert_context=geometry)[0][1]
+    actual = compiled(*args, expert_context=geometry)[0][1]
+    torch.testing.assert_close(actual, expected)
+    target = torch.randn_like(expected)
+    (expected * target).sum().backward()
+    (actual * target).sum().backward()
+    for name, parameter in eager.named_parameters():
+        if parameter.grad is not None:
+            torch.testing.assert_close(
+                parameter.grad, dict(compiled_base.named_parameters())[name].grad
+            )
+
+
 def test_qwen_config_and_policy_are_registered() -> None:
     """模块化 YAML 应能选择本地 Qwen Policy。"""
     config = AppConfig.load("configs/traj_vla_qwen.yaml")
@@ -119,10 +296,12 @@ def test_qwen_config_and_policy_are_registered() -> None:
     assert config.policy.parameters["use_geometry_branch"] is True
     assert config.policy.parameters["geometry_num_queries"] == 16
     assert config.policy.parameters["geometry_num_heads"] == 8
+    assert not config.policy.parameters["use_dense_geometry_attention"]
     assert not config.policy.parameters["use_geometry_grounding"]
+    assert not config.policy.parameters["geometry_readout_from_latents"]
     assert not config.policy.parameters["use_motion_latent"]
     assert config.policy.parameters["training_stage"] == "standard"
-    assert config.training.video_backend == "pyav"
+    assert config.training.video_backend == "torchcodec"
     assert get_policy_pipeline("traj_vla_qwen").spec is TRAJ_VLA_QWEN
 
 
@@ -212,7 +391,8 @@ def test_qwen_attention_config_preserves_old_checkpoint_default() -> None:
         )
 
 
-def test_geometry_config_round_trip(tmp_path: Path) -> None:
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+def test_geometry_config_round_trip(tmp_path: Path, readout_from_latents: bool) -> None:
     """几何结构字段应随 LeRobot checkpoint 配置稳定保存和恢复。"""
     config = TrajVLAQwenConfig(
         attention_mode="cross_attn",
@@ -220,6 +400,7 @@ def test_geometry_config_round_trip(tmp_path: Path) -> None:
         geometry_num_queries=12,
         geometry_num_heads=4,
         train_geometry_resampler=False,
+        geometry_readout_from_latents=readout_from_latents,
         device="cpu",
     )
     config.save_pretrained(tmp_path)
@@ -229,6 +410,56 @@ def test_geometry_config_round_trip(tmp_path: Path) -> None:
     assert restored.geometry_num_queries == 12
     assert restored.geometry_num_heads == 4
     assert not restored.train_geometry_resampler
+    assert restored.geometry_readout_from_latents is readout_from_latents
+
+
+def test_geometry_readout_config_defaults_to_legacy_checkpoint(tmp_path: Path) -> None:
+    """缺少新字段的 checkpoint 应保持关闭，不改变既有动作几何结构。"""
+    config = TrajVLAQwenConfig(attention_mode="cross_attn", use_geometry_branch=True)
+    config.save_pretrained(tmp_path)
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text())
+    saved.pop("geometry_readout_from_latents")
+    path.write_text(json.dumps(saved))
+    assert not PreTrainedConfig.from_pretrained(tmp_path).geometry_readout_from_latents
+    with pytest.raises(ValueError, match="geometry_readout_from_latents"):
+        TrajVLAQwenConfig(geometry_readout_from_latents=True)
+
+
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+@pytest.mark.parametrize("dense_enabled", [False, True])
+def test_geometry_readout_switch_reaches_decoder_factory(
+    readout_from_latents: bool,
+    dense_enabled: bool,
+) -> None:
+    """模型工厂必须把保存的开关传入 Resampler，而非只支持手动构造。"""
+    tiny = make_tiny_paired_decoder()
+    config = TrajVLAQwenConfig(
+        attention_mode="cross_attn",
+        use_geometry_branch=True,
+        geometry_readout_from_latents=readout_from_latents,
+        use_dense_geometry_attention=dense_enabled,
+        dense_geometry_attention_layers=(1,),
+    )
+    decoder = make_expert_decoder(
+        config,
+        tiny.language_model,
+        tiny.expert_model,
+        Qwen25DecoderAdapter(),
+        geometry_input_size=12,
+    )
+    assert decoder.geometry_resampler.readout_from_latents is readout_from_latents
+    assert list(decoder.dense_geometry_attention) == (["1"] if dense_enabled else [])
+
+
+def test_grounding_stage_configs_enable_latent_readout() -> None:
+    """两阶段配置显式开启新路径，普通 A100 配置保持关闭。"""
+    for stage in (1, 2):
+        config = AppConfig.load(f"configs/traj_vla_qwen_grounding_stage{stage}_a100.yaml")
+        assert config.policy.parameters["use_geometry_grounding"]
+        assert config.policy.parameters["geometry_readout_from_latents"]
+    config = AppConfig.load("configs/traj_vla_qwen_a100.yaml")
+    assert not config.policy.parameters["geometry_readout_from_latents"]
 
 
 def test_xsvla_features_default_off_and_validate_dependencies(tmp_path: Path) -> None:
@@ -297,10 +528,15 @@ def test_token_merger_starts_as_local_average() -> None:
     assert merger.projection.weight.requires_grad
 
 
-def test_seam_query_resampler_conditions_and_masks_dense_patches() -> None:
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+def test_seam_query_resampler_conditions_and_masks_dense_patches(
+    readout_from_latents: bool,
+) -> None:
     """Resampler 应输出固定 query，并完全屏蔽缺失相机。"""
     torch.manual_seed(3)
-    resampler = SeamQueryResampler(12, 32, 24, 2, num_heads=4)
+    resampler = SeamQueryResampler(
+        12, 32, 24, 2, num_heads=4, readout_from_latents=readout_from_latents
+    )
     context = torch.randn(2, 3, 32)
     geometry = make_geometry_context(batch_size=2)
     geometry.patch_mask[1, 1] = False
@@ -323,6 +559,63 @@ def test_seam_query_resampler_conditions_and_masks_dense_patches() -> None:
     changed.state_mask = torch.tensor([[False, True, False], [True, False, False]])
     state_conditioned = resampler(context, changed)
     assert not torch.allclose(conditioned.latent_tokens, state_conditioned.latent_tokens)
+
+
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+@pytest.mark.parametrize("loss_name", ["seam", "tangent", "orientation"])
+def test_grounding_loss_reaches_action_latents(loss_name: str, readout_from_latents: bool) -> None:
+    """每项真实辅助损失都应在开启后直接训练动作 latent，而非只更新共享参数。"""
+    torch.manual_seed(37)
+    resampler = SeamQueryResampler(
+        12,
+        32,
+        24,
+        2,
+        num_queries=4,
+        num_heads=4,
+        readout_from_latents=readout_from_latents,
+    )
+    output = resampler(torch.randn(2, 3, 32), make_geometry_context(batch_size=2))
+    output.latent_tokens.retain_grad()
+    auxiliary = output.auxiliary_outputs()
+    auxiliary.update(GeometryGroundingHeads(24)(auxiliary))
+    batch = {
+        SEAM_LABELS: torch.zeros(2, 2, 4),
+        SEAM_VALID: torch.ones(2, 2, dtype=torch.bool),
+        TANGENT_TARGET: torch.tensor([[1.0, 0, 0]]).expand(2, -1),
+        TANGENT_VALID: torch.ones(2, dtype=torch.bool),
+        ORIENTATION_TARGET: torch.tensor([[1.0, 0, 0, 0, 1, 0]]).expand(2, -1),
+        ORIENTATION_VALID: torch.ones(2, dtype=torch.bool),
+    }
+    geometry_grounding_losses(auxiliary, batch)[loss_name].mean().backward()
+    gradient = resampler.latent_queries.grad
+    assert gradient is not None and torch.isfinite(gradient).all()
+    if readout_from_latents:
+        assert (gradient.abs().sum(dim=-1) > 0).all()
+        assert output.latent_tokens.grad is not None
+        assert output.latent_tokens.grad.abs().sum() > 0
+    else:
+        assert torch.count_nonzero(gradient) == 0
+        assert output.latent_tokens.grad is None
+
+
+def test_geometry_readout_switch_preserves_weights_and_action_latents() -> None:
+    """切换 readout 路径不新增参数、不改变动作 latent，关闭后可严格恢复原权重。"""
+    torch.manual_seed(41)
+    legacy = SeamQueryResampler(12, 32, 24, 2, num_queries=4, num_heads=4).eval()
+    routed = SeamQueryResampler(
+        12, 32, 24, 2, num_queries=4, num_heads=4, readout_from_latents=True
+    ).eval()
+    routed.load_state_dict(legacy.state_dict(), strict=True)
+    context, geometry = torch.randn(2, 3, 32), make_geometry_context(batch_size=2)
+    expected, actual = legacy(context, geometry), routed(context, geometry)
+    torch.testing.assert_close(actual.latent_tokens, expected.latent_tokens)
+    assert not torch.allclose(actual.readout_tokens, expected.readout_tokens)
+    legacy.load_state_dict(routed.state_dict(), strict=True)
+    routed.readout_from_latents = False
+    restored = routed(context, geometry)
+    for name, value in expected.auxiliary_outputs().items():
+        torch.testing.assert_close(restored.auxiliary_outputs()[name], value, rtol=0, atol=0)
 
 
 def test_grounding_targets_align_two_cameras_and_ignore_padding() -> None:
@@ -563,15 +856,26 @@ def test_interleaved_decoder_alternates_sa_and_ca_projections() -> None:
     assert decoder.expert_model.layers[1].self_attn.k_proj.in_features == 16
 
 
-def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+@pytest.mark.parametrize("dense_layers", [(), (1, 3)])
+def test_geometry_decoder_is_asymmetric_and_cache_equivalent(
+    readout_from_latents: bool,
+    dense_layers: tuple[int, ...],
+) -> None:
     """几何 CA 只更新 Expert，且缓存前向应与完整前向等价。"""
     torch.manual_seed(17)
     decoder = make_tiny_paired_decoder(
         attention_mode="cross_attn",
         use_geometry_branch=True,
         num_layers=4,
+        geometry_readout_from_latents=readout_from_latents,
+        dense_geometry_attention_layers=dense_layers,
     ).eval()
+    for module in decoder.dense_geometry_attention.values():
+        with torch.no_grad():
+            module.gate.fill_(0.5)
     assert isinstance(decoder, InterleavedSACADecoder)
+    assert decoder.geometry_resampler.readout_from_latents is readout_from_latents
     assert decoder.expert_model.layers[1].self_attn.k_proj.in_features == 24
     context = torch.randn(1, 3, 32)
     action = torch.randn(1, 2, 24)
@@ -593,6 +897,12 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
     )
     assert geometry_only["geometry.readout_tokens"].shape == (1, 3, 24)
     assert expert_calls == []
+    if readout_from_latents:
+        # warm-up 不运行动作专家，但 readout 的监督仍应抵达专家使用的 latent query。
+        readout = geometry_only["geometry.readout_tokens"]
+        (readout * torch.randn_like(readout)).sum().backward()
+        assert decoder.geometry_resampler.latent_queries.grad.abs().sum() > 0
+        decoder.zero_grad()
 
     full, _, auxiliary = decoder(
         mask,
@@ -648,6 +958,9 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
         expert_context=geometry,
     )
     assert cache is not None
+    for index in dense_layers:
+        assert cache[index]["dense_key_states"].shape[2] == 8
+        assert cache[index]["dense_patch_mask"].shape == (1, 8)
     calls_after_cache = (len(resampler_calls), len(geometry_projection_calls))
     cached, _, cached_auxiliary = decoder(
         mask[:, 3:, :],
@@ -665,6 +978,7 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
         attention_mode="cross_attn",
         use_geometry_branch=True,
         num_layers=4,
+        dense_geometry_attention_layers=dense_layers,
     ).eval()
     restored.load_state_dict(decoder.state_dict())
     round_trip, _, _ = restored(
@@ -679,7 +993,8 @@ def test_geometry_decoder_is_asymmetric_and_cache_equivalent() -> None:
     assert torch.allclose(full[1], round_trip[1], atol=1e-5)
 
 
-def test_motion_decoder_is_asymmetric_and_cache_equivalent() -> None:
+@pytest.mark.parametrize("readout_from_latents", [False, True])
+def test_motion_decoder_is_asymmetric_and_cache_equivalent(readout_from_latents: bool) -> None:
     """Motion prior 只影响 Expert，并在 Context cache 后不重复计算。"""
     torch.manual_seed(19)
     decoder = make_tiny_paired_decoder(
@@ -687,6 +1002,7 @@ def test_motion_decoder_is_asymmetric_and_cache_equivalent() -> None:
         use_geometry_branch=True,
         use_motion_latent=True,
         num_layers=4,
+        geometry_readout_from_latents=readout_from_latents,
     ).eval()
     assert isinstance(decoder, InterleavedSACADecoder)
     context = torch.randn(1, 3, 32)
@@ -795,25 +1111,196 @@ def test_lora_targets_can_select_qwen_or_expert() -> None:
     """LoRA 目标范围应由策略配置选择，并保留新建动作头。"""
     policy = TrajVLAQwenPolicy.__new__(TrajVLAQwenPolicy)
     torch.nn.Module.__init__(policy)
+    policy.model = torch.nn.Module()
+    policy.model.vlm_with_expert = torch.nn.Module()
+    vision = torch.nn.Module()
+    vision.dino_layer = 22
+    vision.siglip_layer = 25
+    policy.model.vlm_with_expert.vision_encoder = vision
     policy.config = TrajVLAQwenConfig(lora_target="qwen")
     targets = policy._get_default_peft_targets()
     assert "qwen" in targets["target_modules"]
-    assert "expert" in targets["modules_to_save"][-1]
+    assert targets["modules_to_save"][-1] == "model.vlm_with_expert.decoder.expert_model"
     assert "model.action_out_proj" in targets["modules_to_save"]
+    assert "vision_encoder" not in targets["target_modules"]
 
     policy.config.lora_target = "all"
     targets = policy._get_default_peft_targets()
     assert "qwen" in targets["target_modules"]
-    assert "expert" in targets["target_modules"]
+    assert "expert\\.layers" not in targets["target_modules"]
+    assert "model.vlm_with_expert.decoder.expert_model" in targets["modules_to_save"]
     assert "model.vlm_with_expert.expert" not in targets["modules_to_save"]
+    assert re.fullmatch(
+        targets["target_modules"],
+        "model.vlm_with_expert.vision_encoder.dino_featurizer.blocks.22.attn.qkv",
+    )
+    assert re.fullmatch(
+        targets["target_modules"],
+        "model.vlm_with_expert.vision_encoder.siglip_featurizer.blocks.25.attn.proj",
+    )
+    assert not re.fullmatch(
+        targets["target_modules"],
+        "model.vlm_with_expert.vision_encoder.siglip_featurizer.blocks.26.attn.qkv",
+    )
+
+    policy.config.lora_target = "vision"
+    policy.config.vision_lora_last_n_blocks = 2
+    targets = policy._get_default_peft_targets()
+    assert "qwen" not in targets["target_modules"]
+    assert "model.vlm_with_expert.decoder.expert_model" in targets["modules_to_save"]
+    for encoder, last in (("dino", 22), ("siglip", 25)):
+        for index in range(last + 2):
+            name = (
+                f"model.vlm_with_expert.vision_encoder.{encoder}_featurizer.blocks.{index}.attn.qkv"
+            )
+            assert bool(re.fullmatch(targets["target_modules"], name)) == (
+                last - 1 <= index <= last
+            )
+
+    policy.config.train_expert = False
+    assert (
+        "model.vlm_with_expert.decoder.expert_model"
+        not in policy._get_default_peft_targets()["modules_to_save"]
+    )
+
+    policy.config.lora_target = "expert"
+    targets = policy._get_default_peft_targets()
+    assert "expert\\.layers" in targets["target_modules"]
+    assert "model.vlm_with_expert.decoder.expert_model" not in targets["modules_to_save"]
 
     policy.config = TrajVLAQwenConfig(
         attention_mode="cross_attn",
         use_geometry_branch=True,
         use_geometry_grounding=True,
         use_motion_latent=True,
+        use_dense_geometry_attention=True,
     )
     targets = policy._get_default_peft_targets()
     assert "model.vlm_with_expert.decoder.geometry_resampler" in targets["modules_to_save"]
     assert "model.geometry_grounding_heads" in targets["modules_to_save"]
     assert "model.vlm_with_expert.decoder.motion_latent" in targets["modules_to_save"]
+    assert "model.vlm_with_expert.decoder.dense_geometry_attention.7" in targets["modules_to_save"]
+
+
+def test_peft_trains_and_restores_decoder_expert(tmp_path: Path) -> None:
+    """共享 Expert 应在 decoder 前向中全量训练，并能随 adapter 保存恢复。"""
+    from peft import LoraConfig, PeftModel, get_peft_model
+
+    class TinyModel(torch.nn.Module):
+        """复现主干与 decoder 共享 Expert 的模块路径。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = torch.nn.Module()
+            backbone = torch.nn.Module()
+            self.model.vlm_with_expert = backbone
+            backbone.expert = torch.nn.Module()
+            backbone.expert.layers = torch.nn.ModuleList([torch.nn.Linear(4, 4)])
+            backbone.expert.norm = torch.nn.LayerNorm(4)
+            backbone.decoder = torch.nn.Module()
+            backbone.decoder.expert_model = backbone.expert
+            backbone.qwen = torch.nn.Module()
+            backbone.qwen.model = torch.nn.Module()
+            layer = torch.nn.Module()
+            layer.self_attn = torch.nn.Module()
+            layer.self_attn.q_proj = torch.nn.Linear(4, 4)
+            layer.self_attn.v_proj = torch.nn.Linear(4, 4)
+            backbone.qwen.model.layers = torch.nn.ModuleList([layer])
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            """由 decoder 的 Expert 路径计算动作，并使 Qwen LoRA 参与前向。"""
+            backbone = self.model.vlm_with_expert
+            expert = backbone.decoder.expert_model
+            output = expert.norm(expert.layers[0](inputs))
+            return output + backbone.qwen.model.layers[0].self_attn.q_proj(inputs)
+
+    policy = TrajVLAQwenPolicy.__new__(TrajVLAQwenPolicy)
+    torch.nn.Module.__init__(policy)
+    policy.config = TrajVLAQwenConfig(lora_target="qwen", train_expert=True)
+    targets = policy._get_default_peft_targets()
+    torch.manual_seed(7)
+    base = TinyModel()
+    base_state = deepcopy(base.state_dict())
+    adapter = LoraConfig(r=2, lora_alpha=4, **targets)
+    wrapped = get_peft_model(base, adapter)
+    expert_parameters = [
+        parameter
+        for name, parameter in wrapped.named_parameters()
+        if "decoder.expert_model.modules_to_save.default" in name
+    ]
+    assert sum(parameter.numel() for parameter in expert_parameters) == 28
+    assert all(parameter.requires_grad for parameter in expert_parameters)
+    inputs = torch.randn(2, 4)
+    optimizer = torch.optim.SGD(wrapped.parameters(), lr=0.1)
+    wrapped(inputs).square().sum().backward()
+    assert all(parameter.grad is not None for parameter in expert_parameters)
+    optimizer.step()
+    expected = wrapped(inputs).detach()
+    wrapped.save_pretrained(tmp_path)
+
+    restored_base = TinyModel()
+    restored_base.load_state_dict(base_state)
+    restored = PeftModel.from_pretrained(restored_base, tmp_path, is_trainable=True)
+    torch.testing.assert_close(restored(inputs), expected)
+
+
+def test_peft_base_can_be_rebuilt_without_policy_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧 LoRA checkpoint 没有基座路径时应从 Prismatic 配置重建基座。"""
+    config = TrajVLAQwenConfig(load_prismatic_weights=False, load_base_weights=False)
+
+    def fake_init(self: TrajVLAQwenPolicy, received: TrajVLAQwenConfig) -> None:
+        torch.nn.Module.__init__(self)
+        self.config = received
+
+    monkeypatch.setattr(TrajVLAQwenPolicy, "__init__", fake_init)
+    policy = TrajVLAQwenPolicy.make_peft_base(config)
+
+    assert policy.config is config
+    assert config.load_prismatic_weights is True
+    assert config.load_base_weights is True
+
+
+def test_peft_checkpoint_records_and_recognizes_prismatic_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """新 LoRA checkpoint 应记录并识别其内部加载的 Prismatic 基座。"""
+    from welding_path_vla.policies.trajectory_vla.modeling_trajectory_vla import (
+        TrajectoryVLAPolicy,
+    )
+
+    config = TrajVLAQwenConfig(load_prismatic_weights=True, load_base_weights=True)
+    policy = TrajVLAQwenPolicy.__new__(TrajVLAQwenPolicy)
+    torch.nn.Module.__init__(policy)
+    policy.config = config
+    monkeypatch.setattr(
+        TrajectoryVLAPolicy,
+        "wrap_with_peft",
+        lambda self, peft_config=None, peft_cli_overrides=None: self,
+    )
+
+    wrapped = policy.wrap_with_peft()
+
+    assert wrapped is policy
+    assert policy.name_or_path == config.prismatic_repo_id
+
+    sentinel = object()
+    monkeypatch.setattr(
+        TrajVLAQwenPolicy,
+        "make_peft_base",
+        classmethod(lambda cls, received: sentinel),
+        raising=False,
+    )
+
+    def reject_policy_checkpoint(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Prismatic 基座不应按完整 policy checkpoint 加载")
+
+    monkeypatch.setattr(
+        TrajectoryVLAPolicy,
+        "from_pretrained",
+        classmethod(reject_policy_checkpoint),
+    )
+    restored = TrajVLAQwenPolicy.from_pretrained(config.prismatic_repo_id, config=config)
+
+    assert restored is sentinel

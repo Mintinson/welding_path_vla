@@ -5,6 +5,7 @@ policy:
   checkpoint: outputs/train/traj_vla_qwen_grounding_stage1_a100/checkpoints/last/pretrained_model
   parameters:
     use_geometry_grounding: true
+    geometry_readout_from_latents: true
     use_motion_latent: true
     training_stage: policy_joint
     geometry_aux_loss_weights: [0.05, 0.02, 0.02]

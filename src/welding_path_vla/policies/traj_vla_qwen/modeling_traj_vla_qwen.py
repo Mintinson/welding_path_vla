@@ -187,6 +187,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             config = loaded
         if not isinstance(config, TrajVLAQwenConfig):
             raise ValueError("checkpoint config is not TrajVLA-Qwen")
+        if str(pretrained_name_or_path) == config.prismatic_repo_id:
+            return cls.make_peft_base(config)
         config.load_prismatic_weights = False
         config.load_base_weights = False
         return super().from_pretrained(
@@ -194,6 +196,23 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             config=config,
             **kwargs,
         )
+
+    @classmethod
+    def make_peft_base(cls, config: TrajVLAQwenConfig) -> TrajVLAQwenPolicy:
+        """从 Prismatic 权重重建没有独立 policy 路径的 LoRA 基模型。"""
+        config.load_prismatic_weights = True
+        config.load_base_weights = True
+        return cls(config)
+
+    def wrap_with_peft(
+        self,
+        peft_config: Any | None = None,
+        peft_cli_overrides: dict[str, Any] | None = None,
+    ) -> Any:
+        """让 PEFT checkpoint 记录可重建内部加载基座的 Prismatic 来源。"""
+        if not self.config.pretrained_path and self.config.load_prismatic_weights:
+            self.name_or_path = self.config.prismatic_repo_id
+        return super().wrap_with_peft(peft_config, peft_cli_overrides)
 
     def prepare_images(
         self,
@@ -315,7 +334,7 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         return loss, info
 
     def _get_default_peft_targets(self) -> dict[str, Any]:
-        """按配置选择 Expert、Qwen 或两者的 LoRA attention 投影。"""
+        """按主干选择 LoRA；vision/qwen/all 可同时全量训练动作与几何模块。"""
         targets = {
             "expert": r"model\.vlm_with_expert\.expert\.layers\.\d+\.self_attn\.(q|v)_proj",
             "qwen": (
@@ -324,10 +343,21 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             ),
         }
         selected = (
-            [targets["expert"], targets["qwen"]]
-            if self.config.lora_target == "all"
-            else [targets[self.config.lora_target]]
+            []
+            if self.config.lora_target == "vision"
+            else [targets["qwen" if self.config.lora_target == "all" else self.config.lora_target]]
         )
+        if self.config.lora_target in {"vision", "all"}:
+            vision = self.model.vlm_with_expert.vision_encoder
+            for encoder in ("dino", "siglip"):
+                # 只适配参与特征输出的末端 block，早期视觉层仍保持冻结。
+                output_layer = getattr(vision, f"{encoder}_layer")
+                first_layer = max(0, output_layer + 1 - self.config.vision_lora_last_n_blocks)
+                blocks = "|".join(str(index) for index in range(first_layer, output_layer + 1))
+                selected.append(
+                    rf"model\.vlm_with_expert\.vision_encoder\.{encoder}_featurizer"
+                    rf"\.blocks\.({blocks})\.attn\.(qkv|proj)"
+                )
         modules_to_save = [
             "model.action_in_proj",
             "model.action_out_proj",
@@ -340,14 +370,25 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             modules_to_save.append("model.vlm_with_expert.token_merger")
         if self.config.train_projector:
             modules_to_save.append("model.vlm_with_expert.projector")
-        if self.config.use_geometry_branch and self.config.train_geometry_resampler:
-            modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
+        if self.config.use_geometry_branch:
+            if self.config.geometry_attention_mode == "direct":
+                if self.config.train_geometry_encoder:
+                    modules_to_save.append("model.vlm_with_expert.decoder.direct_geometry_encoder")
+            elif self.config.train_geometry_resampler:
+                modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.use_geometry_grounding:
             modules_to_save.append("model.geometry_grounding_heads")
         if self.config.use_motion_latent:
             modules_to_save.append("model.vlm_with_expert.decoder.motion_latent")
-        if self.config.lora_target == "qwen" and self.config.train_expert:
-            modules_to_save.append("model.vlm_with_expert.expert")
+        if self.config.use_dense_geometry_attention and self.config.train_expert:
+            # 逐层包装有 forward 的门控模块，避免 PEFT 冻结新增的残差门控。
+            modules_to_save.extend(
+                f"model.vlm_with_expert.decoder.dense_geometry_attention.{index}"
+                for index in self.config.dense_geometry_attention_layers
+            )
+        if self.config.lora_target in {"qwen", "vision", "all"} and self.config.train_expert:
+            # decoder 持有 Expert 的别名；必须包装实际参与前向的引用。
+            modules_to_save.append("model.vlm_with_expert.decoder.expert_model")
         return {
             "target_modules": f"({'|'.join(selected)})",  # 需要 LoRA 的模块
             "modules_to_save": modules_to_save,  # 需要全量训练的模块

@@ -1,0 +1,16 @@
+includes:
+  - traj_vla_qwen_a100.yaml
+
+policy:
+  parameters:
+    lora_target: all
+    compile_model: false
+    # scheduler_warmup_steps: 4000
+    # scheduler_decay_steps: 200000
+
+training:
+  output_dir: outputs/train/traj_vla_qwen_lora
+  peft:
+    method_type: LORA
+    r: 64
+    lora_alpha: 128

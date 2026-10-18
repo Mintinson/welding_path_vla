@@ -68,9 +68,16 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     attention_mode: str = "self_attn"
     self_attn_every_n_layers: int = 2
     use_geometry_branch: bool = False
+    # latent 保留重采样路径；direct 在全部几何 CA 层直接读取完整 patch。
+    geometry_attention_mode: str = "latent"
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
+    # 少量 CA 层额外读取未重采样的 DINO patch；关闭时不创建任何新参数。
+    use_dense_geometry_attention: bool = False
+    dense_geometry_attention_layers: tuple[int, ...] = (7, 15)
     use_geometry_grounding: bool = False
+    # 辅助 readout 经动作 latent 读取视觉信息；缺省关闭以兼容已有 checkpoint。
+    geometry_readout_from_latents: bool = False
     geometry_corridor_radius_px: float = 8.0
     geometry_aux_loss_weights: tuple[float, float, float] = (0.1, 0.05, 0.05)
     geometry_camera_keys: tuple[str, str] = (
@@ -107,13 +114,18 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     train_token_merger: bool = True
     train_projector: bool = True
     train_geometry_resampler: bool = True
+    train_geometry_encoder: bool = True
     train_language_model: bool = False
     train_language_last_n_layers: int = 0
     train_expert: bool = True
     train_state_proj: bool = True
 
     frozen_vision_dtype: str = "float32"
+    # all：Qwen/视觉 LoRA；qwen、vision：仅适配指定主干，并可全量训练 Expert。
+    # expert：仅对 Expert 使用 LoRA，不包装整个 Expert。
     lora_target: str = "expert"
+    # 从实际输出特征的层向前计数，不包含视觉塔未参与输出的最后一层。
+    vision_lora_last_n_blocks: int = 4
     gradient_checkpointing_qwen: bool = False
     gradient_checkpointing_expert: bool = False
 
@@ -148,8 +160,10 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             raise ValueError("attention_mode must be self_attn or cross_attn")
         if self.frozen_vision_dtype not in {"float32", "bfloat16"}:
             raise ValueError("frozen_vision_dtype must be float32 or bfloat16")
-        if self.lora_target not in {"expert", "qwen", "all"}:
-            raise ValueError("lora_target must be expert, qwen or all")
+        if self.lora_target not in {"expert", "qwen", "vision", "all"}:
+            raise ValueError("lora_target must be expert, qwen, vision or all")
+        if self.vision_lora_last_n_blocks < 1:
+            raise ValueError("vision_lora_last_n_blocks must be positive")
         if self.self_attn_every_n_layers < 1:
             raise ValueError("self_attn_every_n_layers must be positive")
         if self.use_geometry_branch and self.attention_mode != "cross_attn":
@@ -158,10 +172,44 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             raise ValueError("the geometry branch requires at least one cross-attention layer")
         if self.use_geometry_branch and self.num_vlm_layers < 2:
             raise ValueError("the geometry branch requires at least two paired layers")
+        if self.geometry_attention_mode not in {"latent", "direct"}:
+            raise ValueError("geometry_attention_mode must be latent or direct")
+        if self.geometry_attention_mode == "direct":
+            if not self.use_geometry_branch:
+                raise ValueError("direct geometry attention requires use_geometry_branch=true")
+            if (
+                self.use_dense_geometry_attention
+                or self.use_geometry_grounding
+                or self.geometry_readout_from_latents
+                or self.use_motion_latent
+                or self.training_stage != "standard"
+            ):
+                raise ValueError(
+                    "direct geometry attention requires standard training without latent features"
+                )
         if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
             raise ValueError("geometry query and head counts must be positive")
+        if self.use_dense_geometry_attention:
+            layers = self.dense_geometry_attention_layers
+            if not self.use_geometry_branch:
+                raise ValueError("dense geometry attention requires use_geometry_branch=true")
+            if (
+                not layers
+                or len(set(layers)) != len(layers)
+                or any(
+                    index < 0
+                    or index >= self.num_expert_layers
+                    or index % self.self_attn_every_n_layers == 0
+                    for index in layers
+                )
+            ):
+                raise ValueError(
+                    "dense geometry attention layers must be distinct valid CA indices"
+                )
         if self.use_geometry_grounding and not self.use_geometry_branch:
             raise ValueError("geometry grounding requires use_geometry_branch=true")
+        if self.geometry_readout_from_latents and not self.use_geometry_branch:
+            raise ValueError("geometry_readout_from_latents requires use_geometry_branch=true")
         if self.use_motion_latent and not self.use_geometry_branch:
             raise ValueError("motion latent requires use_geometry_branch=true")
         if self.training_stage not in {"standard", "grounding_warmup", "policy_joint"}:

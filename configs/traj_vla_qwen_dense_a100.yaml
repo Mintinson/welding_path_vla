@@ -1,0 +1,18 @@
+includes:
+  - traj_vla_qwen_a100.yaml
+
+policy:
+  checkpoint: null
+  parameters:
+    # 独立单变量实验：保留 16 个 latent，仅额外开启两层稠密视觉读取。
+    geometry_num_queries: 16
+    use_dense_geometry_attention: true
+    dense_geometry_attention_layers: [7, 15]
+    use_geometry_grounding: false
+    geometry_readout_from_latents: false
+    use_motion_latent: false
+    training_stage: standard
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_dense_curve_plate
+  include_tasks: [curve_plate]

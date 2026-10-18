@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from welding_path_vla.policies.traj_vla_qwen.motion_latent import ConditionalMotionLatent
 from welding_path_vla.policies.traj_vla_qwen.prismatic import (
     DenseGeometryContext,
+    DirectGeometryEncoder,
+    DirectGeometryMemory,
     SeamQueryOutput,
     SeamQueryResampler,
 )
@@ -305,6 +308,51 @@ class PairedLayerDecoder(nn.Module):
         return self.normalize_outputs(context, action), cache
 
 
+def attend_dense_geometry(query: Tensor, key: Tensor, value: Tensor, mask: Tensor) -> Tensor:
+    """用 SDPA 读取完整 patch；支持 GQA，相机全部无效时返回零。
+
+    Args:
+        query: ``[B,Hq,A,D]`` 动作查询。
+        key: ``[B,Hkv,P,D]`` 几何键。
+        value: 与 key 同形状的几何值。
+        mask: ``[B,P]`` 有效 patch 掩码。
+
+    Returns:
+        ``[B,A,Hq*D]`` 注意力输出。
+    """
+    groups = query.shape[1] // key.shape[1]
+    attended = F.scaled_dot_product_attention(
+        query,
+        key.repeat_interleave(groups, dim=1),
+        value.repeat_interleave(groups, dim=1),
+        attn_mask=mask[:, None, None, :],
+    )
+    return attended.transpose(1, 2).flatten(2)
+
+
+class GatedDenseGeometryAttention(nn.Module):
+    """用零初始化标量门控接入稠密视觉，复用当前 Expert 的 Q/K/V 投影。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = nn.Parameter(torch.zeros(()))
+
+    def forward(self, query: Tensor, key: Tensor, value: Tensor, mask: Tensor) -> Tensor:
+        """返回门控后的稠密注意力残差，不把 patch 加入语言模型序列。
+
+        Args:
+            query: 动作查询，形状 ``[B,Hq,A,D]``。
+            key: 已缓存的 patch 键，形状 ``[B,Hkv,P,D]``。
+            value: 已缓存的 patch 值，与 key 同形状。
+            mask: 有效相机 patch 掩码，形状 ``[B,P]``。
+
+        Returns:
+            ``[B,A,Hq*D]`` 残差；零门控保持原动作路径，全遮挡返回零。
+        """
+        attended = attend_dense_geometry(query, key, value, mask)
+        return attended * self.gate.tanh().to(attended.dtype)
+
+
 class InterleavedSACADecoder(PairedLayerDecoder):
     """交替执行联合 Self-Attention 与单向 Cross-Attention。
 
@@ -327,6 +375,10 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         motion_latent_size: int = 16,
         checkpoint_qwen: bool = False,
         checkpoint_expert: bool = False,
+        geometry_readout_from_latents: bool = False,
+        dense_geometry_attention_layers: tuple[int, ...] = (),
+        geometry_attention_mode: str = "latent",
+        geometry_patch_grid: int = 16,
     ) -> None:
         super().__init__(
             language_model,
@@ -344,8 +396,19 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 geometry_num_cameras,
                 geometry_num_queries,
                 geometry_num_heads,
+                readout_from_latents=geometry_readout_from_latents,
             )
-            if geometry_input_size is not None
+            if geometry_input_size is not None and geometry_attention_mode == "latent"
+            else None
+        )
+        self.direct_geometry_encoder = (
+            DirectGeometryEncoder(
+                geometry_input_size,
+                expert_model.config.hidden_size,
+                geometry_num_cameras,
+                geometry_patch_grid,
+            )
+            if geometry_input_size is not None and geometry_attention_mode == "direct"
             else None
         )
         self.motion_latent = (
@@ -359,6 +422,9 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             else None
         )
         self.configure_cross_attention()
+        self.dense_geometry_attention = nn.ModuleDict(
+            {str(index): GatedDenseGeometryAttention() for index in dense_geometry_attention_layers}
+        )
 
     def uses_self_attention(self, layer_index: int) -> bool:
         """返回本层是否承担双流联合 SA。"""
@@ -366,7 +432,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
 
     def configure_cross_attention(self) -> None:
         """未启用几何支路时，让 Expert K/V 接收 Qwen Context K/V。"""
-        if self.geometry_resampler is not None:
+        if self.geometry_resampler is not None or self.direct_geometry_encoder is not None:
             return
         for index, (context_layer, expert_layer) in enumerate(
             zip(self.language_model.layers, self.expert_model.layers, strict=True)
@@ -498,13 +564,13 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         layer_index: int,
         context: Tensor | None,
         action: Tensor | None,
-        geometry: SeamQueryOutput | None,
+        geometry: SeamQueryOutput | DirectGeometryMemory | None,
         attention_mask: Tensor,
         position_ids: Tensor,
         cache: dict[int, dict[str, Tensor]] | None,
         fill_kv_cache: bool,
     ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
-        """更新 Qwen Context，并让 Expert 只读取重采样几何 token。"""
+        """读取 latent 或完整 patch；direct 使用各 CA 层独立 K/V，不依赖门控。"""
         expert_layer = self.expert_model.layers[layer_index]
         updated_context, _, _ = self.update_context_layer(
             layer_index,
@@ -514,12 +580,35 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         )
         geometry_key: Tensor | None = None
         geometry_value: Tensor | None = None
+        dense_states: dict[str, Tensor] = {}
+        direct = self.direct_geometry_encoder is not None
+        use_dense = str(layer_index) in self.dense_geometry_attention
         if geometry is not None:
+            memory = (
+                geometry.tokens
+                if isinstance(geometry, DirectGeometryMemory)
+                else geometry.latent_tokens
+            )
             geometry_key, geometry_value = self.run_checkpointed(
                 partial(self.adapter.project_hidden_kv, expert_layer),
-                geometry.latent_tokens,
+                memory,
                 enabled=self.checkpoint_expert,
             )
+            if isinstance(geometry, DirectGeometryMemory):
+                dense_states["geometry_patch_mask"] = geometry.mask
+            if use_dense:
+                # 复用 Resampler 的投影、相机编码与归一化；不新增视觉编码前向。
+                dense = self.geometry_resampler.patch_norm(geometry.patch_tokens.flatten(1, 2))
+                dense_key, dense_value = self.run_checkpointed(
+                    partial(self.adapter.project_hidden_kv, expert_layer),
+                    dense,
+                    enabled=self.checkpoint_expert,
+                )
+                dense_states = {
+                    "dense_key_states": dense_key,
+                    "dense_value_states": dense_value,
+                    "dense_patch_mask": geometry.patch_mask.flatten(1, 2),
+                }
 
         if cache is not None:
             if fill_kv_cache:
@@ -528,10 +617,12 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 cache[layer_index] = {
                     "key_states": geometry_key,
                     "value_states": geometry_value,
+                    **dense_states,
                 }
             else:
                 geometry_key = cache[layer_index]["key_states"]
                 geometry_value = cache[layer_index]["value_states"]
+                dense_states = cache[layer_index]
 
         if action is None:
             return [updated_context, None], cache
@@ -543,21 +634,35 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             action,
             enabled=self.checkpoint_expert,
         )
-        geometry_mask = torch.ones(
-            action.shape[0],
-            action.shape[1],
-            geometry_key.shape[2],
-            dtype=torch.bool,
-            device=action.device,
+        geometry_mask = (
+            dense_states["geometry_patch_mask"]
+            if direct
+            else torch.ones(
+                action.shape[0],
+                action.shape[1],
+                geometry_key.shape[2],
+                dtype=torch.bool,
+                device=action.device,
+            )
         )
         attended = self.run_checkpointed(
-            self.attention,
+            attend_dense_geometry if direct else self.attention,
             query,
             geometry_key,
             geometry_value,
             geometry_mask,
             enabled=self.checkpoint_expert,
         )
+        if use_dense:
+            # 残差在原 Expert 输出投影前合并；门控学习后再逐渐引入局部视觉细节。
+            attended = attended + self.run_checkpointed(
+                self.dense_geometry_attention[str(layer_index)],
+                query,
+                dense_states["dense_key_states"],
+                dense_states["dense_value_states"],
+                dense_states["dense_patch_mask"],
+                enabled=self.checkpoint_expert,
+            )
         updated_action = self.run_checkpointed(
             partial(self.adapter.complete_layer, expert_layer),
             action,
@@ -579,7 +684,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         """按配置的周期执行 Interleaved SA/CA Layers。"""
         context, action = self.prepare_inputs(inputs_embeds)
         cache = {} if use_cache and past_key_values is None else past_key_values
-        geometry: SeamQueryOutput | None = None
+        geometry: SeamQueryOutput | DirectGeometryMemory | None = None
         motion_auxiliary: dict[str, Tensor] = {}
         motion_injected = False
         for layer_index in range(len(self.language_model.layers)):
@@ -593,11 +698,15 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                     cache,
                     fill_kv_cache,
                 )
-            elif self.geometry_resampler is not None:
+            elif self.geometry_resampler is not None or self.direct_geometry_encoder is not None:
                 if geometry is None and context is not None:
                     if expert_context is None:
                         raise ValueError("the geometry branch requires dense DINO context")
-                    geometry = self.geometry_resampler(context, expert_context)
+                    geometry = (
+                        self.direct_geometry_encoder(expert_context)
+                        if self.direct_geometry_encoder is not None
+                        else self.geometry_resampler(context, expert_context)
+                    )
                 if self.motion_latent is not None and not motion_injected:
                     motion_token: Tensor | None = None
                     if geometry is not None and context is not None and expert_context is not None:
@@ -640,7 +749,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                     fill_kv_cache,
                 )
         outputs = self.normalize_outputs(context, action)
-        if self.geometry_resampler is None:
+        if self.geometry_resampler is None and self.direct_geometry_encoder is None:
             return outputs, cache
         auxiliary = geometry.auxiliary_outputs() if geometry is not None else {}
         auxiliary.update(motion_auxiliary)
@@ -694,6 +803,14 @@ def make_expert_decoder(
             geometry_num_cameras=max(1, len(config.image_features)),
             geometry_num_queries=config.geometry_num_queries,
             geometry_num_heads=config.geometry_num_heads,
+            geometry_readout_from_latents=config.geometry_readout_from_latents,
+            geometry_attention_mode=config.geometry_attention_mode,
+            geometry_patch_grid=config.vision_patch_grid,
+            dense_geometry_attention_layers=(
+                config.dense_geometry_attention_layers
+                if config.use_dense_geometry_attention
+                else ()
+            ),
             motion_action_size=config.max_action_dim if config.use_motion_latent else None,
             motion_latent_size=config.motion_latent_dim,
         )
@@ -811,9 +928,13 @@ class PrismaticQwenWithExpert(nn.Module):
         self.token_merger.requires_grad_(config.train_token_merger)
         self.projector.requires_grad_(config.train_projector)
         if isinstance(self.decoder, InterleavedSACADecoder):
+            self.decoder.dense_geometry_attention.requires_grad_(config.train_expert)
             resampler = self.decoder.geometry_resampler
             if resampler is not None:
                 resampler.requires_grad_(config.train_geometry_resampler)
+            encoder = self.decoder.direct_geometry_encoder
+            if encoder is not None:
+                encoder.requires_grad_(config.train_geometry_encoder)
         self.qwen.requires_grad_(config.train_language_model)
         if not config.train_language_model and config.train_language_last_n_layers:
             layers = self.qwen.model.layers[-config.train_language_last_n_layers :]
@@ -842,6 +963,7 @@ class PrismaticQwenWithExpert(nn.Module):
     def embed_image_with_geometry(self, image: Tensor) -> tuple[Tensor, Tensor]:
         """一次视觉前向同时返回语义 token 与压缩前 DINO patch。"""
         dino, tokens = self.vision_encoder.forward_features(image)
+        # factor=1 且冻结 merger 时为恒等映射，保留全部 DINO+SigLIP 融合 token。
         tokens = self.token_merger(tokens.to(self.token_merger.projection.weight.dtype))
         tokens = self.projector(tokens.to(self.projector.projector[0].weight.dtype))
         semantic = tokens.to(self.qwen.get_input_embeddings().weight.dtype)

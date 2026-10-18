@@ -1,0 +1,28 @@
+includes:
+  - traj_vla_qwen_direct_geometry_a100.yaml
+
+policy:
+  checkpoint: null
+  parameters:
+    # 只适配视觉塔末端 attention；Qwen 保持冻结，动作 Expert 继续全量训练。
+    lora_target: vision
+    vision_lora_last_n_blocks: 4
+    train_vision_encoder: false
+    train_language_model: false
+    train_expert: true
+    frozen_vision_dtype: float32
+    # 当前训练通过 flow_matching_output 调用，未经过 model.forward 的编译入口。
+    compile_model: false
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_curve_plate
+  batch_size: 16
+  num_workers: 8
+  steps: 200000
+  save_freq: 10000
+  eval_steps: 10000
+  resume: false
+  peft:
+    method_type: LORA
+    r: 32
+    lora_alpha: 64
