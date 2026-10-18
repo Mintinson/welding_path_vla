@@ -1,7 +1,8 @@
 # Trajectory-VLA Qwen
 
 该策略把 MiniVLA 的预对齐 Prismatic 视觉—语言主干与 Trajectory-VLA 的
-Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独立的稠密几何支路：
+Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独立的稠密几何支路。
+当前实验在 Full-Token + Direct Geometry 上增加可选视觉末端 LoRA；默认 latent 模式结构如下：
 
 ```text
 [双相机 RGB] ─► [DINOv2-L + SigLIP，一次视觉前向]
@@ -31,6 +32,226 @@ Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独�
 稠密几何。推理时视觉、Resampler 和 Context Stream 只计算一次，后续去噪步骤同时
 复用语义与几何的逐层 KV cache。
 
+## Full-Token + Direct Geometry：当前架构实验
+
+`configs/traj_vla_qwen_direct_geometry_a100.yaml` 同时保留全量语义 patch，并在所有
+几何 CA 层让动作直接读取稠密 DINO memory；不依赖精确焊缝坐标、相机外参或阶段标签。
+
+```text
+双相机 RGB → DINO + SigLIP（共享一次视觉前向）
+                ├→ 每相机 256 个融合 token → Prismatic Projector → Qwen Context
+                │                                               ↓ 偶数层联合 SA
+                └→ 512 个 DINO patch → 几何投影 + 二维位置 + 相机编码
+                                             ↓ 奇数层直接 CA
+                                  Action Expert → Flow Matching 速度场
+```
+
+配置接口：
+
+```yaml
+policy:
+  parameters:
+    token_merge_factor: 1
+    train_token_merger: false
+    use_geometry_branch: true
+    geometry_attention_mode: direct
+    train_geometry_encoder: true
+    use_dense_geometry_attention: false
+    use_geometry_grounding: false
+    geometry_readout_from_latents: false
+    use_motion_latent: false
+    training_stage: standard
+```
+
+- `token_merge_factor=1` 的冻结 merger 为单位投影，保留每相机的 256 个 DINO+SigLIP
+  融合 token，不是把 DINO 单独塞进原语义 Projector。语义图像分辨率仍为 224×224。
+- `geometry_attention_mode=direct` 不创建 Resampler，也没有 16-query 压缩或零门控旁路。
+  第 1/3/5/7/9/11/13/15 层直接读完整 512 个 patch；偶数层保持原语义/动作联合注意力。
+- `DirectGeometryEncoder` 使用线性投影、相机 embedding、归一化二维网格坐标的可学习
+  投影和 LayerNorm。坐标是 patch 中心 `(x,y)`，不是焊缝真值或 TCP 的图像投影。
+- 每个几何 CA 层自己的 K/V 仅服务该层几何 memory，与 Qwen 及其他层不共享，不额外
+  保留一套不参与前向的 latent K/V。CA 使用 SDPA，有效相机 mask 随 K/V 缓存；全部
+  相机无效时几何注意力输出为零。
+- 推理 prefill 编码一次几何并准备逐层 K/V；后续 Flow 去噪只计算动作查询与注意力。
+  `train_geometry_encoder` 控制几何编码器训练；CA 的 K/V 跟随 `train_expert`。
+- 默认 `geometry_attention_mode=latent`，缺少新字段的 checkpoint 行为不变。
+  direct 不兼容 grounding/readout/motion 或旧 dense bypass 的组合，配置会明确拒绝。
+  后续 Qwen LoRA 的保存列表已包含新几何编码器，而不是不存在的 Resampler。
+
+该独立配置保持 16 层 Qwen/Expert、原输入缩放与原 4k/200k 学习率轨迹，先训练 100k，
+每 20k 保存一次；启用图像增强，仅训练 `curve_plate`。没有同时加入 LoRA 或更多层。
+这是联合架构升级，不声称单独归因 no-merge 或 direct CA 的收益。
+
+```bash
+micromamba run -n welding_vla zsh -c '
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_direct_geometry_a100.yaml
+'
+```
+
+训练输出：`outputs/train_v2/traj_vla_qwen_direct_geometry_curve_plate`。
+必须从 Prismatic 初始化新动作策略，不要加载或 resume 原 latent/merge checkpoint；
+空间 merger 和几何分支的参数结构均已改变。评估 40k/80k/100k，例如：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_direct_geometry_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_direct_geometry_curve_plate/checkpoints/100000/pretrained_model
+'
+```
+
+配置默认固定 scene、仅 `curve_plate`、每次执行 8 步。结果保留
+`outputs/deploy/traj_vla_qwen_direct_geometry_curve_plate/日期到分钟/curve_plate` 结构。
+
+相比每相机 64 个语义 token，新模式 Context 长度约从 289 增至 673（含 160 个文本及
+1 个状态 token），几何 CA 的 memory 从 16 增至 512。视觉编码前向次数不变，但 Qwen
+激活、注意力和几何缓存占用增加；不要把参数量变化小理解成计算成本不变。
+首先比较跟踪覆盖、CTE、停滞场景和安全停止，不只用 complete 或离线 loss 选模型。
+
+## Direct Geometry + 视觉末端 LoRA
+
+`configs/traj_vla_qwen_direct_geometry_vision_lora_a100.yaml` 保持不 merge、全部几何 CA
+和 16 层动作 Expert，仅为视觉特征增加任务适配，不需要焊缝坐标或阶段标签。
+
+```yaml
+policy:
+  parameters:
+    lora_target: vision
+    vision_lora_last_n_blocks: 4
+    train_vision_encoder: false
+    train_language_model: false
+    train_expert: true
+    compile_model: false
+training:
+  peft:
+    method_type: LORA
+    r: 32
+    lora_alpha: 64
+```
+
+- `vision` 只对 DINO/SigLIP 实际输出特征之前的末端 attention `qkv/proj` 加 LoRA。
+  当前四层范围分别为 DINO 的 19–22 层、SigLIP 的 22–25 层（零基编号），排除未参与
+  特征输出的末层。`vision_lora_last_n_blocks` 可以调整范围。
+- `train_vision_encoder=false` 冻结视觉基座权重，不会冻结 PEFT 注入的 LoRA 参数。
+  Qwen 继续冻结；动作 Expert、动作头、状态投影、视觉投影器、直接几何编码器继续训练，
+  并随 adapter 保存。两路相机共享同一组视觉 LoRA。
+- 原有 `expert/qwen/all` 模式保留；`all` 默认仍适配四层视觉和 Qwen。
+  缺少新字段的配置默认 `vision_lora_last_n_blocks=4`，非 PEFT 配置不受影响。
+- 当前训练前向不经过 `model.forward` 的编译包装，实验显式关闭编译以避免歧义。
+  这不是通过编译提升精度的实验，也没有修改原配置的编译行为。
+- 新实验从 Prismatic 基座开始，曲板数据和增强不变，训练 200k，每 10k 保存和验证。
+  以场景跟踪覆盖、CTE、停滞和安全停止选 checkpoint，不承诺最后一步效果最好。
+
+已用两张 A100 40 GiB、每卡 batch=16 验证真实数据训练 40 步、两次验证/保存，
+再从第 40 步恢复训练到第 45 步；分配显存峰值约 24.9 GiB/卡，保留当前 batch。
+保存的全部 16 组视觉 LoRA B 权重均已更新，部署入口也能加载 adapter 和 processor
+完成缓存去噪推理。短运行用于验证执行与恢复，不代表已验证长时间稳定性或 rollout 收益。
+
+训练命令（项目根目录）：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 accelerate launch --num_processes=2 --mixed_precision=bf16 \
+  scripts/train_policy.py --config_path=configs/traj_vla_qwen_direct_geometry_vision_lora_a100.yaml
+'
+```
+
+输出目录：`outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_curve_plate`。
+中断后从最近一次完整 checkpoint 恢复，用同一命令追加 `--training.resume=true`；
+不要把 LoRA adapter 当作完整非 PEFT 权重加载。部署沿用统一接口，例如：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_direct_geometry_vision_lora_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_curve_plate/checkpoints/100000/pretrained_model
+'
+```
+
+`SIGINT`/`SIGTERM` 不会自动保存当前步；恢复位置是最后一个已写完的 checkpoint。
+后台训练应使用独立进程组启动，停止时向该训练进程组发信号，避免只杀启动器留下 GPU 子进程。
+
+## Qwen 输入缩放对照实验
+
+`policy.parameters.scale_context_embeddings` 控制进入 Qwen 前的**语义图像 token 和
+文本 embedding** 是否额外乘以 `sqrt(hidden_size)`。当前 Qwen 宽度为 896，缩放约为
+29.93 倍；这不是像素归一化，也不是 attention 中的 `1/sqrt(head_dim)`。
+
+- `true`：保留本项目原有缩放行为，也是配置缺省值。
+- `false`：直接使用 Projector 和文本查表输出，不再施加该额外缩放。
+
+状态 token、动作 token、原始 DINO 几何 patch 以及归一化统计均不变。开关不增加参数，
+不改变 token 数量或注意力层数；训练和部署共用此逻辑，值随 checkpoint 配置保存。
+缺少该字段的已有 checkpoint 默认使用 `true`，保持原来的前向结果；公共 SmolVLM
+路径也保持原缩放。**不能把旧权重仅在部署时改为 `false` 当成优化结果**，需要重新训练
+动作策略以适应不同输入幅值。这里测试的是输入约定差异是否影响学习，并不保证 rollout 改善。
+
+独立配置 `configs/traj_vla_qwen_unscaled_fixedlr_a100.yaml` 对照
+`traj_vla_qwen_aug_curve_plate` 的 16-query 实验：保持图像增强、16 层双流、
+token merge factor=2、冻结 Qwen、无 LoRA，以及原有数据集和训练划分；关闭 dense bypass、
+grounding 和 motion latent，只取消输入缩放。从 Prismatic 预训练主干初始化，
+不续训已有动作 checkpoint。每卡 batch=16，两卡共 32，学习率 `5e-5`，种子 `20260806`。
+
+先训练 40k 步，在 20k/40k 保存检查点。该配置显式设置
+`scheduler_auto_scale: false`，使用本地注册的 `fixed_cosine_decay_with_warmup`
+调度器，复用 LeRobot 余弦公式，但阻止它按训练总步数压缩周期。因此 warmup 为 4k、
+decay 为 200k，40k 时实际 LR 约为 `4.5464e-5`。请在项目根目录执行：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_unscaled_fixedlr_a100.yaml
+'
+```
+
+训练输出为 `outputs/train_v2/traj_vla_qwen_unscaled_fixedlr_curve_plate`。训练后分别评估
+`020000` 和 `040000`，例如：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_unscaled_fixedlr_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_unscaled_fixedlr_curve_plate/checkpoints/040000/pretrained_model
+'
+```
+
+该配置按固定 scene 清单只评估 `curve_plate`，每次执行 8 步，结果写入
+`outputs/deploy/traj_vla_qwen_unscaled_fixedlr_curve_plate/日期到分钟/curve_plate`。
+用相同步数的原 16-query checkpoint、相同场景和执行步数进行对照，重点比较跟踪误差、
+覆盖率、成功率和安全停止；不要只看离线 loss，也不要只与原模型的 200k 结果比较。
+部署的随机动作噪声会带来波动，边际改善需重复 rollout 确认。
+
+`scheduler_auto_scale` 缺省为 `true`，不改变已有 checkpoint 的调度行为。
+`traj_vla_qwen_unscaled_a100.yaml` 对应已完成的自动压缩实验：虽然保存参数写着
+4k/200k，LeRobot 实际按 800/40k 调度，40k 时 LR 已到 `2.5e-6`。
+该实验是“取消输入缩放 + 短周期调度”的联合改动，不能当作纯缩放消融；保留其配置和
+结果供比较，不能用它的权重续训来补做固定周期对照。详见
+[部署审计与后续计划](../../../../docs/traj-vla-qwen-unscaled-analysis.md)。
+
+### 固定周期结果与当前实验
+
+固定周期 40k 已完成：覆盖率 28.44%、成功 2/25、CTE P95 8.95 mm，相比原 scaled
+40k 没有稳定的跟踪精度收益，目前不优先续训至 100k。完整证据和单场景问题见
+[固定周期消融审计](../../../../docs/traj-vla-qwen-fixedlr-analysis.md)。
+
+此前准备的 `configs/traj_vla_qwen_scaled_shortlr_a100.yaml` 保留输入缩放，显式使用
+800 warmup / 40k decay，与已完成的 unscaled 短周期逐步 LR 完全相同，只对照输入幅值。
+原数据、增强、16-query 和 8 步执行频率不变，不引入新模型模块。研究方向现已转向
+上文的 Full-Token + Direct Geometry，不再要求执行这组缩放/周期对照。
+
+```bash
+micromamba run -n welding_vla zsh -c '
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_scaled_shortlr_a100.yaml
+'
+```
+
+输出为 `outputs/train_v2/traj_vla_qwen_scaled_shortlr_curve_plate`，从 Prismatic 初始化，
+不要恢复任何已有动作 checkpoint。训练后评估 `020000` 和 `040000`，与
+`traj_vla_qwen_unscaled_curve_plate` 的同一步数短周期结果比较。不要在同一 checkpoint
+上临时切换缩放或调度，再将其解释为单变量实验；也不要只挑最低 eval loss 的模型。
+
 ## 稠密几何与辅助监督接口
 
 `use_geometry_branch: true` 时，每路相机的 256 个 DINO patch 不经过空间压缩，
@@ -53,6 +274,43 @@ Task-Conditioned Seam Query 是本项目针对双相机焊缝控制增加的计�
 Grounding 开启后还会输出 `geometry.seam_logits`、
 `geometry.tangent_prediction` 与 `geometry.orientation_6d`。常规配置仍只优化
 Flow Matching；辅助监督不会改变 query 数量、动作表示或部署输出形状。
+
+### 辅助监督经过动作 latent
+
+`geometry_readout_from_latents: true` 时，先由动作 latent query 读取 DINO patch，
+再由三个辅助 readout query 读取同一组动作 latent。没有 `detach`，因此 seam、tangent、
+orientation 三项辅助损失都直接更新 Action Expert 使用的 latent query；Stage 1 即使
+不运行 Action Expert，也会训练这些 query。这里的 latent 是几何动作 token，
+不是 `use_motion_latent` 控制的 CVAE 运动隐变量，二者可以独立配置。
+
+```text
+DINO patch → 动作 latent ┬→ Action Expert → 动作
+                        └→ 辅助 readout → grounding heads → 辅助损失
+```
+
+两级读取复用 Resampler 的注意力、归一化和前馈参数，不增加 state dict 键，也不改变
+动作 latent 的数量。seam head 仍用 patch 特征对 readout 做逐 patch 打分；它的 readout
+视觉输入经由 latent，不再与 latent 并行直接读取 patch。诊断输出
+`geometry.attention_weights` 仍为 `[B,K+3,C,P]`：最后三行改为
+`readout→latent` 与 `latent→patch` 的平均头注意力乘积，仅用于可视化，不是精确归因。
+
+主配置及缺少新字段的已有 checkpoint 默认关闭该选项，保留原来的并行读取方式、
+参数布局和前向结果，因此现有 `traj_vla_qwen_a100.yaml` 训练的权重仍可正常加载。
+独立 grounding Stage 1 / Stage 2 配置均已开启。若只想在普通动作训练中增加此监督：
+
+```yaml
+policy:
+  parameters:
+    use_geometry_branch: true
+    use_geometry_grounding: true
+    geometry_readout_from_latents: true
+    use_motion_latent: false
+    training_stage: standard
+```
+
+设置 `geometry_readout_from_latents: false` 即恢复并行 readout；该开关随模型配置保存。
+只有启用 `use_geometry_grounding` 并训练时才会产生辅助监督收益，不能仅在旧模型部署时
+打开开关就期待性能改善。部署仍删除 grounding heads，动作输出接口与缓存规则不变。
 
 ### 轨迹监督标签
 
@@ -103,6 +361,57 @@ policy:
 Action→Geometry CA。关闭几何支路时恢复原 Context→Expert CA。第一版 checkpoint
 没有 `use_geometry_branch`，配置默认值为 `false`，因此旧权重仍构造原结构；当前训练
 YAML 显式开启新支路，新结构需要重新训练，不能直接加载旧 Action Expert 权重。
+
+## 可选：少量层直接读取稠密 patch
+
+`use_dense_geometry_attention: true` 在指定的几何 CA 层增加动作到稠密 DINO patch
+的连接。区别于增加 `geometry_num_queries`，动作查询可以绕过 latent 重采样瓶颈，
+直接读取双相机的 512 个 patch；它们不会进入 Qwen 的长序列，也不会新增视觉编码器。
+
+```yaml
+policy:
+  parameters:
+    use_geometry_branch: true
+    geometry_num_queries: 16
+    use_dense_geometry_attention: true
+    dense_geometry_attention_layers: [7, 15]
+    use_geometry_grounding: false
+    use_motion_latent: false
+    training_stage: standard
+```
+
+层编号从 0 开始，必须是不重复、未越界的 CA 层；默认周期下即奇数层。
+`[7, 15]` 表示仅第 8、16 层启用。设 `use_dense_geometry_attention: false` 即关闭，
+不创建新参数或计算新注意力，缺少该字段的已有模型也默认关闭。
+
+选定层保留原 latent 注意力，额外计算：
+
+```text
+原 latent 注意力 + tanh(gate) × 稠密 patch 注意力 → 原 Expert 输出投影与 MLP
+```
+
+新路径复用 Resampler 的 patch 投影、相机编码和归一化，以及当前 Expert 的 Q/K/V
+和输出投影，每个连接仅新增一个可学习标量 `gate`，两层合计两个参数。门控从零开始，
+在相同已有权重下初始输出不变，但门控可以收到梯度。稠密注意力使用 SDPA 并遵守相机
+有效性 mask；推理预填充时缓存稠密 K/V 和 mask，后续去噪只重新计算动作查询和注意力。
+新增计算并不为零，训练吞吐需实测，参数增量小不等于计算开销为零。
+
+门控随 `train_expert` 冻结或训练，启用 PEFT 时也保存并训练这些门控。此分支不依赖
+辅助标签、精确焊缝坐标或阶段标注；适用于包含图像和机器人状态的实机示教数据。
+它是待 rollout 验证的结构实验，并不保证超过 16-query 或 Adapter。
+
+独立配置保留 16-query，关闭 grounding/motion，仅改变稠密连接，按单阶段训练：
+
+```bash
+# 在已激活的 micromamba welding_vla 环境中执行。
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_dense_a100.yaml
+```
+
+该配置默认训练 `curve_plate`，输出到 `outputs/train_v2/traj_vla_qwen_dense_curve_plate`。
+建议先评估 40k、100k，再决定是否继续，不只依赖离线 eval loss 选择模型。
+原主配置保持关闭；已有 16/32-query 权重仍按其保存配置部署。不能仅给旧权重打开开关
+就获得新能力；新增门控需要训练。关闭开关兼容原权重布局，开启后保存的权重则包含门控。
 
 ## 默认训练显存估算
 
