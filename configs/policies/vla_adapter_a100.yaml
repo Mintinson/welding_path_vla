@@ -4,14 +4,15 @@ includes:
 policy:
   parameters:
     gradient_checkpointing_qwen: true
-    scheduler_warmup_steps: 9000
-    scheduler_decay_steps: 459253
+    scheduler_warmup_steps: 4000
+    scheduler_decay_steps: 200000
 
 training:
   output_dir: outputs/train/vla_adapter_weldpath_relative_v1_a100
   batch_size: 8
-  steps: 459253
+  steps: 200000
   num_workers: 8
   eval_steps: 10000
   save_freq: 20000
   resume: false
+  lr: 5.0e-5

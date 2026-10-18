@@ -56,7 +56,7 @@ policy:
 
 training:
   dataset_repo_id: mintinson/weldpath_relative_v3
-  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v3
+  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v5
   output_dir: outputs/train/traj_vla_qwen_weldpath_relative_v1
   lr: 1.0e-4
   batch_size: 4
@@ -64,7 +64,7 @@ training:
   steps: 918506
   num_workers: 4
   # 当前训练环境缺少 torchcodec 所需的 CUDA FFmpeg 库，使用 PyAV 解码 H.264。
-  video_backend: pyav
+  video_backend: torchcodec
   eval_split: 0.1
   eval_steps: 50000
   max_eval_samples: 100
