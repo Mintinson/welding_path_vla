@@ -878,6 +878,29 @@ python scripts/deploy_simulation_policy.py \
 跟踪误差、覆盖率、成功率和碰撞；查看原先停滞、回退的场景是否改善。训练中的 eval loss
 不作为此实验的模型效果依据。
 
+## 完整 24 层单阶段训练
+
+`configs/traj_vla_qwen_full_depth_a100.yaml` 基于原四层视觉 LoRA 配置，从
+Prismatic 初始化完整 24 层 Qwen，并训练与之逐层配对的 24 层动作 Expert。
+Expert 宽度比例保持 `0.75`；Qwen 权重冻结，参与动作预测的上下文路径仍向视觉适配器、
+Projector 传播梯度。保留不合并 patch 的直接几何注意力，关闭状态历史、独立任务
+条件注意力和腕部局部分支。已有 16 层配置和 checkpoint 的加载方式不变。
+
+```bash
+# 已激活 micromamba welding_vla 环境，使用两张 GPU。
+accelerate launch --num_processes=2 --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_full_depth_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_full_depth_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_full_depth_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+完整训练为 200k 步，每 10k 保存一次。层数增加不等于整网耗时按同比例增加，应以
+实际显存峰值和样本吞吐选择 batch。中期即可用保存的 checkpoint 检查正反向覆盖率、
+沿缝误差和停滞场景，训练 eval loss 不作为部署效果依据。
+
 ## 解冻主干
 
 默认只训练 Token Merger、Prismatic Projector、Seam Query Resampler、状态/动作投影
