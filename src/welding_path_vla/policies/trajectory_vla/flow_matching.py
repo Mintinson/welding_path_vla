@@ -55,6 +55,9 @@ class TokenSequence:
     padding_mask: Tensor
     attention_ar: Tensor
     expert_context: Any | None = None
+    # 可选的逐时间步动作输入残差；由当前观测生成，不包含真实未来动作。
+    action_condition: Tensor | None = None
+    auxiliary_outputs: dict[str, Tensor] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -593,6 +596,19 @@ class TrajectoryFlowModel(nn.Module):
         auxiliary_outputs = result[2] if len(result) > 2 else {}
         return outputs, cache, auxiliary_outputs
 
+    def condition_action_tokens(
+        self, tokens: TokenSequence, condition: Tensor | None
+    ) -> TokenSequence:
+        """在时间融合后注入观测条件；关闭时直接返回原 token，不改变原路径。"""
+        if condition is None:
+            return tokens
+        return TokenSequence(
+            tokens.embeddings + condition.to(tokens.embeddings.dtype),
+            tokens.padding_mask,
+            tokens.attention_ar,
+            tokens.expert_context,
+        )
+
     def predict_velocity_output(
         self,
         context: TokenSequence,
@@ -608,6 +624,7 @@ class TrajectoryFlowModel(nn.Module):
         投影回动作空间，得到速度场。
         """
         # 两个流的 mask 沿序列维拼接；attention_ar 决定分块因果结构
+        action_tokens = self.condition_action_tokens(action_tokens, context.action_condition)
         padding = torch.cat([context.padding_mask, action_tokens.padding_mask], dim=1)
         attention_ar = torch.cat([context.attention_ar, action_tokens.attention_ar], dim=1)
         attention = make_attention_masks(padding, attention_ar)
@@ -750,6 +767,7 @@ class TrajectoryFlowModel(nn.Module):
         cache: dict[int, dict[str, Tensor]] | None,
         actions: Tensor,
         time: Tensor,
+        action_condition: Tensor | None = None,
     ) -> Tensor:
         """在一个时间点计算 Euler 更新所需的速度场。
 
@@ -759,6 +777,7 @@ class TrajectoryFlowModel(nn.Module):
         - 动作区：由 make_attention_masks 生成的分块因果结构（严格因果）。
         """
         tokens = self.encode_action_tokens(actions, time)
+        tokens = self.condition_action_tokens(tokens, action_condition)
         suffix_length = tokens.padding_mask.shape[1]
         prefix_length = prefix_padding_mask.shape[1]
         # 每个动作 token 对 prefix 的全部 token 可见（块编号 0 最小）
@@ -854,7 +873,12 @@ class TrajectoryFlowModel(nn.Module):
                     self.encode_action_tokens(actions, time),
                 )
             else:
-                velocity = self.denoise_step(context.padding_mask, cache, actions, time)
+                if context.action_condition is None:
+                    velocity = self.denoise_step(context.padding_mask, cache, actions, time)
+                else:
+                    velocity = self.denoise_step(
+                        context.padding_mask, cache, actions, time, context.action_condition
+                    )
             # 显式 Euler 更新：沿速度场方向走一步
             actions = actions + step_size * velocity
             if on_step is not None:

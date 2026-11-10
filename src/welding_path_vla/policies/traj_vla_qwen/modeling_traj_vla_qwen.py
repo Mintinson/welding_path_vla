@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -15,6 +17,12 @@ from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import 
 from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
     GeometryGroundingHeads,
     geometry_grounding_losses,
+)
+from welding_path_vla.policies.traj_vla_qwen.pair import (
+    ActionAEConfig,
+    ActionBridge,
+    ActionTeacher,
+    pair_alignment_loss,
 )
 from welding_path_vla.policies.traj_vla_qwen.prismatic import DenseGeometryContext
 from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
@@ -59,6 +67,31 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             if config.use_geometry_grounding
             else None
         )
+        if config.use_pair_bridge:
+            if not config.pair_teacher_metadata:
+                if not config.pair_load_teacher_weights or not config.pair_teacher_checkpoint:
+                    raise ValueError("PAIR requires Stage 1 teacher metadata")
+                config.pair_teacher_metadata = json.loads(
+                    (Path(config.pair_teacher_checkpoint) / "config.json").read_text()
+                )
+            teacher_config = ActionAEConfig(**config.pair_teacher_metadata["model"])
+            if teacher_config.horizon != config.chunk_size or (
+                teacher_config.action_dim != config.output_features["action"].shape[0]
+            ):
+                raise ValueError("PAIR teacher horizon/action dimension does not match policy")
+            self.pair_teacher = ActionTeacher(teacher_config)
+            if config.pair_load_teacher_weights:
+                if not config.pair_teacher_checkpoint:
+                    raise ValueError("fresh PAIR training requires pair_teacher_checkpoint")
+                self.pair_teacher.load_encoder(config.pair_teacher_checkpoint)
+            self.pair_bridge = ActionBridge(
+                self.state_proj.out_features,
+                backbone.expert_hidden_size,
+                config.chunk_size,
+                config.pair_bridge_dim,
+                config.pair_bridge_heads,
+                teacher_config.hidden_dim,
+            )
         if config.training_stage == "grounding_warmup":
             self.requires_grad_(False)
             resampler = backbone.decoder.geometry_resampler
@@ -111,6 +144,10 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             context.expert_context.wrist_roi_tokens = tokens
             context.expert_context.wrist_roi_mask = image_masks[-1][:, None].expand(
                 -1, tokens.shape[1]
+            )
+        if self.config.use_pair_bridge:
+            context.action_condition, context.auxiliary_outputs = self.pair_bridge(
+                context.embeddings, context.padding_mask, align=self.pair_teacher is not None
             )
         return context
 
@@ -198,7 +235,9 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
         prediction = super().predict_velocity_output(context, action_tokens)
         return VelocityPrediction(
             prediction.velocity,
-            self.add_grounding_predictions(prediction.auxiliary_outputs),
+            self.add_grounding_predictions(
+                {**prediction.auxiliary_outputs, **context.auxiliary_outputs}
+            ),
         )
 
     def grounding_intermediates(self, context: TokenSequence) -> dict[str, Tensor]:
@@ -246,6 +285,7 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             return cls.make_peft_base(config)
         config.load_prismatic_weights = False
         config.load_base_weights = False
+        config.pair_load_teacher_weights = False
         return super().from_pretrained(
             pretrained_name_or_path,
             config=config,
@@ -257,6 +297,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         """从 Prismatic 权重重建没有独立 policy 路径的 LoRA 基模型。"""
         config.load_prismatic_weights = True
         config.load_base_weights = True
+        # 调用方接着加载完整策略/PEFT 权重，教师已嵌入其中，无需阶段一目录。
+        config.pair_load_teacher_weights = False
         return cls(config)
 
     def wrap_with_peft(
@@ -268,6 +310,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         if not self.config.pretrained_path and self.config.load_prismatic_weights:
             self.name_or_path = self.config.prismatic_repo_id
         policy = super().wrap_with_peft(peft_config, peft_cli_overrides)
+        if self.config.use_pair_bridge:
+            self.model.pair_teacher.requires_grad_(False)
         if self.config.use_state_history and not self.config.train_state_proj:
             self.model.state_history_encoder.requires_grad_(False)
         if self.config.use_task_condition_attention and not self.config.train_expert:
@@ -350,6 +394,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
 
     def get_optim_params(self) -> Any:
         """只返回显式解冻的模块参数。"""
+        if self.config.use_pair_bridge:
+            # PEFT 的 modules_to_save 默认解冻，恢复训练也必须重新冻结动作教师。
+            self.model.pair_teacher.requires_grad_(False)
         if self.config.use_state_history and not self.config.train_state_proj:
             # PEFT 续训会重新解冻 modules_to_save；创建优化器时恢复用户的冻结约束。
             self.model.state_history_encoder.requires_grad_(False)
@@ -358,6 +405,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
     def prepare_for_inference(self) -> None:
         """删除只在训练期使用的 grounding heads 与 motion posterior。"""
         self.model.geometry_grounding_heads = None
+        if self.config.use_pair_bridge:
+            self.model.pair_teacher = None
         if hasattr(self.model.vlm_with_expert.decoder, "motion_latent"):
             motion = self.model.vlm_with_expert.decoder.motion_latent
             if motion is not None:
@@ -415,6 +464,21 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 reduction,
             )
         loss = weighted if flow_loss is None else flow_loss + weighted
+        pair_loss = None
+        if self.config.use_pair_bridge:
+            if self.model.pair_teacher is None:
+                raise RuntimeError("PAIR teacher was discarded for deployment; reload to train")
+            padding = batch.get("action_is_pad")
+            if padding is None:
+                padding = torch.zeros(
+                    batch["action"].shape[:2], dtype=torch.bool, device=batch["action"].device
+                )
+            # 只使用 processor 输出的 9D clean action，不使用补齐维或带噪动作。
+            target = self.model.pair_teacher(batch["action"], padding)
+            pair_loss = pair_alignment_loss(auxiliary["pair.prediction"], target, padding)
+            loss = loss + self.config.pair_alignment_weight * self.reduce_auxiliary_loss(
+                pair_loss, reduction
+            )
         logged = loss.mean() if loss.ndim else loss
         info: dict[str, Any] = {"loss": float(logged.detach())}
         if flow_loss is not None and output is not None:
@@ -434,6 +498,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         )
         if motion_kl is not None:
             info["motion_kl_loss"] = float(motion_kl.mean().detach())
+        if pair_loss is not None:
+            info["pair_alignment_loss"] = float(pair_loss.mean().detach())
+            info["pair_gate_abs"] = float(auxiliary["pair.gate"].detach().abs().mean())
         return loss, info
 
     def _get_default_peft_targets(self) -> dict[str, Any]:
@@ -470,6 +537,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             "model.action_time_mlp_in",
             "model.action_time_mlp_out",
         ]
+        if self.config.use_pair_bridge:
+            modules_to_save.extend(["model.pair_bridge", "model.pair_teacher"])
         if self.config.train_state_proj:
             modules_to_save.append("model.state_proj")
         if self.config.use_state_history:

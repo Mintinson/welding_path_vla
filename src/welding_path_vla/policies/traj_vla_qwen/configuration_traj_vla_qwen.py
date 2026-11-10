@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import pairwise
 from math import isfinite
+from typing import Any
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
 from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
@@ -99,6 +100,15 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     use_task_condition_attention: bool = False
     # 每个 direct CA 读取当前 Qwen 层更新后的完整视觉/文本/状态；默认关闭。
     use_full_context_attention: bool = False
+    # PAIR 关闭时不构造新参数；阶段一教师与旧 grounding 两阶段完全独立。
+    use_pair_bridge: bool = False
+    pair_teacher_checkpoint: str | None = None
+    pair_bridge_dim: int = 256
+    pair_bridge_heads: int = 8
+    pair_alignment_weight: float = 0.1
+    # 在训练数据工厂填充，并随策略保存；恢复/部署不依赖阶段一外部路径。
+    pair_teacher_metadata: dict[str, Any] = field(default_factory=dict)
+    pair_load_teacher_weights: bool = True
     # 仅新增一个运动状态 token；图像仍只采当前帧，旧 checkpoint 默认关闭。
     use_state_history: bool = False
     state_history_offsets_s: tuple[float, ...] = (-8 / 30, -4 / 30, 0.0)
@@ -242,6 +252,17 @@ class TrajVLAQwenConfig(PreTrainedConfig):
                 raise ValueError("full context attention requires direct geometry attention")
             if self.use_task_condition_attention:
                 raise ValueError("full context and task condition attention are mutually exclusive")
+        if self.use_pair_bridge:
+            if self.training_stage != "standard" or self.use_motion_latent:
+                raise ValueError("PAIR requires standard training without motion latent slots")
+            if min(self.pair_bridge_dim, self.pair_bridge_heads) < 1 or (
+                self.pair_bridge_dim % self.pair_bridge_heads
+            ):
+                raise ValueError("PAIR bridge width must be positive and divisible by heads")
+            if not isfinite(self.pair_alignment_weight) or self.pair_alignment_weight < 0:
+                raise ValueError("pair_alignment_weight must be finite and nonnegative")
+            if self.normalization_mapping["ACTION"] != NormalizationMode.MEAN_STD:
+                raise ValueError("PAIR action teacher requires ACTION MEAN_STD normalization")
         if self.use_state_history:
             offsets = self.state_history_offsets_s
             if (

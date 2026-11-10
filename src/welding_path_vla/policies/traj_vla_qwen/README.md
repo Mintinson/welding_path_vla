@@ -901,6 +901,117 @@ python scripts/deploy_simulation_policy.py \
 实际显存峰值和样本吞吐选择 batch。中期即可用保存的 checkpoint 检查正反向覆盖率、
 沿缝误差和停滞场景，训练 eval loss 不作为部署效果依据。
 
+## PAIR：动作教师预训练与策略训练
+
+PAIR 配置提供独立的动作教师预训练和 VLA 训练。主策略从 Prismatic 初始化，
+不接续已有焊接策略。实现借鉴 [PAIR](https://arxiv.org/abs/2610.09016) 的动作
+自编码器监督、逐时间步 Bridge 对齐和动作输入门控注入；接入 Flow Matching、
+保留 direct geometry/full-context 路径是本项目的迁移设计。
+
+### 阶段一：轻量动作自编码器
+
+入口 `scripts/train_pair_action_ae.py`，配置
+`configs/traj_vla_qwen_pair_stage1_a100.yaml`。复用任务 ID 过滤、按 episode 的
+train/eval 划分及训练集 relative action 统计，只读取 Arrow 中的状态、动作列，
+不解码视频、不构造 Prismatic/Qwen。它使用相对于当前 TCP 共同锚点的 30×9 动作，
+不是逐帧累积 delta；有效维度不含策略补齐到 32 维的零值。
+
+默认 AE 宽度 256、4 heads、2 层 encoder、1 层 decoder；随机遮蔽 50% 有效动作步，
+加入标准差 0.05 的归一化空间噪声，使用有效步 L1 重建。padding 同时从注意力和
+损失中排除。默认 FP32、batch 256、AdamW 学习率 3e-4、50k 步，每 5k 保存。
+这些是待运行的初始参数，尚未完成训练或显存预检。
+
+```bash
+# 在项目根目录，激活服务器环境；这些命令应在设备空闲后执行。
+eval "$(micromamba shell hook --shell zsh)"
+micromamba activate welding_vla
+
+CUDA_VISIBLE_DEVICES=0 python scripts/train_pair_action_ae.py \
+  --config_path=configs/traj_vla_qwen_pair_stage1_a100.yaml
+```
+
+每 1k 步在留出 episode 上记录 `clean_l1`、`corrupt_l1`、`position_mm`、
+`orientation_deg`。物理误差由干净输入的重建结果计算；它用于检查教师是否丢失
+精细动作，不能代表 VLA rollout 质量。位置/姿态误差为有效时间步均值再按样本平均。
+需关注误差相对于任务跟踪容差是否足够小，而非仅看标准化 L1 下降。
+
+教师输出目录：
+
+```text
+outputs/train_v2/traj_vla_qwen_pair_action_ae_curve_plate/checkpoints/050000/
+  config.json           # AE 架构、episode 划分、动作步长和归一化统计
+  model.safetensors     # 完整 AE，供恢复/检查重建
+  encoder.safetensors   # 阶段二只加载这部分
+  progress.json         # step、数据迭代位置、最近一次重建评估
+  training_state/       # Accelerator 模型、优化器和随机数恢复状态
+```
+
+`checkpoints/last` 指向最近一次完整保存的目录；教师默认使用 last，不自动宣称它
+达到部署精度要求。阶段一恢复使用同一命令加 `--training.resume=true`；网络、
+数据、batch 和进程数应保持一致，`training.steps` 是恢复后的总目标步数。
+
+### 阶段二：冻结教师，从 Prismatic 训练 VLA
+
+入口仍为 `scripts/train_policy.py`，配置
+`configs/traj_vla_qwen_pair_stage2_a100.yaml`。默认保留完整 24 层、四层视觉
+attention LoRA、不合并视觉 token 和 direct geometry；关闭 full-context attention。
+新 Bridge 是附加路径，不替代稠密 patch。
+
+| 配置项 | 默认/本实验取值 | 含义 |
+| --- | --- | --- |
+| `use_pair_bridge` | 模型默认 false；阶段二 true | 关闭时无新模块、无辅助损失 |
+| `pair_teacher_checkpoint` | 阶段一 `checkpoints/last` | 新训练的冻结 encoder 来源 |
+| `pair_bridge_dim` / `pair_bridge_heads` | 256 / 8 | 小型 Bridge 宽度与 head 数 |
+| `pair_alignment_weight` | 0.1 | Flow Matching 之外的对齐损失权重；0 可做消融 |
+| `pair_load_teacher_weights` | 新训练 true | 恢复策略时自动关闭，使用策略内嵌教师 |
+| `pair_teacher_metadata` | 自动填充 | 随策略保存的教师结构及数据契约，无需手写 |
+
+Bridge 从进入 Qwen **之前**的投影视觉、语言 embedding、状态 token 中读取信息，
+经过一次 Cross-Attention 与一次 Self-Attention，产生 30 个未来时间位置的表示。
+并非读取第 24 层 Qwen 后再重复运行主干。预测 horizon 是 30，部署每次执行 8 步，
+所以 Query 数量跟随 `chunk_size=30`，不跟随 `n_action_steps=8`。
+
+两层 MLP 将 Bridge 投影到教师 latent 空间，以逐有效时间步余弦距离对齐固定教师；
+另一组 MLP 与零初始化的逐 token tanh 门控将原 Bridge 注入动作/Flow time 融合后
+的隐藏特征。零门控初期由对齐损失训练 Bridge，之后动作梯度也参与学习。
+不改变原始带噪轨迹、Flow Matching 速度目标或采样积分方向。
+
+```bash
+accelerate launch --multi_gpu --num_processes=2 --mixed_precision=bf16 \
+  --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_pair_stage2_a100.yaml
+```
+
+默认每卡 batch 12、全局 24，训练 200k 步，每 10k 保存。batch 12 是为新增模块
+预留显存的初始设置，尚未实测稳定性。阶段一的 AE 路径只填写在
+`policy.parameters.pair_teacher_checkpoint`，不要放在 `policy.checkpoint`。
+
+阶段二在加载大模型前核对两阶段的 episode 划分、动作时间索引、数据集 repo ID
+及 mean/std。若改变任务过滤、划分或动作 horizon，应为对应数据重新训练教师。
+教师只接收干净的归一化动作作为监督目标，FP32 编码且无梯度，真实动作不进入
+Bridge 或动作专家条件。日志增加 `pair_alignment_loss` 和 `pair_gate_abs`。
+
+### 恢复、部署与旧模型兼容
+
+`use_pair_bridge=false` 时，不构造 PAIR 参数或消耗其初始化随机数，原训练与推理
+路径保持不变；缺少新字段的已有配置默认关闭。阶段二同时保存 Bridge、冻结教师
+及教师元数据，包括 PEFT 权重。恢复时无需访问阶段一目录，且重新冻结 PEFT
+可能默认解冻的教师。恢复阶段二使用原有 `--training.resume=true` 流程。
+
+```bash
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_pair_stage2_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_pair_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+部署加载权重后删除动作教师，跳过对齐投影。Bridge 每次观测计算一次，缓存/非缓存
+两种动作采样路径都复用同一注入残差；不需要未来动作、焊缝坐标或阶段标签。
+关闭 PAIR 的旧模型仍按原配置加载；不能把已经训练的 PAIR 策略仅关闭开关就当作
+同一个模型，移除分支的性能需要单独做消融。
+
+本次仅实现并做静态检查，没有运行测试、模型前向、显存预检或后台训练。
+
 ## 每层读取更新后的完整 Qwen Context
 
 `configs/traj_vla_qwen_full_context_a100.yaml` 基于完整 24 层配置，启用

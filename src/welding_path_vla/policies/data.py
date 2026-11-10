@@ -374,12 +374,17 @@ def lerobot_task_filter(policy: PolicyConfig) -> Generator[None, None, None]:
 
     def make_filtered_datasets(config: Any) -> tuple[Any, Any]:
         train_dataset, eval_dataset = make_datasets(config)
-        if config.dataset.episodes is None:
+        pair_enabled = getattr(config.policy, "use_pair_bridge", False)
+        if config.dataset.episodes is None and not pair_enabled:
             return train_dataset, eval_dataset
         stats = filtered_training_stats(train_dataset, policy)
         train_dataset.meta.stats = stats
         if eval_dataset is not None:
             eval_dataset.meta.stats = deepcopy(stats)
+        if pair_enabled:
+            from welding_path_vla.policies.traj_vla_qwen.pair import validate_teacher_dataset
+
+            validate_teacher_dataset(config.policy, train_dataset, eval_dataset)
         return train_dataset, eval_dataset
 
     lerobot_train.make_train_eval_datasets = make_filtered_datasets
