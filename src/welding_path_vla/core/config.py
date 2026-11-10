@@ -513,6 +513,8 @@ class DeploymentConfig:
     record_video: bool = True
     action_steps: int | None = None
     inference_steps: int | None = None
+    # PAIR 部署消融：保留已训练的 Bridge，只将注入动作流的残差置零。
+    zero_pair_residual: bool = False
     max_ik_residual: float | None = None
     max_target_increment_m: float | None = None
 

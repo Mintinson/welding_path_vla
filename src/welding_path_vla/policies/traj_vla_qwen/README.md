@@ -1005,6 +1005,8 @@ python scripts/deploy_simulation_policy.py \
   --deployment.include_tasks='["curve_plate"]'
 ```
 
+部署消融可添加 `--deployment.zero_pair_residual=true`；默认 false。此开关在加载 PAIR checkpoint 后仅将注入动作流的残差置零，保留 Bridge 的计算和上下文缓存。
+
 部署加载权重后删除动作教师，跳过对齐投影。Bridge 每次观测计算一次，缓存/非缓存
 两种动作采样路径都复用同一注入残差；不需要未来动作、焊缝坐标或阶段标签。
 关闭 PAIR 的旧模型仍按原配置加载；不能把已经训练的 PAIR 策略仅关闭开关就当作

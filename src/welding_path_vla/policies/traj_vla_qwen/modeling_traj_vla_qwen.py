@@ -47,6 +47,7 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
     """复用公共 Flow Matching，只替换双流多模态主干。"""
 
     def __init__(self, config: TrajVLAQwenConfig) -> None:
+        self.zero_pair_residual = False
         backbone = PrismaticQwenWithExpert(config)
         super().__init__(config, vlm_with_expert=backbone)
         if config.use_state_history:
@@ -149,6 +150,8 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             context.action_condition, context.auxiliary_outputs = self.pair_bridge(
                 context.embeddings, context.padding_mask, align=self.pair_teacher is not None
             )
+            if self.zero_pair_residual and not self.training:
+                context.action_condition = torch.zeros_like(context.action_condition)
         return context
 
     def attach_expert_context(
@@ -401,6 +404,12 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             # PEFT 续训会重新解冻 modules_to_save；创建优化器时恢复用户的冻结约束。
             self.model.state_history_encoder.requires_grad_(False)
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
+
+    def disable_pair_injection(self) -> None:
+        """在加载部署权重后关闭残差注入，保留相同的 Bridge 计算与去噪路径。"""
+        if not self.config.use_pair_bridge:
+            raise ValueError("zero_pair_residual 需要启用 Bridge 的 checkpoint")
+        self.model.zero_pair_residual = True
 
     def prepare_for_inference(self) -> None:
         """删除只在训练期使用的 grounding heads 与 motion posterior。"""
