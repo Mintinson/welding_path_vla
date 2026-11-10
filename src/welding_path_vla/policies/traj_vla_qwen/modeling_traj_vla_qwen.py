@@ -6,8 +6,9 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
+from torch import Tensor, nn
 
+from welding_path_vla.policies.state_history import MOTION_FEATURES, MOTION_INTERVAL_DIM
 from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import (
     TrajVLAQwenConfig,
 )
@@ -40,6 +41,19 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
     def __init__(self, config: TrajVLAQwenConfig) -> None:
         backbone = PrismaticQwenWithExpert(config)
         super().__init__(config, vlm_with_expert=backbone)
+        if config.use_state_history:
+            # 非零初始化、无标量门控，使动作损失从第一步即可到达运动编码器。
+            width = self.state_proj.out_features
+            self.state_history_encoder = nn.Sequential(
+                nn.Linear(
+                    (len(config.state_history_offsets_s) - 1) * MOTION_INTERVAL_DIM,
+                    config.state_history_hidden_dim,
+                ),
+                nn.SiLU(),
+                nn.Linear(config.state_history_hidden_dim, width),
+                nn.LayerNorm(width),
+            )
+            self.state_history_encoder.requires_grad_(config.train_state_proj)
         self.geometry_grounding_heads = (
             GeometryGroundingHeads(backbone.expert_hidden_size)
             if config.use_geometry_grounding
@@ -58,6 +72,15 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
         if not self.config.scale_context_embeddings:
             return embedding
         return super().scale_context_embedding(embedding)
+
+    def embed_context_state(self, state: Tensor) -> Tensor:
+        """把内部打包张量拆为当前状态和运动特征，产生两个独立状态 token。"""
+        if not self.config.use_state_history:
+            return super().embed_context_state(state)
+        current = self.state_proj(state[:, : self.config.max_state_dim])
+        motion = self.state_history_encoder(state[:, self.config.max_state_dim :])
+        # motion 位于 current 后面，可读取当前状态；两者均进入现有条件注意力。
+        return torch.stack((current, motion), dim=1)
 
     def embed_context_image(self, image: Tensor) -> tuple[Tensor, Tensor | None]:
         """启用几何支路时同时取得压缩前 DINOv2 patch。"""
@@ -245,6 +268,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         if not self.config.pretrained_path and self.config.load_prismatic_weights:
             self.name_or_path = self.config.prismatic_repo_id
         policy = super().wrap_with_peft(peft_config, peft_cli_overrides)
+        if self.config.use_state_history and not self.config.train_state_proj:
+            self.model.state_history_encoder.requires_grad_(False)
         if self.config.use_task_condition_attention and not self.config.train_expert:
             self.model.vlm_with_expert.decoder.task_condition_kv.requires_grad_(False)
         if self.config.use_wrist_roi:
@@ -257,6 +282,12 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 decoder.wrist_roi_attention.requires_grad_(False)
         return policy
 
+    def prepare_state(self, batch: dict[str, Tensor]) -> Tensor:
+        """保持归一化后的当前状态不变，仅在模型内部附加已按物理尺度处理的运动。"""
+        state = super().prepare_state(batch)
+        if self.config.use_state_history:
+            state = torch.cat((state, batch[MOTION_FEATURES].to(state)), dim=-1)
+        return state
 
     def prepare_images(
         self,
@@ -317,6 +348,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
 
     def get_optim_params(self) -> Any:
         """只返回显式解冻的模块参数。"""
+        if self.config.use_state_history and not self.config.train_state_proj:
+            # PEFT 续训会重新解冻 modules_to_save；创建优化器时恢复用户的冻结约束。
+            self.model.state_history_encoder.requires_grad_(False)
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
 
     def prepare_for_inference(self) -> None:
@@ -436,6 +470,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         ]
         if self.config.train_state_proj:
             modules_to_save.append("model.state_proj")
+        if self.config.use_state_history:
+            # 包括冻结场景，确保新增模块能够从 PEFT checkpoint 精确恢复。
+            modules_to_save.append("model.state_history_encoder")
         if self.config.train_token_merger:
             modules_to_save.append("model.vlm_with_expert.token_merger")
         if self.config.train_projector:

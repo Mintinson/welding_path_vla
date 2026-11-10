@@ -416,6 +416,10 @@ class TrajectoryFlowModel(nn.Module):
         """允许模型变体把 clean action chunk 附加给训练期条件模块。"""
         return context
 
+    def embed_context_state(self, state: Tensor) -> Tensor:
+        """投影机器人状态；子类可在此添加运动 token，不改变公共 Flow Matching 接口。"""
+        return self.state_proj(state)
+
     def encode_context(
         self,
         images: list[Tensor],
@@ -477,7 +481,7 @@ class TrajectoryFlowModel(nn.Module):
 
         # 机器人状态经投影后作为 prefix 的最后一个部分
         state_start = language_slice.stop
-        state_embedding = self.state_proj(state)
+        state_embedding = self.embed_context_state(state)
         if state_embedding.ndim == 2:
             # 无图像/语言时可能没有时间维，补成长度 1 的序列
             state_embedding = state_embedding[:, None, :]

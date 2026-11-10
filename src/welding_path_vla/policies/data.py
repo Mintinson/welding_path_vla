@@ -22,6 +22,7 @@ from welding_path_vla.dataset.phase_index import (
     phase_index_path,
 )
 from welding_path_vla.dataset.task_parameters import TASK_DIRECTION, TASK_PARAMETERS
+from welding_path_vla.policies.state_history import state_history_deltas
 
 MANIFEST_PATH = Path("meta/welding_path_vla_export.json")
 TASK_CONFIG_DIR = Path("configs/tasks")
@@ -311,6 +312,7 @@ def make_dataset(
             index * policy.action_stride / meta.fps for index in range(policy.action_horizon)
         ]
     }
+    delta_timestamps.update(state_history_deltas(policy.parameters))
     return LeRobotDataset(
         repo_id,
         root=Path(training.dataset_root or ""),
@@ -358,9 +360,17 @@ def filtered_training_stats(dataset: LeRobotDataset, policy: PolicyConfig) -> di
 @contextmanager
 def lerobot_task_filter(policy: PolicyConfig) -> Generator[None, None, None]:
     """保留 LeRobot 数据集工厂，只为 episode 子集提供训练集统计。"""
+    from lerobot.datasets import factory as dataset_factory
     from lerobot.scripts import lerobot_train
 
     make_datasets = lerobot_train.make_train_eval_datasets
+    resolve_deltas = dataset_factory.resolve_delta_timestamps
+
+    def resolve_state_history(config: Any, meta: Any) -> dict[str, list] | None:
+        """按加载后的模型配置选择历史，仅覆盖 state，保留图像单帧采样。"""
+        deltas = resolve_deltas(config, meta)
+        history = state_history_deltas(config)
+        return {**(deltas or {}), **history} if history else deltas
 
     def make_filtered_datasets(config: Any) -> tuple[Any, Any]:
         train_dataset, eval_dataset = make_datasets(config)
@@ -373,10 +383,12 @@ def lerobot_task_filter(policy: PolicyConfig) -> Generator[None, None, None]:
         return train_dataset, eval_dataset
 
     lerobot_train.make_train_eval_datasets = make_filtered_datasets
+    dataset_factory.resolve_delta_timestamps = resolve_state_history
     try:
         yield
     finally:
         lerobot_train.make_train_eval_datasets = make_datasets
+        dataset_factory.resolve_delta_timestamps = resolve_deltas
 
 
 def scale_uint8_images(batch: dict[str, Any]) -> dict[str, Any]:

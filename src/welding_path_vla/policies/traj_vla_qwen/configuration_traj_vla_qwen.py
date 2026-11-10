@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
+from math import isfinite
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
 from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
@@ -95,6 +97,12 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     geometry_attention_mode: str = "latent"
     # 每个 direct CA 层独立读取 Qwen 文本与状态，不与视觉 patch 共用 softmax。
     use_task_condition_attention: bool = False
+    # 仅新增一个运动状态 token；图像仍只采当前帧，旧 checkpoint 默认关闭。
+    use_state_history: bool = False
+    state_history_offsets_s: tuple[float, ...] = (-8 / 30, -4 / 30, 0.0)
+    state_history_hidden_dim: int = 256
+    # 分别为关节 rad/s、TCP m/s、6D 旋转变化率 1/s 的输入尺度。
+    state_history_velocity_scales: tuple[float, float, float] = (0.1, 0.01, 0.1)
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
     # 从原始腕部图像裁剪局部区域，仅供动作专家读取，不增加 Qwen token。
@@ -227,6 +235,21 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             not self.use_geometry_branch or self.geometry_attention_mode != "direct"
         ):
             raise ValueError("task condition attention requires direct geometry attention")
+        if self.use_state_history:
+            offsets = self.state_history_offsets_s
+            if (
+                len(offsets) < 2
+                or offsets[-1] != 0
+                or any(not isfinite(left) or left >= right for left, right in pairwise(offsets))
+            ):
+                raise ValueError("state history offsets must strictly increase from the past to 0")
+            if self.state_history_hidden_dim < 1 or (
+                len(self.state_history_velocity_scales) != 3
+                or any(not isfinite(v) or v <= 0 for v in self.state_history_velocity_scales)
+            ):
+                raise ValueError(
+                    "state history hidden dimension and velocity scales must be positive"
+                )
         if self.use_wrist_roi:
             if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
                 raise ValueError("wrist ROI requires direct geometry attention")

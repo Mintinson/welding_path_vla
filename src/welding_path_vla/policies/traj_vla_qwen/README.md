@@ -823,6 +823,61 @@ python scripts/deploy_simulation_policy.py \
   --deployment.include_tasks='["curve_plate"]'
 ```
 
+## 短时机器人运动状态
+
+`configs/traj_vla_qwen_state_history_a100.yaml` 从 Prismatic 开始单阶段训练，保留
+**四层视觉 attention LoRA、不 merge、直接几何注意力和任务条件注意力**，新增一个
+短时运动 token。它用于区分“当前位姿相近，但正在前进、停滞或回退”的观测；是否能
+改善跟踪需要用 rollout 验证，不能由训练 loss 或短训练通过直接推断。
+
+```yaml
+policy:
+  parameters:
+    use_state_history: true
+    state_history_offsets_s: [-0.26666666666666666, -0.13333333333333333, 0.0]
+    state_history_hidden_dim: 256
+    state_history_velocity_scales: [0.1, 0.01, 0.1]
+    use_task_condition_attention: true
+```
+
+30 Hz 数据对应 `t−8、t−4、t` 三个状态。对相邻两段分别计算关节速度（6 维）、世界系
+TCP 速度（3 维）、相对旋转矩阵前两行相对单位旋转的变化率（6 维）、实际间隔和有效位
+（各 1 维），共 34 维。三种速度分别除以 `0.1 rad/s、0.01 m/s、0.1 /s`，只调整量级，
+不截断输入。6D 旋转变化率不是欧拉角速度，四元数 `q/-q` 表示同一姿态，不会产生
+伪运动。34 维特征经 `Linear → SiLU → Linear → LayerNorm` 编成一枚 Qwen 宽度 token，
+追加在当前状态 token 后，所有已启用的条件 CA 均可读取它；去噪仍复用条件 K/V 缓存。
+运动编码器服从 `train_state_proj`，没有零初始化残差门控。
+
+历史仅查询 `observation.state`，两路图像仍只解码和编码当前帧。训练数据须遵守 LeRobot
+固定帧率的采集契约，采样秒数须对齐数据集帧率，时间间隔由配置决定；不规则采集的实机
+日志应先按时间戳重采样为固定频率的 LeRobot 数据。部署缓冲使用真实观测时间计算间隔，
+执行缓存的 8 个动作期间也记录状态，不增加图像编码。每个采样点只取其之前的最近观测，
+episode 起始不足的历史和超过预期间隔两倍的时间断层标为无效；`reset()` 清空历史。
+无需分阶段标记、精确焊缝坐标、未来目标或额外传感器。
+
+处理器在归一化前计算历史运动，然后把 `observation.state` 恢复为当前帧 13 维状态。
+相对动作的 TCP 锚点、状态统计和动作统计保持当前帧契约。历史配置随 processor 和模型
+checkpoint 保存，新增编码器纳入 PEFT 保存；训练、恢复、离线评估和部署共用这一契约。
+`use_state_history` 默认关闭，关闭时不创建新参数，已有配置和 checkpoint 使用原路径。
+
+本配置新增参数为 241,024 个，标准双相机 prefix 从 673 增至 674 token；视觉前向次数不变。
+这是低计算增量的状态分支，不能保证改善视觉定位误差，也不能单凭它检测焊缝偏离。
+
+```bash
+# 已激活 micromamba welding_vla 环境；每卡 batch 16，共训练 200k 步。
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_state_history_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_state_history_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_state_history_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+每 10k 保存 checkpoint。优先在相同 scene 上验证 160k、180k、200k，按正反方向分别比较
+跟踪误差、覆盖率、成功率和碰撞；查看原先停滞、回退的场景是否改善。训练中的 eval loss
+不作为此实验的模型效果依据。
+
 ## 解冻主干
 
 默认只训练 Token Merger、Prismatic Projector、Seam Query Resampler、状态/动作投影
