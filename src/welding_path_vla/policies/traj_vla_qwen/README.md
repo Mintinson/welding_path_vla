@@ -901,6 +901,43 @@ python scripts/deploy_simulation_policy.py \
 实际显存峰值和样本吞吐选择 batch。中期即可用保存的 checkpoint 检查正反向覆盖率、
 沿缝误差和停滞场景，训练 eval loss 不作为部署效果依据。
 
+## 每层读取更新后的完整 Qwen Context
+
+`configs/traj_vla_qwen_full_context_a100.yaml` 基于完整 24 层配置，启用
+`policy.parameters.use_full_context_attention: true`。它保留四层视觉 LoRA 和直接
+DINO 几何注意力，并让每个几何 CA 层额外读取当前 Qwen 层完成注意力、残差和 MLP
+之后的完整视觉、文本及状态 token。最后一层 Qwen 的输出因此也直接参与动作预测。
+Qwen 权重仍冻结，但不截断向视觉适配器和 Projector 传播的梯度。
+
+完整 Context 使用独立 LayerNorm、K/V 投影及 softmax；与原几何结果相加后进入
+Expert 的输出投影和残差。每层的可学习门控初始化为 `tanh(0.1)`，约 0.10，既限制
+初始残差幅度，又让第一步的动作梯度就能到达新投影和末端 Qwen 输出。推理缓存
+完整 Context 的 K/V 及有效 token mask，多步去噪不会重复运行 Qwen 或新 K/V 投影。
+门控在 V 上应用一次，与缩放 attention 输出等价。
+
+该开关默认关闭，关闭时不新增参数或改变原路径；已有 checkpoint 缺少该字段时
+也使用关闭状态。新分支只支持 `geometry_attention_mode: direct`，与只读取文本/状态
+的 `use_task_condition_attention` 互斥，避免重复注入条件。它不增加视觉编码器前向
+次数或 Qwen 输入 token，不使用精确焊缝坐标、阶段标签、历史状态或 ActionQuery。
+
+```bash
+# 已激活 micromamba welding_vla；从 Prismatic 单阶段训练，不接续旧焊接 checkpoint。
+accelerate launch --multi_gpu --num_processes=2 --mixed_precision=bf16 --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_full_context_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_full_context_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_full_context_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+训练总计 200k 步，每 10k 保存。双 A100 40GB 的 60 步预检使用每卡 batch 16、
+全局 batch 32，稳定更新约 0.77–0.80 秒，PyTorch 分配峰值约 36.0 GiB，
+`nvidia-smi` 观测占用约 37.7 GiB；短程预检不能替代全程稳定性和部署验证。
+先核实末端层的动作影响与梯度、训练/缓存推理一致性、
+PEFT 重载，再以固定场景的覆盖率、共同区间跟踪误差和碰撞判断效果；增加连接本身
+不保证 rollout 改善。新增计算和显存需按实际硬件预检后选择 batch。
+
 ## 解冻主干
 
 默认只训练 Token Merger、Prismatic Projector、Seam Query Resampler、状态/动作投影

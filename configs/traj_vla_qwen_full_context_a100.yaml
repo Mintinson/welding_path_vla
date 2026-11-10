@@ -1,0 +1,21 @@
+includes:
+  - traj_vla_qwen_full_depth_a100.yaml
+
+policy:
+  # 单阶段从 Prismatic 初始化，保留完整 24 层及四层视觉 LoRA。
+  checkpoint: null
+  parameters:
+    # 每个几何 CA 另读本层更新后的视觉、文本和状态，保留直接 DINO 注意力。
+    use_full_context_attention: true
+    use_task_condition_attention: false
+    use_state_history: false
+    use_wrist_roi: false
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_full_context_curve_plate
+  steps: 200000
+  # 双 A100 40GB 预检通过：每卡 batch 16，全局 32；PyTorch 峰值约 36.0 GiB。
+  batch_size: 16
+  num_workers: 8
+  save_freq: 10000
+  resume: false

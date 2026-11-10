@@ -363,6 +363,27 @@ class TaskConditionKV(nn.Module):
         )
 
 
+class FullContextKV(TaskConditionKV):
+    """投影当前层完整 Context，并以非零门控控制其动作残差强度。"""
+
+    def __init__(self, context_size: int, kv_size: int, head_dim: int) -> None:
+        """复用 Context 归一化及 K/V 投影；小幅非零门控让首步梯度可达。"""
+        super().__init__(context_size, kv_size, head_dim)
+        self.gate = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, context: Tensor) -> tuple[Tensor, Tensor]:
+        """返回完整 K/V；缩放 V 等价于缩放 attention 残差，且可一起缓存。
+
+        Args:
+            context: 当前 Qwen 层更新后的 ``[B,L,D_qwen]`` 完整上下文。
+
+        Returns:
+            ``[B,Hkv,L,D_head]`` 的 key 和门控后的 value。
+        """
+        key, value = super().forward(context)
+        return key, value * self.gate.tanh().to(value.dtype)
+
+
 class GatedDenseGeometryAttention(nn.Module):
     """用零初始化标量门控接入稠密视觉，复用当前 Expert 的 Q/K/V 投影。"""
 
@@ -414,6 +435,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         geometry_patch_grid: int = 16,
         use_wrist_roi: bool = False,
         use_task_condition_attention: bool = False,
+        use_full_context_attention: bool = False,
     ) -> None:
         super().__init__(
             language_model,
@@ -486,6 +508,17 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 )
                 for index, layer in enumerate(expert_model.layers)
                 if use_task_condition_attention and not self.uses_self_attention(index)
+            }
+        )
+        self.full_context_kv = nn.ModuleDict(
+            {
+                str(index): FullContextKV(
+                    language_model.config.hidden_size,
+                    layer.self_attn.k_proj.out_features,
+                    layer.self_attn.head_dim,
+                )
+                for index, layer in enumerate(expert_model.layers)
+                if use_full_context_attention and not self.uses_self_attention(index)
             }
         )
 
@@ -686,6 +719,24 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             )
             if isinstance(geometry, DirectGeometryMemory):
                 dense_states["geometry_patch_mask"] = geometry.mask
+                if self.full_context_kv:
+                    # 读取本层更新后的全部 prefix，不包含带噪动作；末端 Qwen 输出也可达动作。
+                    context_key, context_value = self.run_checkpointed(
+                        self.full_context_kv[str(layer_index)],
+                        updated_context,
+                        enabled=self.checkpoint_expert,
+                    )
+                    length = updated_context.shape[1]
+                    dense_states.update(
+                        {
+                            "full_context_key": context_key.to(geometry_key.dtype),
+                            "full_context_value": context_value.to(geometry_value.dtype),
+                            # 有效 prefix 的自注意力对角线为真，padding/缺失相机位置为假。
+                            "full_context_mask": attention_mask[:, :length, :length].diagonal(
+                                dim1=-2, dim2=-1
+                            ),
+                        }
+                    )
                 if self.task_condition_kv:
                     # 文本和状态在 prefix 尾部；保留每个任务词及其 padding mask。
                     start = expert_context.condition_start
@@ -778,6 +829,16 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             geometry_mask,
             enabled=self.checkpoint_expert,
         )
+        if self.full_context_kv:
+            # 独立 softmax 保留原几何路径；V 已携带可学习门控，多步去噪只复用缓存。
+            attended = attended + self.run_checkpointed(
+                attend_dense_geometry,
+                query,
+                dense_states["full_context_key"],
+                dense_states["full_context_value"],
+                dense_states["full_context_mask"],
+                enabled=self.checkpoint_expert,
+            )
         if self.task_condition_kv:
             # 独立 softmax 防止文本被大量 patch 稀释；从头训练时不加零门控。
             attended = attended + self.run_checkpointed(
@@ -966,6 +1027,7 @@ def make_expert_decoder(
             geometry_patch_grid=config.vision_patch_grid,
             use_wrist_roi=config.use_wrist_roi,
             use_task_condition_attention=config.use_task_condition_attention,
+            use_full_context_attention=config.use_full_context_attention,
             dense_geometry_attention_layers=(
                 config.dense_geometry_attention_layers
                 if config.use_dense_geometry_attention
@@ -1090,6 +1152,7 @@ class PrismaticQwenWithExpert(nn.Module):
         if isinstance(self.decoder, InterleavedSACADecoder):
             self.decoder.dense_geometry_attention.requires_grad_(config.train_expert)
             self.decoder.task_condition_kv.requires_grad_(config.train_expert)
+            self.decoder.full_context_kv.requires_grad_(config.train_expert)
             if self.decoder.wrist_roi_encoder is not None:
                 self.decoder.wrist_roi_encoder.requires_grad_(config.train_geometry_encoder)
                 self.decoder.wrist_roi_kv.requires_grad_(config.train_expert)

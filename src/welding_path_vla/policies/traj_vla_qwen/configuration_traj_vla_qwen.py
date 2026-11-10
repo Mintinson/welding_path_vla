@@ -97,6 +97,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     geometry_attention_mode: str = "latent"
     # 每个 direct CA 层独立读取 Qwen 文本与状态，不与视觉 patch 共用 softmax。
     use_task_condition_attention: bool = False
+    # 每个 direct CA 读取当前 Qwen 层更新后的完整视觉/文本/状态；默认关闭。
+    use_full_context_attention: bool = False
     # 仅新增一个运动状态 token；图像仍只采当前帧，旧 checkpoint 默认关闭。
     use_state_history: bool = False
     state_history_offsets_s: tuple[float, ...] = (-8 / 30, -4 / 30, 0.0)
@@ -235,6 +237,11 @@ class TrajVLAQwenConfig(PreTrainedConfig):
             not self.use_geometry_branch or self.geometry_attention_mode != "direct"
         ):
             raise ValueError("task condition attention requires direct geometry attention")
+        if self.use_full_context_attention:
+            if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
+                raise ValueError("full context attention requires direct geometry attention")
+            if self.use_task_condition_attention:
+                raise ValueError("full context and task condition attention are mutually exclusive")
         if self.use_state_history:
             offsets = self.state_history_offsets_s
             if (

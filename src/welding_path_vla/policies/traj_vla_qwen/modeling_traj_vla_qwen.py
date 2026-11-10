@@ -272,6 +272,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             self.model.state_history_encoder.requires_grad_(False)
         if self.config.use_task_condition_attention and not self.config.train_expert:
             self.model.vlm_with_expert.decoder.task_condition_kv.requires_grad_(False)
+        if self.config.use_full_context_attention and not self.config.train_expert:
+            self.model.vlm_with_expert.decoder.full_context_kv.requires_grad_(False)
         if self.config.use_wrist_roi:
             # 新增模块即使冻结也必须保存；不能依赖 Prismatic 重建其随机初始化权重。
             decoder = self.model.vlm_with_expert.decoder
@@ -485,6 +487,13 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.use_geometry_grounding:
             modules_to_save.append("model.geometry_grounding_heads")
+        if self.config.use_full_context_attention:
+            # 逐层保存投影和门控；即使冻结也保存，确保恢复时不依赖随机初始化。
+            modules_to_save.extend(
+                f"model.vlm_with_expert.decoder.full_context_kv.{index}"
+                for index in range(self.config.num_expert_layers)
+                if index % self.config.self_attn_every_n_layers != 0
+            )
         if self.config.use_task_condition_attention:
             # 逐层保存有 forward 的模块，避免 PEFT 漏训条件投影或重载后随机初始化。
             modules_to_save.extend(
