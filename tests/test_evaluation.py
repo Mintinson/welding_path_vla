@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +81,27 @@ def test_reverse_motion_fails_completion() -> None:
     assert report.completion.direction_ratio == pytest.approx(0)
     assert not report.conditions["completion"]
     assert not report.success
+
+
+def test_closed_seam_direction_in_detailed_evaluation() -> None:
+    """详细评估的闭环方向率也应修正，但 PCR 和跟踪指标不变。"""
+    trace = straight_trace()
+    reference_angles = 2 * np.pi * np.linspace(0, 1, 102)[1:]
+    execution_angles = 2 * np.pi * np.linspace(0.002, 1.008, 101)
+    reference = 0.05 * np.column_stack(
+        (np.cos(reference_angles), np.sin(reference_angles), np.zeros(101))
+    )
+    execution = 0.05 * np.column_stack(
+        (np.cos(execution_angles), np.sin(execution_angles), np.zeros(101))
+    )
+    trace = replace(trace, tcp_positions=execution, seam=replace(trace.seam, points=reference))
+    old = evaluate_trace(trace, EvaluationConfig())
+    corrected = evaluate_trace(trace, EvaluationConfig(), seam_is_closed=True)
+
+    assert old.completion.direction_ratio < 0.85
+    assert corrected.completion.direction_ratio == pytest.approx(1)
+    assert corrected.completion.pcr == old.completion.pcr
+    assert corrected.tracking == old.tracking
 
 
 def test_missing_safety_signal_fails_closed() -> None:

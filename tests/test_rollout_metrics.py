@@ -53,7 +53,9 @@ def test_sparse_but_continuous_path_is_not_penalized_by_sampling() -> None:
 def test_reverse_and_no_entry_are_failures_with_complete_denominator() -> None:
     execution, seam = straight_path()
     reverse = evaluate_rollout(execution[::-1], seam, "timeout", EvaluationConfig())
-    missed = evaluate_rollout(execution + [0, 0.1, 0], seam, "timeout", EvaluationConfig())
+    missed = evaluate_rollout(
+        execution + np.array([0, 0.1, 0]), seam, "timeout", EvaluationConfig()
+    )
     assert reverse.coverage_ratio == pytest.approx(1)
     assert reverse.direction_ratio == 0
     assert reverse.cte_p95_m == pytest.approx(0.001)
@@ -100,3 +102,63 @@ def test_relaxed_direction_threshold_allows_moderate_backtracking() -> None:
     report = evaluate_rollout(execution, seam, "completed", EvaluationConfig())
     assert 0.85 <= report.direction_ratio < 0.90
     assert report.success
+
+
+def circle_path(progress: np.ndarray) -> np.ndarray:
+    """返回半径 50 mm 的圆形焊缝在指定进度处的点。"""
+    angle = 2 * np.pi * progress
+    return 0.05 * np.column_stack((np.cos(angle), np.sin(angle), np.zeros_like(angle)))
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_closed_seam_direction_accepts_forward_seam_crossing(sign: int) -> None:
+    """沿任务方向走过圆环接缝不能被当成倒退一圈。"""
+    seam = circle_path(sign * np.linspace(0, 1, 201))
+    execution = circle_path(sign * np.linspace(0.002, 1.008, 201))
+    report = evaluate_rollout(execution, seam, "completed", EvaluationConfig())
+
+    assert report.coverage_ratio == pytest.approx(1)
+    assert report.direction_ratio == pytest.approx(1)
+    assert report.success
+
+
+def test_closed_seam_direction_rejects_reverse_seam_crossing() -> None:
+    """反向跨过圆环接缝不能被当成大幅正向推进。"""
+    seam = circle_path(np.linspace(0, 1, 201))
+    execution = circle_path(np.linspace(0.005, -0.005, 11))
+    report = evaluate_rollout(execution, seam, "timeout", EvaluationConfig())
+
+    assert report.direction_ratio == pytest.approx(0)
+
+
+def test_closed_seam_direction_closes_reference_without_changing_coverage() -> None:
+    """显式闭环拓扑应补齐专家参考缺少的首段，其他指标不变。"""
+    seam = circle_path(np.linspace(0, 1, 201)[1:])
+    execution = circle_path(np.linspace(0.002, 1.008, 201))
+    config = EvaluationConfig()
+    old = evaluate_rollout(execution, seam, "completed", config, seam_is_closed=False)
+    corrected = evaluate_rollout(execution, seam, "completed", config, seam_is_closed=True)
+
+    assert old.direction_ratio < 0.85
+    assert corrected.direction_ratio == pytest.approx(1)
+    assert corrected.success
+    assert corrected.coverage_ratio == old.coverage_ratio
+    assert corrected.reached_start == old.reached_start
+    assert corrected.cte_p95_m == old.cte_p95_m
+
+
+@pytest.mark.parametrize(
+    ("progress", "tracking"),
+    [([0.8, 0.1], None), ([0.99, 0.0, 0.01], [True, False, True])],
+)
+def test_closed_seam_direction_excludes_invalid_pairs(
+    progress: list[float], tracking: list[bool] | None
+) -> None:
+    """异常跳步和离缝断段都不应计入正向弧长。"""
+    seam = circle_path(np.linspace(0, 1, 201))
+    mask = np.asarray(tracking) if tracking is not None else None
+    report = evaluate_rollout(
+        circle_path(np.asarray(progress)), seam, "timeout", EvaluationConfig(), mask
+    )
+
+    assert report.direction_ratio == 0

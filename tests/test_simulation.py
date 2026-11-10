@@ -730,6 +730,7 @@ def test_pipe_workpiece_exposes_reachable_circular_seam(config_path: str) -> Non
     try:
         seam, residual = stage_for_task(simulation, config)
         assert isinstance(seam, CircularSeamPath)
+        assert seam.is_closed == (config.task.seam_id == "pipe_top")
         assert residual < 0.005
         assert seam.length_m == pytest.approx(
             np.radians(config.task.arc_sweep_deg) * seam.effective_radius_m

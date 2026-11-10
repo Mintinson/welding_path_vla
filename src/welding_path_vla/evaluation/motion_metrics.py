@@ -10,7 +10,39 @@ from welding_path_vla.evaluation.seam_geometry import (
     SeamProjection,
     interpolate_quaternions,
     interpolate_speed,
+    project_to_seam,
 )
+
+
+def direction_ratio(travel: np.ndarray) -> float:
+    """计算有效弧长增量中正向运动的距离占比。"""
+    distance = float(np.sum(np.abs(travel)))
+    return float(np.sum(np.clip(travel, 0, None)) / distance) if distance else 0.0
+
+
+def closed_seam_direction_ratio(
+    positions: np.ndarray,
+    seam_points: np.ndarray,
+    tracking: np.ndarray,
+    max_step_m: float,
+) -> float:
+    """计算闭合焊缝的方向率，保留跨接缝时真实的运动方向。
+
+    Args:
+        positions: 与 tracking 对齐的 TCP 世界坐标。
+        seam_points: 按任务方向排序的一圈焊缝参考点。
+        tracking: 有效跟踪帧掩码。
+        max_step_m: 相邻帧允许计入方向统计的最大位移，单位为米。
+    """
+    # 专家跟踪帧通常从第一个运动步开始采样，末点到首点也属于焊缝。
+    ring = np.concatenate((seam_points, seam_points[:1]))
+    projection = project_to_seam(positions, ring)
+    period = projection.total_length
+    delta = (np.diff(projection.arc_lengths) + period / 2) % period - period / 2
+    # 不跨越离缝断段，也不让异常 TCP 跳步经取模后计入方向统计。
+    tcp_step = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+    valid = tracking[:-1] & tracking[1:] & (np.maximum(np.abs(delta), tcp_step) <= max_step_m)
+    return direction_ratio(delta[valid])
 
 
 def completion_metrics(projection: SeamProjection) -> CompletionReport:
@@ -21,13 +53,9 @@ def completion_metrics(projection: SeamProjection) -> CompletionReport:
         0,
         1,
     )
-    delta = np.diff(projection.arc_lengths)
-    # TODO: 计算正向运动占比时，是否应该考虑总位移而不是总增量？
-    # positive_distance = np.sum(np.clip(delta, 0, None))  # 累加所有正向增量
-    # pcr = np.clip(positive_distance / projection.total_length, 0, 1)
-    distance = float(np.sum(np.abs(delta)))
-    direction_ratio = float(np.sum(np.clip(delta, 0, None)) / distance) if distance else 0.0
-    return CompletionReport(pcr=float(pcr), direction_ratio=direction_ratio)
+    return CompletionReport(
+        pcr=float(pcr), direction_ratio=direction_ratio(np.diff(projection.arc_lengths))
+    )
 
 
 def derivative(values: np.ndarray, timestamps: np.ndarray) -> np.ndarray:
