@@ -93,6 +93,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     use_geometry_branch: bool = False
     # latent 保留重采样路径；direct 在全部几何 CA 层直接读取完整 patch。
     geometry_attention_mode: str = "latent"
+    # 每个 direct CA 层独立读取 Qwen 文本与状态，不与视觉 patch 共用 softmax。
+    use_task_condition_attention: bool = False
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
     # 从原始腕部图像裁剪局部区域，仅供动作专家读取，不增加 Qwen token。
@@ -221,6 +223,10 @@ class TrajVLAQwenConfig(PreTrainedConfig):
                 )
         if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
             raise ValueError("geometry query and head counts must be positive")
+        if self.use_task_condition_attention and (
+            not self.use_geometry_branch or self.geometry_attention_mode != "direct"
+        ):
+            raise ValueError("task condition attention requires direct geometry attention")
         if self.use_wrist_roi:
             if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
                 raise ValueError("wrist ROI requires direct geometry attention")

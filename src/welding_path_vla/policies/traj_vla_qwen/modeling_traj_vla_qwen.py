@@ -119,6 +119,7 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             patch_mask,
             language_mask,
             state_mask,
+            condition_start=language_slice.start,
         )
         return context
 
@@ -244,6 +245,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         if not self.config.pretrained_path and self.config.load_prismatic_weights:
             self.name_or_path = self.config.prismatic_repo_id
         policy = super().wrap_with_peft(peft_config, peft_cli_overrides)
+        if self.config.use_task_condition_attention and not self.config.train_expert:
+            self.model.vlm_with_expert.decoder.task_condition_kv.requires_grad_(False)
         if self.config.use_wrist_roi:
             # 新增模块即使冻结也必须保存；不能依赖 Prismatic 重建其随机初始化权重。
             decoder = self.model.vlm_with_expert.decoder
@@ -445,6 +448,13 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.use_geometry_grounding:
             modules_to_save.append("model.geometry_grounding_heads")
+        if self.config.use_task_condition_attention:
+            # 逐层保存有 forward 的模块，避免 PEFT 漏训条件投影或重载后随机初始化。
+            modules_to_save.extend(
+                f"model.vlm_with_expert.decoder.task_condition_kv.{index}"
+                for index in range(self.config.num_expert_layers)
+                if index % self.config.self_attn_every_n_layers != 0
+            )
         if self.config.use_wrist_roi:
             modules_to_save.append("model.vlm_with_expert.decoder.wrist_roi_encoder")
             decoder = self.model.vlm_with_expert.decoder

@@ -330,6 +330,39 @@ def attend_dense_geometry(query: Tensor, key: Tensor, value: Tensor, mask: Tenso
     return attended.transpose(1, 2).flatten(2)
 
 
+class TaskConditionKV(nn.Module):
+    """将当前 Qwen 层的文本与状态映射为独立条件 K/V，不池化任务词。"""
+
+    def __init__(self, context_size: int, kv_size: int, head_dim: int) -> None:
+        """构造逐层条件投影，输出头数与当前 Expert 的 GQA K/V 一致。
+
+        Args:
+            context_size: Qwen 隐藏状态宽度。
+            kv_size: Expert 全部 K/V 头的总宽度。
+            head_dim: 单个注意力头的宽度。
+        """
+        super().__init__()
+        self.norm = nn.LayerNorm(context_size)
+        self.projection = nn.Linear(context_size, 2 * kv_size)
+        self.head_dim = head_dim
+
+    def forward(self, context: Tensor) -> tuple[Tensor, Tensor]:
+        """保留每个条件 token，投影为当前层专用的 K/V。
+
+        Args:
+            context: ``[B,L,D_qwen]`` 文本与状态片段，不含前面的视觉 token。
+
+        Returns:
+            形状均为 ``[B,Hkv,L,D_head]`` 的 key 和 value。
+        """
+        normalized = self.norm(context.to(self.norm.weight.dtype))
+        key, value = self.projection(normalized.to(self.projection.weight.dtype)).chunk(2, dim=-1)
+        return (
+            key.unflatten(-1, (-1, self.head_dim)).transpose(1, 2),
+            value.unflatten(-1, (-1, self.head_dim)).transpose(1, 2),
+        )
+
+
 class GatedDenseGeometryAttention(nn.Module):
     """用零初始化标量门控接入稠密视觉，复用当前 Expert 的 Q/K/V 投影。"""
 
@@ -380,6 +413,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         geometry_attention_mode: str = "latent",
         geometry_patch_grid: int = 16,
         use_wrist_roi: bool = False,
+        use_task_condition_attention: bool = False,
     ) -> None:
         super().__init__(
             language_model,
@@ -443,6 +477,17 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                         expert_model.config.hidden_size, 2 * layer.self_attn.k_proj.out_features
                     )
                     self.wrist_roi_attention[str(index)] = GatedDenseGeometryAttention()
+        self.task_condition_kv = nn.ModuleDict(
+            {
+                str(index): TaskConditionKV(
+                    language_model.config.hidden_size,
+                    layer.self_attn.k_proj.out_features,
+                    layer.self_attn.head_dim,
+                )
+                for index, layer in enumerate(expert_model.layers)
+                if use_task_condition_attention and not self.uses_self_attention(index)
+            }
+        )
 
     def uses_self_attention(self, layer_index: int) -> bool:
         """返回本层是否承担双流联合 SA。"""
@@ -613,6 +658,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         position_ids: Tensor,
         cache: dict[int, dict[str, Tensor]] | None,
         fill_kv_cache: bool,
+        expert_context: DenseGeometryContext | None = None,
     ) -> tuple[list[Tensor | None], dict[int, dict[str, Tensor]] | None]:
         """读取 latent 或完整 patch；direct 使用各 CA 层独立 K/V，不依赖门控。"""
         expert_layer = self.expert_model.layers[layer_index]
@@ -640,6 +686,23 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             )
             if isinstance(geometry, DirectGeometryMemory):
                 dense_states["geometry_patch_mask"] = geometry.mask
+                if self.task_condition_kv:
+                    # 文本和状态在 prefix 尾部；保留每个任务词及其 padding mask。
+                    start = expert_context.condition_start
+                    condition_key, condition_value = self.run_checkpointed(
+                        self.task_condition_kv[str(layer_index)],
+                        updated_context[:, start:],
+                        enabled=self.checkpoint_expert,
+                    )
+                    dense_states.update(
+                        {
+                            "condition_key": condition_key.to(geometry_key.dtype),
+                            "condition_value": condition_value.to(geometry_value.dtype),
+                            "condition_mask": (
+                                expert_context.language_mask | expert_context.state_mask
+                            )[:, start:],
+                        }
+                    )
                 if self.wrist_roi_encoder is not None:
                     projection = self.wrist_roi_kv[str(layer_index)]
                     local_key, local_value = projection(geometry.wrist_roi_tokens).chunk(2, dim=-1)
@@ -715,6 +778,16 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             geometry_mask,
             enabled=self.checkpoint_expert,
         )
+        if self.task_condition_kv:
+            # 独立 softmax 防止文本被大量 patch 稀释；从头训练时不加零门控。
+            attended = attended + self.run_checkpointed(
+                attend_dense_geometry,
+                query,
+                dense_states["condition_key"],
+                dense_states["condition_value"],
+                dense_states["condition_mask"],
+                enabled=self.checkpoint_expert,
+            )
         if use_dense:
             # 残差在原 Expert 输出投影前合并；门控学习后再逐渐引入局部视觉细节。
             attended = attended + self.run_checkpointed(
@@ -821,6 +894,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                     position_ids,
                     cache,
                     fill_kv_cache,
+                    expert_context,
                 )
             else:
                 (context, action), cache = self.cross_attention_layer(
@@ -891,6 +965,7 @@ def make_expert_decoder(
             geometry_attention_mode=config.geometry_attention_mode,
             geometry_patch_grid=config.vision_patch_grid,
             use_wrist_roi=config.use_wrist_roi,
+            use_task_condition_attention=config.use_task_condition_attention,
             dense_geometry_attention_layers=(
                 config.dense_geometry_attention_layers
                 if config.use_dense_geometry_attention
@@ -1014,6 +1089,7 @@ class PrismaticQwenWithExpert(nn.Module):
         self.projector.requires_grad_(config.train_projector)
         if isinstance(self.decoder, InterleavedSACADecoder):
             self.decoder.dense_geometry_attention.requires_grad_(config.train_expert)
+            self.decoder.task_condition_kv.requires_grad_(config.train_expert)
             if self.decoder.wrist_roi_encoder is not None:
                 self.decoder.wrist_roi_encoder.requires_grad_(config.train_geometry_encoder)
                 self.decoder.wrist_roi_kv.requires_grad_(config.train_expert)

@@ -24,6 +24,7 @@ class DenseGeometryContext:
         action_padding_mask: ``[B,H]``，标记 action chunk 的 episode 尾部 padding。
         wrist_roi_tokens: 可选的 ``[B,P,D]`` 局部 DINO patch，不进入 Qwen。
         wrist_roi_mask: 可选的 ``[B,P]`` 局部 patch 有效标记。
+        condition_start: 文本与状态连续片段的起点，用于排除前面的视觉 token。
     """
 
     patch_tokens: Tensor
@@ -34,6 +35,7 @@ class DenseGeometryContext:
     action_padding_mask: Tensor | None = None
     wrist_roi_tokens: Tensor | None = None
     wrist_roi_mask: Tensor | None = None
+    condition_start: int = 0
 
 
 @dataclass(slots=True)

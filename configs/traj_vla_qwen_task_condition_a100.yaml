@@ -1,0 +1,22 @@
+includes:
+  - traj_vla_qwen_direct_geometry_vision_lora_a100.yaml
+
+policy:
+  # 从 Prismatic 开始训练新动作策略，不加载已有焊接策略。
+  checkpoint: null
+  parameters:
+    load_prismatic_weights: true
+    load_base_weights: true
+    use_task_condition_attention: true
+    # 单独验证任务条件融合，不叠加本轮未取得稳定收益的局部视觉分支。
+    use_wrist_roi: false
+    vision_lora_last_n_blocks: 4
+    vision_lora_include_mlp: false
+    train_expert: true
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_task_condition_curve_plate
+  steps: 200000
+  batch_size: 16
+  save_freq: 10000
+  resume: false
