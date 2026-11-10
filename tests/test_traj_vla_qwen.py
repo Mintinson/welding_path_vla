@@ -65,6 +65,7 @@ def make_tiny_paired_decoder(
     geometry_readout_from_latents: bool = False,
     dense_geometry_attention_layers: tuple[int, ...] = (),
     geometry_attention_mode: str = "latent",
+    use_wrist_roi: bool = False,
 ) -> PairedLayerDecoder:
     """构造无需下载权重的两层 Qwen2.5 双流网络。"""
     transformers = pytest.importorskip("transformers")
@@ -104,6 +105,7 @@ def make_tiny_paired_decoder(
             dense_geometry_attention_layers=dense_geometry_attention_layers,
             geometry_attention_mode=geometry_attention_mode,
             geometry_patch_grid=2,
+            use_wrist_roi=use_wrist_roi,
             motion_action_size=32 if use_motion_latent else None,
             motion_latent_size=8,
         )

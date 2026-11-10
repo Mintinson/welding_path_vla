@@ -706,6 +706,63 @@ pixi run -e policy-sim policy-sim-deploy \
   --policy.checkpoint=outputs/train/traj_vla_qwen_weldpath_relative_v1/checkpoints/last/pretrained_model
 ```
 
+## 腕部局部高分辨率分支
+
+`configs/traj_vla_qwen_wrist_roi_a100.yaml` 保留双相机全图、512 个全图几何 patch
+和原 Qwen Context，另从腕部原始 RGB 裁剪尖端附近区域，缩放为 224×224，
+仅通过共享 DINO（含已有视觉 LoRA）生成 256 个局部 patch。不重复运行 SigLIP，
+不把局部 patch 加入 Qwen，不使用焊缝坐标或阶段标注。
+
+```yaml
+policy:
+  parameters:
+    use_wrist_roi: true
+    wrist_roi_camera_key: observation.images.wrist
+    # 原图归一化 left/top/right/bottom；640×480 对应 256×256。
+    wrist_roi_box: [0.35, 0.25, 0.75, 0.7833333333]
+```
+
+局部编码器保留二维位置，每个几何 CA 层使用独立局部 K/V 和零初始化的
+`tanh(gate)` 输出残差。零门控初始化保持原模型预测，第一步梯度更新 gate，
+随后动作损失更新局部编码器、K/V 和共享 DINO。局部 attention 与全图 attention
+分别归一化，推理时按观测缓存局部 K/V，全部 Flow 去噪步复用。
+局部编码器服从 `train_geometry_encoder`，局部 K/V 与 gate 服从 `train_expert`。
+
+开关默认关闭，关闭时不创建局部参数、不改变旧模型输入。开启要求
+`geometry_attention_mode: direct`。实机必须依据腕部相机和工具安装位置校准裁剪框；
+不得用仅在仿真中可得的焊缝位置动态选择裁剪区域。保留全图可避免接近阶段或焊缝
+离开局部视野时丢失全局信息，但局部分支不保证能从单帧 RGB 精确恢复深度。
+
+从已有四层视觉 LoRA 模型热启动时，先创建包含新模块的初始化 checkpoint：
+
+```bash
+# 在已经激活的 micromamba welding_vla 环境中执行。
+python scripts/initialize_traj_vla_qwen_wrist_roi.py \
+  --source outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_curve_plate/checkpoints/200000/pretrained_model \
+  --output outputs/train_v2/traj_vla_qwen_wrist_roi_initial/pretrained_model
+
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_wrist_roi_a100.yaml
+```
+
+初始化工具拒绝覆盖已有目录，逐张量验证旧 adapter/Expert/投影器权重完全保留，
+只允许新增 `wrist_roi_*` 参数，并复制原 relative-action 处理器和归一化统计。
+新增局部编码器和各层 K/V 从已学全图投影初始化，但参数独立，避免局部模块从随机
+特征空间起步；所有局部门控仍为零，因此初始动作保持不变。
+初始化工具仅负责权重扩展；训练学习率等由 YAML 指定，不恢复旧优化器。
+新实验为单阶段训练，新增步数从零计数。当前配置从旧 200k 权重再训练 100k，
+每卡 batch 16、学习率 2e-5、warmup 1000，每 10k 保存 checkpoint。
+新增一次 DINO 前向和局部注意力会增加计算量与显存，应以实际双卡测试为准。
+
+部署仍使用同一个配置，并显式选择新训练的 checkpoint：
+
+```bash
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_wrist_roi_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_wrist_roi_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
 ## 解冻主干
 
 默认只训练 Token Merger、Prismatic Projector、Seam Query Resampler、状态/动作投影

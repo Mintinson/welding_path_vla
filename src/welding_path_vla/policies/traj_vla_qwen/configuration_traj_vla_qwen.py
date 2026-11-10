@@ -95,6 +95,11 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     geometry_attention_mode: str = "latent"
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
+    # 从原始腕部图像裁剪局部区域，仅供动作专家读取，不增加 Qwen token。
+    use_wrist_roi: bool = False
+    wrist_roi_camera_key: str = "observation.images.wrist"
+    # 原图归一化边界 (left, top, right, bottom)；640×480 下为尖端附近 256×256。
+    wrist_roi_box: tuple[float, float, float, float] = (0.35, 0.25, 0.75, 0.7833333333)
     # 少量 CA 层额外读取未重采样的 DINO patch；关闭时不创建任何新参数。
     use_dense_geometry_attention: bool = False
     dense_geometry_attention_layers: tuple[int, ...] = (7, 15)
@@ -216,6 +221,14 @@ class TrajVLAQwenConfig(PreTrainedConfig):
                 )
         if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
             raise ValueError("geometry query and head counts must be positive")
+        if self.use_wrist_roi:
+            if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
+                raise ValueError("wrist ROI requires direct geometry attention")
+            if len(self.wrist_roi_box) != 4:
+                raise ValueError("wrist_roi_box must contain left, top, right, bottom")
+            left, top, right, bottom = self.wrist_roi_box
+            if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+                raise ValueError("wrist_roi_box must define a nonempty normalized crop")
         if self.use_dense_geometry_attention:
             layers = self.dense_geometry_attention_layers
             if not self.use_geometry_branch:

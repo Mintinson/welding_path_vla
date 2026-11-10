@@ -379,6 +379,7 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         dense_geometry_attention_layers: tuple[int, ...] = (),
         geometry_attention_mode: str = "latent",
         geometry_patch_grid: int = 16,
+        use_wrist_roi: bool = False,
     ) -> None:
         super().__init__(
             language_model,
@@ -425,10 +426,53 @@ class InterleavedSACADecoder(PairedLayerDecoder):
         self.dense_geometry_attention = nn.ModuleDict(
             {str(index): GatedDenseGeometryAttention() for index in dense_geometry_attention_layers}
         )
+        self.wrist_roi_encoder = (
+            DirectGeometryEncoder(
+                geometry_input_size, expert_model.config.hidden_size, 1, geometry_patch_grid
+            )
+            if use_wrist_roi
+            else None
+        )
+        self.wrist_roi_kv = nn.ModuleDict()
+        self.wrist_roi_attention = nn.ModuleDict()
+        if use_wrist_roi:
+            for index, layer in enumerate(expert_model.layers):
+                if not self.uses_self_attention(index):
+                    # 局部支路拥有独立 K/V；Q 复用动作查询，零门控保证旧权重初始化一致。
+                    self.wrist_roi_kv[str(index)] = nn.Linear(
+                        expert_model.config.hidden_size, 2 * layer.self_attn.k_proj.out_features
+                    )
+                    self.wrist_roi_attention[str(index)] = GatedDenseGeometryAttention()
 
     def uses_self_attention(self, layer_index: int) -> bool:
         """返回本层是否承担双流联合 SA。"""
         return layer_index % self.self_attn_every_n_layers == 0
+
+    @torch.no_grad()
+    def initialize_wrist_roi_from_global(self, camera_index: int) -> None:
+        """热启动时复制全图已学投影到独立局部模块，保留零门控与原路径权重。
+
+        Args:
+            camera_index: 腕部相机在原全图 geometry memory 中的编号。
+        """
+        local, global_encoder = self.wrist_roi_encoder, self.direct_geometry_encoder
+        for name in ("patch_projection", "position_projection", "output_norm"):
+            getattr(local, name).load_state_dict(getattr(global_encoder, name).state_dict())
+        local.camera_embedding.weight[0].copy_(global_encoder.camera_embedding.weight[camera_index])
+        for index, projection in self.wrist_roi_kv.items():
+            attention = self.expert_model.layers[int(index)].self_attn
+            sources = (attention.k_proj, attention.v_proj)
+            projection.weight.copy_(torch.cat([layer.weight for layer in sources]))
+            projection.bias.copy_(
+                torch.cat(
+                    [
+                        layer.bias
+                        if layer.bias is not None
+                        else layer.weight.new_zeros(layer.out_features)
+                        for layer in sources
+                    ]
+                )
+            )
 
     def configure_cross_attention(self) -> None:
         """未启用几何支路时，让 Expert K/V 接收 Qwen Context K/V。"""
@@ -596,6 +640,24 @@ class InterleavedSACADecoder(PairedLayerDecoder):
             )
             if isinstance(geometry, DirectGeometryMemory):
                 dense_states["geometry_patch_mask"] = geometry.mask
+                if self.wrist_roi_encoder is not None:
+                    projection = self.wrist_roi_kv[str(layer_index)]
+                    local_key, local_value = projection(geometry.wrist_roi_tokens).chunk(2, dim=-1)
+                    # PEFT 新模块可为 fp32，而 Expert 为 bf16；无 autocast 部署也必须匹配。
+                    local_key = local_key.to(geometry_key.dtype)
+                    local_value = local_value.to(geometry_value.dtype)
+                    head_dim = expert_layer.self_attn.head_dim
+                    dense_states.update(
+                        {
+                            "wrist_roi_key": local_key.unflatten(-1, (-1, head_dim)).transpose(
+                                1, 2
+                            ),
+                            "wrist_roi_value": local_value.unflatten(-1, (-1, head_dim)).transpose(
+                                1, 2
+                            ),
+                            "wrist_roi_mask": geometry.wrist_roi_mask,
+                        }
+                    )
             if use_dense:
                 # 复用 Resampler 的投影、相机编码与归一化；不新增视觉编码前向。
                 dense = self.geometry_resampler.patch_norm(geometry.patch_tokens.flatten(1, 2))
@@ -663,6 +725,15 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                 dense_states["dense_patch_mask"],
                 enabled=self.checkpoint_expert,
             )
+        if self.wrist_roi_encoder is not None:
+            attended = attended + self.run_checkpointed(
+                self.wrist_roi_attention[str(layer_index)],
+                query,
+                dense_states["wrist_roi_key"],
+                dense_states["wrist_roi_value"],
+                dense_states["wrist_roi_mask"],
+                enabled=self.checkpoint_expert,
+            )
         updated_action = self.run_checkpointed(
             partial(self.adapter.complete_layer, expert_layer),
             action,
@@ -707,6 +778,19 @@ class InterleavedSACADecoder(PairedLayerDecoder):
                         if self.direct_geometry_encoder is not None
                         else self.geometry_resampler(context, expert_context)
                     )
+                    if self.wrist_roi_encoder is not None:
+                        if expert_context.wrist_roi_tokens is None:
+                            raise ValueError("wrist ROI requires local DINO features")
+                        local = self.wrist_roi_encoder(
+                            DenseGeometryContext(
+                                expert_context.wrist_roi_tokens[:, None],
+                                expert_context.wrist_roi_mask[:, None],
+                                expert_context.language_mask,
+                                expert_context.state_mask,
+                            )
+                        )
+                        geometry.wrist_roi_tokens = local.tokens
+                        geometry.wrist_roi_mask = local.mask
                 if self.motion_latent is not None and not motion_injected:
                     motion_token: Tensor | None = None
                     if geometry is not None and context is not None and expert_context is not None:
@@ -806,6 +890,7 @@ def make_expert_decoder(
             geometry_readout_from_latents=config.geometry_readout_from_latents,
             geometry_attention_mode=config.geometry_attention_mode,
             geometry_patch_grid=config.vision_patch_grid,
+            use_wrist_roi=config.use_wrist_roi,
             dense_geometry_attention_layers=(
                 config.dense_geometry_attention_layers
                 if config.use_dense_geometry_attention
@@ -929,6 +1014,10 @@ class PrismaticQwenWithExpert(nn.Module):
         self.projector.requires_grad_(config.train_projector)
         if isinstance(self.decoder, InterleavedSACADecoder):
             self.decoder.dense_geometry_attention.requires_grad_(config.train_expert)
+            if self.decoder.wrist_roi_encoder is not None:
+                self.decoder.wrist_roi_encoder.requires_grad_(config.train_geometry_encoder)
+                self.decoder.wrist_roi_kv.requires_grad_(config.train_expert)
+                self.decoder.wrist_roi_attention.requires_grad_(config.train_expert)
             resampler = self.decoder.geometry_resampler
             if resampler is not None:
                 resampler.requires_grad_(config.train_geometry_resampler)

@@ -66,6 +66,31 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
         semantic, dense = self.vlm_with_expert.embed_image_with_geometry(image)
         return semantic, dense
 
+    def encode_context(
+        self,
+        images: list[Tensor],
+        image_masks: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        state: Tensor,
+    ) -> TokenSequence:
+        """局部图像位于列表末尾，只生成专家 memory，保持全图 Context 长度不变。"""
+        local = self.config.use_wrist_roi
+        context = super().encode_context(
+            images[:-1] if local else images,
+            image_masks[:-1] if local else image_masks,
+            language_tokens,
+            language_mask,
+            state,
+        )
+        if local:
+            tokens = self.vlm_with_expert.vision_encoder.forward_dino(images[-1])
+            context.expert_context.wrist_roi_tokens = tokens
+            context.expert_context.wrist_roi_mask = image_masks[-1][:, None].expand(
+                -1, tokens.shape[1]
+            )
+        return context
+
     def attach_expert_context(
         self,
         context: TokenSequence,
@@ -218,13 +243,23 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         """让 PEFT checkpoint 记录可重建内部加载基座的 Prismatic 来源。"""
         if not self.config.pretrained_path and self.config.load_prismatic_weights:
             self.name_or_path = self.config.prismatic_repo_id
-        return super().wrap_with_peft(peft_config, peft_cli_overrides)
+        policy = super().wrap_with_peft(peft_config, peft_cli_overrides)
+        if self.config.use_wrist_roi:
+            # 新增模块即使冻结也必须保存；不能依赖 Prismatic 重建其随机初始化权重。
+            decoder = self.model.vlm_with_expert.decoder
+            if not self.config.train_geometry_encoder:
+                decoder.wrist_roi_encoder.requires_grad_(False)
+            if not self.config.train_expert:
+                decoder.wrist_roi_kv.requires_grad_(False)
+                decoder.wrist_roi_attention.requires_grad_(False)
+        return policy
+
 
     def prepare_images(
         self,
         batch: dict[str, Tensor],
     ) -> tuple[list[Tensor], list[Tensor]]:
-        """把多相机 RGB 直接缩放到 Prismatic 的 224×224 输入。"""
+        """把全图缩放到 224×224；开启 ROI 时另从原图裁剪并缩放局部输入。"""
         images: list[Tensor] = []
         masks: list[Tensor] = []
         present = [key for key in self.config.image_features if key in batch]
@@ -252,6 +287,29 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         for _ in range(min(len(missing), self.config.empty_cameras)):
             images.append(torch.zeros_like(images[0]))
             masks.append(torch.zeros_like(masks[0]))
+        if self.config.use_wrist_roi:
+            key = self.config.wrist_roi_camera_key
+            if key not in present:
+                raise ValueError(f"wrist ROI camera is missing: {key}")
+            source = batch[key][:, -1] if batch[key].ndim == 5 else batch[key]
+            height, width = source.shape[-2:]
+            left, top, right, bottom = self.config.wrist_roi_box
+            # 必须在原图上裁剪；不能把已缩小的全图再次放大冒充高分辨率。
+            crop = source[
+                ...,
+                round(top * height) : round(bottom * height),
+                round(left * width) : round(right * width),
+            ]
+            images.append(
+                F.interpolate(
+                    crop,
+                    size=target,
+                    mode="bicubic",
+                    align_corners=False,
+                    antialias=True,
+                ).clamp(0, 1)
+            )
+            masks.append(masks[present.index(key)])
         return images, masks
 
     def get_optim_params(self) -> Any:
@@ -387,6 +445,16 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.use_geometry_grounding:
             modules_to_save.append("model.geometry_grounding_heads")
+        if self.config.use_wrist_roi:
+            modules_to_save.append("model.vlm_with_expert.decoder.wrist_roi_encoder")
+            decoder = self.model.vlm_with_expert.decoder
+            for index in decoder.wrist_roi_attention:
+                modules_to_save.extend(
+                    [
+                        f"model.vlm_with_expert.decoder.wrist_roi_kv.{index}",
+                        f"model.vlm_with_expert.decoder.wrist_roi_attention.{index}",
+                    ]
+                )
         if self.config.use_motion_latent:
             modules_to_save.append("model.vlm_with_expert.decoder.motion_latent")
         if self.config.use_dense_geometry_attention and self.config.train_expert:

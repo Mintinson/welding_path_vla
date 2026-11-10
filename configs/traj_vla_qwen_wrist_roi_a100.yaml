@@ -1,0 +1,26 @@
+includes:
+  - traj_vla_qwen_direct_geometry_vision_lora_a100.yaml
+
+policy:
+  # 用 initialize_traj_vla_qwen_wrist_roi.py 从四层视觉 LoRA 200k 生成。
+  checkpoint: outputs/train_v2/traj_vla_qwen_wrist_roi_initial/pretrained_model
+  parameters:
+    use_wrist_roi: true
+    wrist_roi_camera_key: observation.images.wrist
+    wrist_roi_box: [0.35, 0.25, 0.75, 0.7833333333]
+    vision_lora_last_n_blocks: 4
+    vision_lora_include_mlp: false
+    # 热启动已有策略，局部支路同阶段学习，不使用额外的分阶段监督。
+    scheduler_warmup_steps: 1000
+    scheduler_decay_steps: 100000
+    scheduler_decay_lr: 2.5e-6
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_wrist_roi_curve_plate
+  batch_size: 16
+  num_workers: 8
+  steps: 100000
+  lr: 2.0e-5
+  save_freq: 10000
+  eval_steps: 10000
+  resume: false
