@@ -355,6 +355,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         )
         if self.config.lora_target in {"vision", "all"}:
             vision = self.model.vlm_with_expert.vision_encoder
+            projections = r"attn\.(qkv|proj)"
+            if self.config.vision_lora_include_mlp:
+                projections = rf"({projections}|mlp\.(fc1|fc2))"
             for encoder in ("dino", "siglip"):
                 # 只适配参与特征输出的末端 block，早期视觉层仍保持冻结。
                 output_layer = getattr(vision, f"{encoder}_layer")
@@ -362,7 +365,7 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 blocks = "|".join(str(index) for index in range(first_layer, output_layer + 1))
                 selected.append(
                     rf"model\.vlm_with_expert\.vision_encoder\.{encoder}_featurizer"
-                    rf"\.blocks\.({blocks})\.attn\.(qkv|proj)"
+                    rf"\.blocks\.({blocks})\.{projections}"
                 )
         modules_to_save = [
             "model.action_in_proj",

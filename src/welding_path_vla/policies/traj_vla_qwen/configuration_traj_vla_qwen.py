@@ -149,6 +149,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     lora_target: str = "expert"
     # 从实际输出特征的层向前计数，不包含视觉塔未参与输出的最后一层。
     vision_lora_last_n_blocks: int = 4
+    # 在所选视觉 block 内同时适配 MLP；默认关闭，保持已有 attention-only adapter。
+    vision_lora_include_mlp: bool = False
     gradient_checkpointing_qwen: bool = False
     gradient_checkpointing_expert: bool = False
 

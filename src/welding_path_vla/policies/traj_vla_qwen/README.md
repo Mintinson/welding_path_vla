@@ -130,9 +130,11 @@ training:
     lora_alpha: 64
 ```
 
-- `vision` 只对 DINO/SigLIP 实际输出特征之前的末端 attention `qkv/proj` 加 LoRA。
+- `vision` 默认只对 DINO/SigLIP 实际输出特征之前的末端 attention `qkv/proj` 加 LoRA。
   当前四层范围分别为 DINO 的 19–22 层、SigLIP 的 22–25 层（零基编号），排除未参与
   特征输出的末层。`vision_lora_last_n_blocks` 可以调整范围。
+- `vision_lora_include_mlp=true` 额外适配这些 block 的 `mlp.fc1/fc2`；默认关闭，
+  已有配置和 adapter 仍使用原来的 attention-only 范围。
 - `train_vision_encoder=false` 冻结视觉基座权重，不会冻结 PEFT 注入的 LoRA 参数。
   Qwen 继续冻结；动作 Expert、动作头、状态投影、视觉投影器、直接几何编码器继续训练，
   并随 adapter 保存。两路相机共享同一组视觉 LoRA。
@@ -170,7 +172,48 @@ python scripts/deploy_simulation_policy.py \
 ```
 
 `SIGINT`/`SIGTERM` 不会自动保存当前步；恢复位置是最后一个已写完的 checkpoint。
-后台训练应使用独立进程组启动，停止时向该训练进程组发信号，避免只杀启动器留下 GPU 子进程。
+后台训练应使用独立进程组启动。Accelerate 的 worker 可能拥有各自的进程组，停止前应
+核对启动器与 worker 的 PID/PGID；向这些训练进程组发送 SIGTERM，避免留下 GPU 子进程。
+
+### 扩展视觉适配：八层 attention + MLP
+
+`configs/traj_vla_qwen_direct_geometry_vision_lora_plus_a100.yaml` 设置：
+
+```yaml
+policy:
+  parameters:
+    lora_target: vision
+    vision_lora_last_n_blocks: 8
+    vision_lora_include_mlp: true
+```
+
+实际范围为 DINO 15–22、SigLIP 18–25，每个 block 的 `attn.qkv/attn.proj/mlp.fc1/mlp.fc2`
+共 64 组 LoRA，rank=32、alpha=64。保持 Qwen 冻结、完整 patch、Direct Geometry、
+16 层 Expert、图像增强与单阶段训练；无需焊缝坐标和阶段标签。
+从 Prismatic 基座开始训练 200k，不直接恢复四层 attention-only 实验的优化器状态。
+该配置继承现有 eval 设置，但不以训练期 eval loss 选择 checkpoint；本实验不修改验证逻辑。
+更多视觉 block 需要反向传播，短训练应检查峰值显存和梯度，不能按 LoRA 参数量推算耗时。
+
+2026-10-19 已在双 A100 40 GiB 上验证每卡 batch=16：120 步真实数据训练，
+从第 120 步恢复到第 125 步，保存/恢复和部署入口缓存推理均通过。
+短测试用 20 步 warmup 提前达到峰值学习率 `5e-5`，正式配置仍为 4000 步 warmup。
+可训练参数为 118,294,912；全部 64 组视觉 LoRA B 都已更新，稳定更新约 0.69–0.74 秒/步，
+分配显存峰值约 28.6 GiB/卡。短测试验证执行可用性，不代表 rollout 收益或长期稳定性保证。
+
+```bash
+micromamba run -n welding_vla zsh -c '
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 accelerate launch \
+  --num_processes=2 --num_machines=1 --mixed_precision=bf16 --dynamo_backend=no \
+  scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_direct_geometry_vision_lora_plus_a100.yaml
+'
+```
+
+输出根目录为 `outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_plus_curve_plate`；
+恢复同一实验时追加 `--training.resume=true`。部署使用同一配置并通过
+`--policy.checkpoint=outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_plus_curve_plate/checkpoints/200000/pretrained_model`
+指定实际已保存的 checkpoint。
+
 
 ## Qwen 输入缩放对照实验
 

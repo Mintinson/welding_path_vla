@@ -1280,6 +1280,24 @@ def test_lora_targets_can_select_qwen_or_expert() -> None:
                 last - 1 <= index <= last
             )
 
+    # 八层 attention + MLP 只覆盖实际参与特征输出的 block。
+    policy.config.vision_lora_last_n_blocks = 8
+    policy.config.vision_lora_include_mlp = True
+    targets = policy._get_default_peft_targets()
+    for encoder, last in (("dino", 22), ("siglip", 25)):
+        for index in range(last + 2):
+            for projection in ("attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"):
+                name = (
+                    f"model.vlm_with_expert.vision_encoder.{encoder}_featurizer"
+                    f".blocks.{index}.{projection}"
+                )
+                assert bool(re.fullmatch(targets["target_modules"], name)) == (
+                    last - 7 <= index <= last
+                )
+    assert not re.fullmatch(
+        targets["target_modules"], "model.vlm_with_expert.qwen.model.layers.15.mlp.up_proj"
+    )
+
     policy.config.train_expert = False
     assert (
         "model.vlm_with_expert.decoder.expert_model"
