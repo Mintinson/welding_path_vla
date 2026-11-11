@@ -30,6 +30,10 @@
 | `export-lerobot` | `export_lerobot.py` | 单源或多源导出 LeRobot Dataset v3 |
 | `upload-lerobot` | `upload_lerobot_dataset.py` | 上传已经完成的 LeRobot 数据集 |
 | `policy-data-check` | `check_policy_data.py` | 检查数据 schema、规模和策略输入契约 |
+| `record-real` | `record_real.py` → 原生 `lerobot_record.record` | 薄配置扩展，附加方向/自定义标签并被动采集完整路径 |
+| `check-real-devices` | `check_real_devices.py` | 独立开关机器人和相机，短时轮询状态并预览画面 |
+| `preview-real` | `preview_real.py` → 原生 `lerobot_teleoperate.teleop_loop` | 复用录制配置，只读显示机器人状态和双相机，不保存数据 |
+| `prepare-real-data` | `prepare_real_dataset.py` | 校验真机数据并补齐 relative action 训练统计 |
 | `lerobot-info` | `inspect_lerobot_dataset.py` | 按任务汇总 LeRobot episode 和帧数 |
 | `train-policy` | `train_policy.py` | 单进程训练、恢复训练或命令预览 |
 | `train-policy-2gpu` | `train_policy.py` | 用 Accelerate 启动两个 DDP 进程 |

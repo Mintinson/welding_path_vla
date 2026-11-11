@@ -5,6 +5,8 @@
 mesh/惯量模型；数据链路包含参数化工件、专家轨迹、双相机原始数据、质量验证、回放和
 LeRobot Dataset v3 导出。
 
+项目全程不开弧，研究焊枪沿焊缝轨迹的学习与复现，不涉及真实焊接过程。
+
 ## 环境
 
 ```bash
@@ -70,7 +72,9 @@ scripts/
 └── deploy_simulation_policy.py # robosuite 闭环部署
 ```
 
-原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_actions` 可构造相对预测时刻 TCP、共享同一锚点的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
+仿真原始 episode 是唯一事实源，使用 `trajectory.npz + global.mp4 + wrist.mp4 + metadata.json`。实际 TCP、专家参考和安全命令均保存为绝对轨迹；动作同时保存 seam、robot base 和 world frame 表达。`build_relative_actions` 可构造相对预测时刻 TCP、共享同一锚点的 9D future chunk 与有效 mask。每条记录包含 N 个命令与 N+1 个同步状态/图像。
+
+真机通过 `record-real` 薄封装调用原生 `lerobot-record` 流程，直接保存 LeRobot 数据；采集端只读取机械臂与双相机，动作标签来自后继实测 TCP。入口为 `configs/real_record.yaml`，可用 `task_conditions` 显式记录方向、已知工艺参数和自定义标量标签。录制后运行 `prepare-real-data` 补齐训练契约和 relative action 统计。安装、相机选择和操作说明见[真机数据采集](docs/real-data-collection.md)。
 
 `sim view` 显示 YAML 中的真实 home 关节姿态；`sim collect` 默认每 10 个 episode 编号采样一组焊枪姿态、执行方向、速度以及圆管起点和扫掠角，工件位姿和机器人初始状态仍逐条变化。录制前会对接近、跟踪和退出的完整轨迹执行连续 IK、关节限位、速度连续性和碰撞预检；不可行时在 `randomization.max_sampling_attempts` 内重采场景与初态，而不是录制一条已知失败的长视频。实际任务参数仅写入 `task_parameters`，instruction 保持任务 YAML 中的固定文本。
 

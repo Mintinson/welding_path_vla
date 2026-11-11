@@ -18,11 +18,15 @@
 |---|---|---|
 | 快速入口 | [脚本入口与配置规则](script-entrypoints.md) | Pixi 环境、脚本映射、配置组合和覆盖优先级 |
 | 采集原理 | [仿真数据采集原理与格式](data-collection.md) | 几何专家、执行时序、raw 字段、质量门和 LeRobot 目录结构 |
+| 真机采集 | [被动采集流程](real-data-collection.md) | Pixi 安装、原生录制、方向与自定义标签、只读边界、数据整理与同步备忘 |
+| 虚拟控制器验收 | [采集与 VLA 训练验收](validation/vm-capture-2026-10-19.md) | 实际 SDK 读取、双黑帧相机、采集时序及 Trajectory-VLA 参数更新证据 |
+| 真机格式对照 | [服务器训练子集对照](validation/real-schema-2026-10-20.md) | 字段类型、动作契约、完整标签要求与可选阶段索引 |
 | 数据全流程 | [数据采集与训练工作流](data-training-workflow.md) | 采集、验证、回放、导出、Hub 上传、训练和恢复 |
 | 训练规模 | [Batch、Step 与训练时间](training-scale-guide.md) | DDP 全局 batch、epoch、step 和 wall time 计算 |
 | 仿真任务 | [工件与焊缝任务](simulation/workpieces.md) | L 型、管底、管口、曲线平板和三面角工件 |
 | 场景布局 | [真实照片对齐布局](simulation/photo-layout.md) | 桌面、机器人、相机和坐标近似 |
 | 仿真部署 | [闭环 Rollout](simulation-deployment.md) | checkpoint、动作处理、安全门、终止、输出与排错 |
+| Elfin 策略控制 | [ServoP 部署](elfin-policy-deployment.md) | LeRobot 动作块、独立伺服循环、华沿虚拟控制器和 RTC 接口 |
 | ACT | [ACT 基线](act-pipeline.md) | 数据契约、训练、离线评估和仿真部署 |
 | SmolVLA | [SmolVLA 基线](smolvla-pipeline.md) | 官方模型接入、恢复训练和多任务部署 |
 | π0 / π0.5 | [π0 系列](pi-pipeline.md) | LoRA、A100 配置、训练和部署 |
