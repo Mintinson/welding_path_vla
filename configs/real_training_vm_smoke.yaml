@@ -1,0 +1,26 @@
+includes:
+  - base.yaml
+  - policies/trajectory_vla.yaml
+
+# 使用完整的项目 Trajectory-VLA，短步验证，不评价黑帧数据上的任务能力。
+policy:
+  welding_prompt_fields: []
+  parameters:
+    resize_imgs_with_padding: [256, 256]
+training:
+  dataset_repo_id: huayan/vm_black_smoke_20261019
+  dataset_root: datasets/real/vm_black_smoke_20261019
+  output_dir: outputs/train/vm_black_smoke_20261019
+  batch_size: 1
+  steps: 3
+  num_workers: 0
+  video_backend: pyav
+  eval_split: 0
+  eval_steps: 0
+  log_freq: 1
+  save_freq: 3
+  amp_dtype: bfloat16
+  resume: false
+  wandb: false
+  phase_sampling:
+    enabled: false

@@ -1,0 +1,48 @@
+# 仅做虚拟控制器链路验收：真实读取运动状态，双相机使用全黑占位图像。
+robot:
+  type: elfin_welding
+  host: 192.168.56.101
+  port: 10003
+  scene_config: configs/base.yaml
+  fps: 30
+  cameras:
+    global:
+      type: black
+      width: 640
+      height: 480
+      fps: 30
+    wrist:
+      type: black
+      width: 640
+      height: 480
+      fps: 30
+teleop:
+  type: elfin_passive
+dataset:
+  repo_id: huayan/vm_black_smoke_20261019
+  root: datasets/real/vm_black_smoke_20261019
+  single_task: Observe the externally controlled robot motion with placeholder black images.
+  fps: 30
+  num_episodes: 3
+  episode_time_s: 15
+  reset_time_s: 0
+  push_to_hub: false
+  video: true
+  streaming_encoding: true
+  encoder_threads: 1
+  rgb_encoder:
+    vcodec: av1
+    pix_fmt: yuv420p
+    g: 2
+    crf: 30
+    preset: 12
+    fast_decode: 0
+    video_backend: pyav
+    extra_options: {}
+display_data: false
+play_sounds: false
+require_task_labels: false  # 黑帧联调，不虚构未知方向和工艺参数。
+task_conditions:
+  extra:
+    test_only: true
+    camera_source: black_placeholder
