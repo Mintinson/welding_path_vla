@@ -119,6 +119,8 @@ policy-data-check = "python scripts/check_policy_data.py"
 lerobot-info = "python scripts/inspect_lerobot_dataset.py"
 prepare-real-data = "python scripts/prepare_real_dataset.py"
 record-real = "python scripts/record_real.py --config_path=configs/real_record.yaml"
+check-real-devices = "python scripts/check_real_devices.py"
+preview-real = "python scripts/preview_real.py"
 policy-evaluate = "python scripts/evaluate_policy.py"
 policy-sim-deploy = "python scripts/deploy_simulation_policy.py"
 
