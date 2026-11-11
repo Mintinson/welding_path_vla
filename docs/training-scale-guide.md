@@ -68,7 +68,7 @@ SmolVLA 使用整齐的 60,000 step，而不是精确一轮的 57,407；因此�
 数据增加后先执行：
 
 ```bash
-pixi run -e train policy-data-check --config_path=configs/POLICY.yaml
+pixi run policy-data-check --config_path=configs/POLICY.yaml
 ```
 
 再使用报告中的训练帧数重算，不能把本节快照永久当作默认事实。

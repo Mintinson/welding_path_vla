@@ -77,13 +77,13 @@ checkpoint processor；旧 checkpoint 没有 builder，仍保持旧任务文本�
 先以单 worker 检查场景和一小批数据：
 
 ```bash
-pixi install -e sim
-pixi run -e sim sim-view --config_path=configs/default.yaml
-pixi run -e sim sim-collect \
+pixi install
+pixi run sim-view --config_path=configs/default.yaml
+pixi run sim-collect \
   --config_path=configs/default.yaml \
   --collection.episodes=5 \
   --collection.workers=1
-pixi run -e sim data-validate \
+pixi run data-validate \
   --config_path=configs/default.yaml \
   --collection.dataset_root=datasets/weldpath_raw_v2
 ```
@@ -91,14 +91,14 @@ pixi run -e sim data-validate \
 回放一条数据：
 
 ```bash
-pixi run -e sim sim-replay \
+pixi run sim-replay \
   --episode=datasets/weldpath_raw_v2/episodes/episode_000000
 ```
 
 确认机器人外观、双相机、焊枪姿态、进度和碰撞信号后再并行采集：
 
 ```bash
-pixi run -e sim sim-collect \
+pixi run sim-collect \
   --config_path=configs/curve_plate.yaml \
   --collection.episodes=500 \
   --collection.workers=4
@@ -156,8 +156,8 @@ valid_mask = chunk.valid_mask
 新建一个视频数据集：
 
 ```bash
-pixi install -e data
-pixi run -e data export-lerobot \
+pixi install
+pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=datasets/weldpath_lerobot_relative_v1 \
@@ -186,7 +186,7 @@ Face `Map` 进度及 SVT 初始化信息。可用以下参数调节：
 可以只恢复每帧场景并重新渲染双相机视频：
 
 ```bash
-pixi run -e sim rerender-dataset \
+pixi run rerender-dataset \
   --dataset=datasets/weldpath_trihedral_vertical_raw_v2
 ```
 
@@ -196,7 +196,7 @@ pixi run -e sim rerender-dataset \
 LeRobot 数据必须能找到 manifest 中对应的 raw 唯一事实源：
 
 ```bash
-pixi run -e sim rerender-dataset \
+pixi run rerender-dataset \
   --dataset=datasets/weldpath_lerobot_relative_v1 \
   --raw_dataset_glob='datasets/*_raw_v2'
 ```
@@ -209,7 +209,7 @@ pixi run -e sim rerender-dataset \
 按原始 episode 编号选择闭区间：
 
 ```bash
-pixi run -e data export-lerobot \
+pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_raw_v2 \
   --output=datasets/weldpath_lerobot_relative_v1 \
@@ -220,7 +220,7 @@ pixi run -e data export-lerobot \
 原始数据增加后增量追加：
 
 ```bash
-pixi run -e data export-lerobot \
+pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=datasets/weldpath_lerobot_relative_v1 \
@@ -235,14 +235,14 @@ pixi run -e data export-lerobot \
 令牌保存在 Hugging Face 凭据库，不写入 YAML：
 
 ```bash
-pixi run -e data hf auth whoami
-pixi run -e data hf auth login
+pixi run hf auth whoami
+pixi run hf auth login
 ```
 
 转换完成后自动上传：
 
 ```bash
-HF_XET_HIGH_PERFORMANCE=1 pixi run -e data export-lerobot \
+HF_XET_HIGH_PERFORMANCE=1 pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=/path/to/weldpath_lerobot_relative_v1 \
@@ -254,7 +254,7 @@ HF_XET_HIGH_PERFORMANCE=1 pixi run -e data export-lerobot \
 尚不完整。网络中断但本地转换已完成时，只重新上传现有目录：
 
 ```bash
-HF_XET_HIGH_PERFORMANCE=1 pixi run -e data upload-lerobot \
+HF_XET_HIGH_PERFORMANCE=1 pixi run upload-lerobot \
   --dataset=/run/media/mintinson/DataDiskD/welding_path_vla/lerobot/weldpath_relative_v1 \
   --repo_id=mintinson/weldpath_relative_v1
 ```
@@ -267,12 +267,12 @@ HF_XET_HIGH_PERFORMANCE=1 pixi run -e data upload-lerobot \
 所有 LeRobot 策略共用相同入口。先检查数据和最终训练计划：
 
 ```bash
-pixi install -e train
-pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
-pixi run -e train train-policy \
+pixi install
+pixi run policy-data-check --config_path=configs/smolvla.yaml
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --dry_run=true
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --training.resume=false
 ```
@@ -280,8 +280,8 @@ pixi run -e train train-policy \
 使用 LeRobot 原生 episode 子集训练单一任务：
 
 ```bash
-pixi run -e data lerobot-info --config_path=configs/smolvla.yaml
-pixi run -e train train-policy \
+pixi run lerobot-info --config_path=configs/smolvla.yaml
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --training.include_tasks='["pipe_top"]'
 ```
@@ -301,7 +301,7 @@ schema。
 对于本功能加入前已经存在、但还没有 phase sidecar 的旧数据集，可根据导出 manifest 补建：
 
 ```bash
-pixi run -e train python scripts/build_phase_index.py \
+pixi run python scripts/build_phase_index.py \
   --dataset-root datasets/lerobot/weldpath_lerobot_relative_v3 \
   --raw-root datasets/raw_v3 \
   --output datasets/lerobot/weldpath_lerobot_relative_v3/meta/phase_index.npz
@@ -311,7 +311,7 @@ pixi run -e train python scripts/build_phase_index.py \
 完整后，在任意模型配置或命令行打开：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/xvla_a100.yaml \
   --training.phase_sampling.enabled=true \
   --training.phase_sampling.index_path=datasets/lerobot/weldpath_lerobot_relative_v3/meta/phase_index.npz
@@ -327,7 +327,7 @@ pixi run -e train train-policy \
 联网后使用 `wandb sync` 上传。训练中断后保持原 `training.output_dir`：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --training.resume=true
 ```
@@ -338,7 +338,7 @@ scheduler 和全局 step 时，使用 `policy.checkpoint` 并指定新的输出�
 双 A100 使用对应的 `_a100.yaml` 和 DDP 入口：
 
 ```bash
-pixi run -e train train-policy-2gpu \
+pixi run train-policy-2gpu \
   --config_path=configs/trajectory_vla_a100.yaml
 ```
 
@@ -349,7 +349,7 @@ batch、step 和数据遍历量的计算见[训练规模指南](training-scale-g
 离线评估只衡量留出数据拟合，不等价于闭环成功率：
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/smolvla.yaml \
   --policy.checkpoint=CHECKPOINT
 ```

@@ -37,21 +37,21 @@ policy checkpoint 时不再重复加载裸 VLM，并不表示丢弃 checkpoint �
 ## 训练与恢复
 
 ```bash
-pixi run -e train policy-data-check --config_path=configs/trajectory_vla.yaml
-pixi run -e train train-policy \
+pixi run policy-data-check --config_path=configs/trajectory_vla.yaml
+pixi run train-policy \
   --config_path=configs/trajectory_vla.yaml \
   --dry_run=true
-pixi run -e train train-policy --config_path=configs/trajectory_vla.yaml
+pixi run train-policy --config_path=configs/trajectory_vla.yaml
 
 # 双 A100
-pixi run -e train train-policy-2gpu \
+pixi run train-policy-2gpu \
   --config_path=configs/trajectory_vla_a100.yaml
 ```
 
 中断后保持输出目录，并保证总 step 大于 checkpoint step：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/trajectory_vla.yaml \
   --training.resume=true \
   --training.steps=250000
@@ -60,11 +60,11 @@ pixi run -e train train-policy \
 ## 评估与部署
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/trajectory_vla.yaml \
   --policy.checkpoint=CHECKPOINT/pretrained_model
 
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla_curve_plate.yaml
 ```
 

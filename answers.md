@@ -80,7 +80,7 @@ relative_rotation[k] = R₀ᵀ Rₖ
 导出命令：
 
 ```bash
-pixi run -e data export-lerobot \
+pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset=datasets/weldpath_raw_v2 \
   --output=datasets/weldpath_lerobot_relative_v1 \

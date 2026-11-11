@@ -16,7 +16,7 @@
 
 | 主题 | 文档 | 内容 |
 |---|---|---|
-| 快速入口 | [脚本入口与配置规则](script-entrypoints.md) | Pixi 环境、脚本映射、配置组合和覆盖优先级 |
+| 快速入口 | [脚本入口与配置规则](script-entrypoints.md) | 单一 Pixi 默认环境、脚本映射、配置组合和覆盖优先级 |
 | 采集原理 | [仿真数据采集原理与格式](data-collection.md) | 几何专家、执行时序、raw 字段、质量门和 LeRobot 目录结构 |
 | 真机采集 | [被动采集流程](real-data-collection.md) | Pixi 安装、原生录制、方向与自定义标签、只读边界、数据整理与同步备忘 |
 | 虚拟控制器验收 | [采集与 VLA 训练验收](validation/vm-capture-2026-10-19.md) | 实际 SDK 读取、双黑帧相机、采集时序及 Trajectory-VLA 参数更新证据 |

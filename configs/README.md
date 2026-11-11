@@ -24,7 +24,7 @@ includes:
 输出为 `{deployment.output_root}/{checkpoint_experiment}/{YYYY-MM-DD-HH-MM}/{task_id}`。默认运行全部任务，只运行曲线平板任务时：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
   --deployment.include_tasks='["curve_plate"]'
 ```
@@ -52,11 +52,11 @@ SmolVLM、Qwen 和 π0 保留至少 160 个 token；π0.5 还会拼接离散状�
 策略和任务是两个正交模块。例如 π0.5 训练、双 A100 训练和三个任务部署分别为：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/pi0_5.yaml
-pixi run -e train train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_l_joint.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_bottom.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
+pixi run train-policy --config_path=configs/pi0_5.yaml
+pixi run train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/pi0_5_l_joint.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_bottom.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
 ```
 
 所有训练策略都有对应的双 A100 入口：
@@ -94,7 +94,7 @@ A100 profile 使用较大的每卡 batch，双卡全局 batch 为其两倍，再
 或 checkpoint 文件：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
   --deployment.action_steps=16 \
   --deployment.inference_steps=5

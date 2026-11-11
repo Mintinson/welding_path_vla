@@ -42,8 +42,8 @@
 采集器会在录制前逐帧运行连续 IK、关节限位、速度连续性和碰撞预检，不能只确认起点可达。圆弧姿态使用相邻帧旋转增量累积，避免跨过 180° 时 SLERP 最短路径翻转。
 
 ```bash
-pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
-pixi run -e sim sim-collect \
+pixi run sim-view --config_path=configs/pipe_bottom.yaml
+pixi run sim-collect \
   --config_path=configs/pipe_top.yaml \
   --collection.episodes=5
 ```
@@ -58,8 +58,8 @@ pixi run -e sim sim-collect \
 episode 的跟踪姿态固定，只考察策略的平面曲线执行能力。
 
 ```bash
-pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
-pixi run -e sim sim-collect \
+pixi run sim-view --config_path=configs/curve_plate.yaml
+pixi run sim-collect \
   --config_path=configs/curve_plate.yaml \
   --collection.episodes=50
 ```
@@ -77,12 +77,12 @@ pixi run -e sim sim-collect \
 独立的 `trihedral_turn_radius_m` 为枪颈转向留出空间。
 
 ```bash
-pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
-pixi run -e sim sim-collect \
+pixi run sim-view --config_path=configs/trihedral_vertical.yaml
+pixi run sim-collect \
   --config_path=configs/trihedral_vertical.yaml \
   --collection.episodes=50
-pixi run -e sim sim-view --config_path=configs/trihedral_horizontal.yaml
-pixi run -e sim sim-collect \
+pixi run sim-view --config_path=configs/trihedral_horizontal.yaml
+pixi run sim-collect \
   --config_path=configs/trihedral_horizontal.yaml \
   --collection.episodes=50
 ```

@@ -412,7 +412,7 @@ $$
 专家数据用于验证指标链路时，可显式声明任务选择正确：
 
 ```bash
-pixi run -e dev evaluate-episode \
+pixi run evaluate-episode \
   --episode=datasets/weldpath_raw_v2/episodes/episode_000000 \
   --config_path=configs/default.yaml \
   --assume_reference_task=true
@@ -421,7 +421,7 @@ pixi run -e dev evaluate-episode \
 评估完整数据集：
 
 ```bash
-pixi run -e dev evaluate-dataset \
+pixi run evaluate-dataset \
   --collection.dataset_root=datasets/weldpath_raw_v2 \
   --config_path=configs/default.yaml \
   --assume_reference_task=true \
@@ -507,7 +507,7 @@ expert_position           (Ne, 3)
 执行评估：
 
 ```bash
-pixi run -e dev evaluate-episode \
+pixi run evaluate-episode \
   --source=real \
   --episode=outputs/real_eval/real_eval_000001 \
   --config_path=configs/default.yaml \

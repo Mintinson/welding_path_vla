@@ -5,18 +5,12 @@
 
 ## Pixi 环境
 
-| 环境 | 用途 |
-|---|---|
-| `sim` | robosuite / MuJoCo 场景、采集、回放与原始数据验证 |
-| `data` | LeRobot Dataset 转换、视频编码和 Hub 上传 |
-| `train` | CUDA 策略训练与离线策略评估 |
-| `policy-sim` | CUDA 策略与 robosuite 闭环部署 |
-| `real` | 真机接口的 CPU 运行环境 |
-| `deploy` | CUDA 策略与真机部署依赖 |
-| `dev` | 格式化、类型检查、测试和论文指标脚本 |
+项目只维护一个默认环境 `.pixi/envs/default`，包含仿真、数据处理、真机采集、GPU 训练、
+策略部署及开发工具。首次执行 `pixi install`，日常执行 `pixi run TASK` 或 `pixi shell`，
+无需指定 `-e`。PyTorch、TorchVision 和 TorchCodec 使用一组配套的 GPU 训练版本。
 
-首次使用某个环境时执行 `pixi install -e ENV`。不要复制 `.pixi/` 到服务器；同步源码、
-`pyproject.toml` 和 `pixi.lock` 后在目标机器重新安装。
+迁移时保留旧命名环境目录，确认默认环境可用后再按需删除，避免中断已有工作。
+不要复制 `.pixi/` 到服务器；同步源码、`pyproject.toml` 和 `pixi.lock` 后在目标机器重新安装。
 
 ## 任务与脚本映射
 
@@ -70,7 +64,7 @@ configs/
 管口任务。临时改变 episode 数不需要复制配置：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml \
   --deployment.episodes=10
 ```
@@ -85,36 +79,36 @@ pixi run -e policy-sim policy-sim-deploy \
 
 ```bash
 # 检查场景并采集 5 条小样本
-pixi run -e sim sim-view --config_path=configs/default.yaml
-pixi run -e sim sim-collect \
+pixi run sim-view --config_path=configs/default.yaml
+pixi run sim-collect \
   --config_path=configs/default.yaml \
   --collection.episodes=5 \
   --collection.workers=1
 
 # 依次采集全部任务，并输出每项成功率和初态覆盖
-pixi run -e sim sim-collect-all \
+pixi run sim-collect-all \
   --dataset-root=datasetss \
   --episodes=10 \
   --workers=4
 
 # 验证原始数据
-pixi run -e sim data-validate \
+pixi run data-validate \
   --config_path=configs/default.yaml \
   --collection.dataset_root=datasets/weldpath_raw_v2
 
 # 预览训练计划，不创建正式训练
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --dry_run=true
 
 # 运行仓库检查
-pixi run -e dev check
+pixi run check
 ```
 
-进入对应环境后可以直接执行脚本，参数语义不变：
+进入默认环境后可以直接执行脚本，参数语义不变：
 
 ```bash
-pixi shell -e sim
+pixi shell
 python scripts/collect_simulation_data.py \
   --config_path=configs/default.yaml \
   --collection.episodes=5

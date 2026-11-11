@@ -5,18 +5,19 @@
 
 ## 本机操作流程
 
-本机使用 Pixi。`real` 环境已声明本地 CPS SDK 和 LeRobot 自动发现插件，首次准备该环境时执行：
+本机使用统一的 Pixi 默认环境，已声明本地 CPS SDK、LeRobot 自动发现插件和训练部署依赖。
+首次准备环境时执行：
 
 ```bash
-pixi install --frozen -e real
+pixi install
 ```
 
 2026-10-19 已使用 `192.168.56.101` 虚拟控制器与两路全黑占位相机完成实际 SDK 读取、
 录制和项目 Trajectory-VLA 的三步训练；见[验收报告](validation/vm-capture-2026-10-19.md)。
 这证明数据与训练链路可用，但不代表物理实机、真实视觉或严格 30 Hz 验收通过。
 
-该安装步骤可能下载尚未缓存的依赖；已有可用环境的检查与运行使用
-`--no-install --frozen`，避免隐式更新环境。本次验证使用已有 `dev` 环境，不安装新的真机环境。
+该安装步骤可能下载尚未缓存的依赖。日常使用 `pixi run` 执行任务，无需切换用途环境。
+历史验收报告中的 `dev`、`real` 和 `train` 是迁移前的环境名称，复现时使用当前默认环境。
 
 先编辑 `configs/real_record.yaml`：填写机器人 IP、选择两路 USB 相机，并设定数据位置和任务文本。
 正式采集仅须按真实任务填写 `task_conditions.direction`；`parameters` 和 `extra` 均可省略。
@@ -32,7 +33,7 @@ by-path 不随 video 编号变化，但移动到其他 USB 口时要更新。
 LRCP 使用 `/dev/v4l/by-id/usb-LRCP_ZWAK_LRCP_U3-JX02_SN0001-video-index0`，按设备身份识别。
 两者均使用 V4L2（backend 200）、640×480、30 FPS；RealSense 使用 YUYV，LRCP 使用 MJPG。
 若需 RealSense 跨 USB 口按序列号绑定，可用原生 `type: intelrealsense` 与
-`serial_number_or_name`，但当前 dev 环境未安装 pyrealsense2，本次没有安装依赖或切换后端。
+`serial_number_or_name`，并为默认环境另行声明 `pyrealsense2`；当前配置使用 OpenCV 后端。
 `fourcc` 是相机采集传输格式，保存到数据集的视频仍按 `dataset.rgb_encoder` 编码为 AV1。
 仅使用 `dataset.root` 指定数据目录；录制封装在连接前自动绑定适配器的日志目录，
 将采集契约、标定和时序日志保存到该目录的 `meta/` 下，不再配置 `robot.capture_root`。
@@ -48,33 +49,26 @@ world 系 TCP 位置（米）和 wxyz 四元数；相机输出帧尺寸与平均
 移动机器人或改变相机视野即可观察数值和画面是否更新。`robot` 与 `cameras` 可独立开关：
 
 ```bash
-pixi run --no-install --frozen -e real check-real-devices
+pixi run check-real-devices
 # 只检查机器人；临时 IP 覆盖也可省略，默认读取 real_record.yaml。
-pixi run --no-install --frozen -e real check-real-devices --cameras=false --host=192.168.10.10
+pixi run check-real-devices --cameras=false --host=192.168.10.10
 # 只检查相机；无图形界面时附加 --preview=false，仅打印帧信息。
-pixi run --no-install --frozen -e real check-real-devices --robot=false
+pixi run check-real-devices --robot=false
 ```
 
-`dev` 环境也声明了本地 CPS SDK，可直接执行连接检查，无需设置 `PYTHONPATH`：
-
-```bash
-pixi run --no-install --frozen -e dev check-real-devices
-```
-
-`check-real-devices` 是全局 Pixi 任务，在已安装的 `dev` 和 `real` 环境中使用相同参数。
+默认环境已声明本地 CPS SDK，无需设置 `PYTHONPATH`。
 
 ### 使用官方 teleoperate 循环持续预览
 
 确认相机视角时，可以直接复用当前录制 YAML：
 
 ```bash
-pixi run --no-install --frozen -e dev preview-real --record_config=configs/real_record.yaml
+pixi run preview-real --record_config=configs/real_record.yaml
 # 预览 30 秒后自动断开：
-pixi run --no-install --frozen -e dev preview-real --record_config=configs/real_record.yaml --duration_s=30
+pixi run preview-real --record_config=configs/real_record.yaml --duration_s=30
 ```
 
-本机 2026-10-26 验证使用已有 `dev` 环境；`real` 环境当前缺少 draccus，
-本次没有安装或更新任何依赖。完整安装的 `real` 环境也可运行同一 Pixi 任务。
+本机 2026-10-26 的验证使用当时已有的 `dev` 环境；当前统一默认环境已包含这些依赖。
 
 不指定 `duration_s` 时持续显示，按 Ctrl+C 退出。该入口强制开启显示，因此无需修改录制配置的
 `display_data: false`；频率使用 `dataset.fps`，设备和可视化后端参数沿用同一 YAML。
@@ -104,14 +98,14 @@ teleoperator，并初始化相邻观测配对，随后调用官方 `teleop_loop(
 
 ```bash
 # 先在 YAML 中填写真实方向，其余任务条件按需提供，再调用原生录制的薄封装。
-pixi run --no-install --frozen -e real record-real
+pixi run record-real
 
 # 保存后整理：horizon/stride 必须与将来训练使用的策略一致。
-pixi run --no-install --frozen -e real prepare-real-data --dataset=datasets/real/elfin_demo --policy.action_horizon=30
-pixi run --no-install --frozen -e real policy-data-check --config_path=configs/real_training.yaml
+pixi run prepare-real-data --dataset=datasets/real/elfin_demo --policy.action_horizon=30
+pixi run policy-data-check --config_path=configs/real_training.yaml
 
 # 可选：逐字段对照实际服务器训练子集的 dtype、shape、names 和 FPS。
-pixi run --no-install --frozen -e real prepare-real-data \
+pixi run prepare-real-data \
   --dataset=datasets/real/elfin_demo --reference_dataset=datasets/weldpath_lerobot_relative_small
 ```
 
@@ -122,7 +116,7 @@ pixi run --no-install --frozen -e real prepare-real-data \
 恢复采集使用同一数据目录和 `--resume=true`；录制后重新运行整理命令：
 
 ```bash
-pixi run --no-install --frozen -e real record-real --resume=true --task_conditions.direction=reverse
+pixi run record-real --resume=true --task_conditions.direction=reverse
 ```
 
 默认关闭上传；录制与整理均只保存在本地。需要切换工具 TCP/UCS 时，先结束该采集会话再重新启动。
@@ -175,7 +169,7 @@ pixi run --no-install --frozen -e real record-real --resume=true --task_conditio
 测试命令：
 
 ```bash
-pixi run --no-install --frozen -e dev pytest -q tests/test_real_capture.py
+pixi run pytest -q tests/test_real_capture.py
 ```
 
 测试使用模拟 CPS 与双 RGB 图像，验证单位/坐标转换、工具参数变化、只读错误路径、原生回合缓冲、重录、恢复和训练入口读取；不代表已完成实机速率或相机验收。
@@ -275,7 +269,7 @@ task_conditions:
 命令行可覆盖方向和整个自定义参数字典：
 
 ```bash
-pixi run --no-install --frozen -e real record-real \
+pixi run record-real \
   --task_conditions.direction=forward \
   --task_conditions.parameters='{welding_speed_mps: 0.02, work_angle_deg: 45.0, travel_angle_deg: 10.0, tool_roll_deg: -20.0}' \
   --task_conditions.extra='{fixture: jig_a, trial: 1, dry_run: true, gap_mm: 0.5}'
@@ -291,7 +285,7 @@ pixi run --no-install --frozen -e real record-real \
 仅包含方向的正式数据可直接使用默认训练配置检查：
 
 ```bash
-pixi run --no-install --frozen -e real policy-data-check \
+pixi run policy-data-check \
   --config_path=configs/real_training.yaml
 ```
 

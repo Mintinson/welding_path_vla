@@ -10,15 +10,18 @@ LeRobot Dataset v3 导出。
 ## 环境
 
 ```bash
-pixi install -e sim
-pixi run -e sim sim-view --config_path=configs/default.yaml
-pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=1
-pixi run -e sim sim-replay --episode=datasets/weldpath_raw_v2/episodes/episode_000000
-pixi run -e dev check
+pixi install
+pixi run sim-view --config_path=configs/default.yaml
+pixi run sim-collect --config_path=configs/default.yaml --collection.episodes=1
+pixi run sim-replay --episode=datasets/weldpath_raw_v2/episodes/episode_000000
+pixi run check
 ```
 
-Pixi 环境按用途拆分为 `sim`、`data`、`real`、`train`、`deploy` 和 `dev`；项目代码不依赖
-后期会删除的 `repo/` 目录。
+所有功能共用一个 Pixi 默认环境，统一包含仿真、数据处理、真机采集、GPU 训练、部署和开发工具。
+执行 `pixi shell` 即可进入环境，无需再指定 `-e`；环境位于 `.pixi/envs/default`。
+迁移后首次执行 `pixi install` 会将旧默认环境同步为完整的 GPU 环境，可能下载缺失的依赖。
+旧的命名环境目录不会自动删除，确认默认环境可用后可按需移除对应目录。
+项目代码不依赖后期会删除的 `repo/` 目录。
 
 机器人 URDF、原始 MJCF 和真实 STL 集中在 `src/welding_path_vla/assets/elfin5/`。运行时由
 `Elfin5ProRobotModel`、`WeldingArena` 和 `WorkpieceObject` 分别构建机器人、桌面场景和
@@ -87,27 +90,27 @@ Trajectory-SmolVLM、Qwen、π0 和 π0.5；字段由各策略 YAML 的
 ## 常用命令
 
 ```bash
-pixi run -e sim sim-view --config_path=configs/default.yaml
-pixi run -e sim sim-collect --config_path=configs/default.yaml --collection.episodes=50
-pixi run -e sim sim-view --config_path=configs/pipe_bottom.yaml
-pixi run -e sim sim-collect --config_path=configs/pipe_top.yaml --collection.episodes=50
-pixi run -e sim sim-view --config_path=configs/curve_plate.yaml
-pixi run -e sim sim-collect --config_path=configs/curve_plate.yaml --collection.episodes=50
-pixi run -e sim sim-view --config_path=configs/trihedral_vertical.yaml
-pixi run -e sim sim-collect --config_path=configs/trihedral_vertical.yaml --collection.episodes=50
-pixi run -e sim sim-view --config_path=configs/trihedral_horizontal.yaml
-pixi run -e sim sim-collect --config_path=configs/trihedral_horizontal.yaml --collection.episodes=50
-pixi run -e sim sim-replay --episode=PATH
-pixi run -e sim rerender-dataset --dataset=datasets/weldpath_raw_v2
-pixi run -e sim data-validate --collection.dataset_root=datasets/weldpath_raw_v2
-pixi run -e data export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
+pixi run sim-view --config_path=configs/default.yaml
+pixi run sim-collect --config_path=configs/default.yaml --collection.episodes=50
+pixi run sim-view --config_path=configs/pipe_bottom.yaml
+pixi run sim-collect --config_path=configs/pipe_top.yaml --collection.episodes=50
+pixi run sim-view --config_path=configs/curve_plate.yaml
+pixi run sim-collect --config_path=configs/curve_plate.yaml --collection.episodes=50
+pixi run sim-view --config_path=configs/trihedral_vertical.yaml
+pixi run sim-collect --config_path=configs/trihedral_vertical.yaml --collection.episodes=50
+pixi run sim-view --config_path=configs/trihedral_horizontal.yaml
+pixi run sim-collect --config_path=configs/trihedral_horizontal.yaml --collection.episodes=50
+pixi run sim-replay --episode=PATH
+pixi run rerender-dataset --dataset=datasets/weldpath_raw_v2
+pixi run data-validate --collection.dataset_root=datasets/weldpath_raw_v2
+pixi run export-lerobot --dataset_glob='datasets/*_raw_v2' --output=datasets/weldpath_lerobot_relative_v1
 # 在上述命令后添加 --repo_id=USER/REPO --lerobot_export.push_to_hub=true 可自动上传
-pixi run -e data upload-lerobot --dataset=datasets/weldpath_lerobot_relative_v1 --repo_id=USER/REPO
-pixi run -e dev evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
-pixi run -e dev evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2 --config_path=configs/default.yaml
-pixi run -e dev robot-config --config_path=configs/default.yaml
-pixi run -e dev policy-config --config_path=configs/default.yaml
-pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
+pixi run upload-lerobot --dataset=datasets/weldpath_lerobot_relative_v1 --repo_id=USER/REPO
+pixi run evaluate-episode --episode=PATH --source=raw --config_path=configs/default.yaml
+pixi run evaluate-dataset --collection.dataset_root=datasets/weldpath_raw_v2 --config_path=configs/default.yaml
+pixi run robot-config --config_path=configs/default.yaml
+pixi run policy-config --config_path=configs/default.yaml
+pixi run train-policy --config_path=configs/default.yaml --dry_run=true
 ```
 
 无头采集默认使用 4 个独立进程。可通过 `--collection.workers=2` 调整；单条调试或显存不足时使用 `--collection.workers=1`。
@@ -115,9 +118,9 @@ pixi run -e train train-policy --config_path=configs/default.yaml --dry_run=true
 ACT 基线使用 `configs/act.yaml`，提供 LeRobot 原生训练、留出集测试和 robosuite 闭环部署：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/act.yaml --training.steps=4 --training.output_dir=outputs/train/act_smoke_01
-pixi run -e train policy-evaluate --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01 --deployment.episodes=1
+pixi run train-policy --config_path=configs/act.yaml --training.steps=4 --training.output_dir=outputs/train/act_smoke_01
+pixi run policy-evaluate --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01
+pixi run policy-sim-deploy --config_path=configs/act.yaml --policy.checkpoint=outputs/train/act_smoke_01 --deployment.episodes=1
 ```
 
 完整的数据约定、checkpoint、日志和评估说明见 [ACT pipeline](docs/act-pipeline.md)。
@@ -125,15 +128,15 @@ pixi run -e policy-sim policy-sim-deploy --config_path=configs/act.yaml --policy
 SmolVLA 基线可使用统一的多任务 LeRobot 数据集和相同入口：
 
 ```bash
-pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
-pixi run -e train train-policy --config_path=configs/smolvla.yaml
-pixi run -e train policy-evaluate --config_path=configs/smolvla.yaml --policy.checkpoint=CHECKPOINT
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_l_joint.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_bottom.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_top.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_curve_plate.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/smolvla_trihedral_horizontal.yaml
+pixi run policy-data-check --config_path=configs/smolvla.yaml
+pixi run train-policy --config_path=configs/smolvla.yaml
+pixi run policy-evaluate --config_path=configs/smolvla.yaml --policy.checkpoint=CHECKPOINT
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_l_joint.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_bottom.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_pipe_top.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_curve_plate.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/smolvla_trihedral_horizontal.yaml
 ```
 
 配置由 `base.yaml`、`tasks/`、`policies/` 和 `deploy/` 分层组合；部署时更换一个入口
@@ -147,11 +150,11 @@ YAML 即可同时切换工件、焊缝、指令和最大步数。公共 checkpoi
 π0 与 π0.5 复用相同入口，并分别提供本机低显存和 2×A100 配置：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/pi0.yaml
-pixi run -e train train-policy --config_path=configs/pi0_5.yaml
-pixi run -e train train-policy-2gpu --config_path=configs/pi0_a100.yaml
-pixi run -e train train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
+pixi run train-policy --config_path=configs/pi0.yaml
+pixi run train-policy --config_path=configs/pi0_5.yaml
+pixi run train-policy-2gpu --config_path=configs/pi0_a100.yaml
+pixi run train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
+pixi run policy-sim-deploy --config_path=configs/deploy/pi0_5_pipe_top.yaml
 ```
 
 配置层次、显存取舍、恢复训练、离线评估和三任务部署见
@@ -161,9 +164,9 @@ Trajectory-VLA 将官方 SmolVLA 的网络与 flow matching 完整重写到项�
 语言、状态、动作 token 和逐步去噪接口：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/trajectory_vla.yaml
-pixi run -e train policy-evaluate --config_path=configs/trajectory_vla.yaml --policy.checkpoint=CHECKPOINT
-pixi run -e policy-sim policy-sim-deploy --config_path=configs/deploy/trajectory_vla_pipe_top.yaml
+pixi run train-policy --config_path=configs/trajectory_vla.yaml
+pixi run policy-evaluate --config_path=configs/trajectory_vla.yaml --policy.checkpoint=CHECKPOINT
+pixi run policy-sim-deploy --config_path=configs/deploy/trajectory_vla_pipe_top.yaml
 ```
 
 模块边界、可修改接口、官方权重兼容性和三任务部署见
@@ -173,7 +176,7 @@ Prismatic-Qwen 变体使用 DINOv2 + SigLIP + Qwen2.5-0.5B，并以 16 个成对
 逐层交织轻量动作专家：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
+pixi run train-policy --config_path=configs/traj_vla_qwen.yaml
 ```
 
 架构、解冻开关与训练/评估/部署命令见
@@ -200,8 +203,8 @@ LeRobot 元数据写入前失败，不能静默回退为解码。
 `trajectory.npz`、`metadata.json` 或两个原始 H.264 MP4。
 
 ```bash
-pixi run -e data python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4
-pixi run -e data python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4 --apply
+pixi run python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4
+pixi run python scripts/backfill_raw_video_stats.py --raw-glob 'datasets/raw_v3/*' --workers=4 --apply
 ```
 
 旧仿真数据可用 `rerender-dataset` 原地补录黑色待焊线和白色已焊轨迹。raw 模式只替换双相机 MP4；LeRobot 模式通过 manifest 找回 raw 唯一事实源，重建后逐列校验状态、动作、时间戳和索引不变，再原子替换数据集。

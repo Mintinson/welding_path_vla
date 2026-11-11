@@ -734,18 +734,18 @@ policy:
 首次训练会下载约 2.6 GB 的 Prismatic checkpoint：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/traj_vla_qwen.yaml
+pixi run train-policy --config_path=configs/traj_vla_qwen.yaml
 ```
 
 三项 XS-VLA 增强在主配置中默认关闭。两阶段训练使用独立配置：
 
 ```bash
 # Stage 1：10k steps，仅训练 Resampler 与 grounding heads
-pixi run -e train train-policy-2gpu \
+pixi run train-policy-2gpu \
   --config_path=configs/traj_vla_qwen_grounding_stage1_a100.yaml
 
 # Stage 2：加载 Stage 1，联合 FM、低权重 grounding 与 motion KL
-pixi run -e train train-policy-2gpu \
+pixi run train-policy-2gpu \
   --config_path=configs/traj_vla_qwen_grounding_stage2_a100.yaml
 ```
 
@@ -757,11 +757,11 @@ heads。部署运行时在加载权重后删除三个辅助 head 和 motion post
 离线评估与仿真部署沿用项目公共入口：
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/traj_vla_qwen.yaml \
   --policy.checkpoint=outputs/train/traj_vla_qwen_weldpath_relative_v1/checkpoints/last/pretrained_model
 
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/traj_vla_qwen.yaml \
   --policy.checkpoint=outputs/train/traj_vla_qwen_weldpath_relative_v1/checkpoints/last/pretrained_model
 ```

@@ -1,6 +1,6 @@
 # ADR 0001：使用单一 Pixi workspace 和多用途环境
 
-状态：已接受
+状态：已由 [ADR 0010](0010-single-pixi-environment.md) 替代，以下保留历史决策。
 
 ## 背景
 

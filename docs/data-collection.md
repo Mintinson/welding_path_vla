@@ -468,7 +468,7 @@ stride: policy.action_stride
 先用单 worker 采一小批：
 
 ```bash
-pixi run -e sim sim-collect \
+pixi run sim-collect \
   --config_path=configs/default.yaml \
   --collection.episodes=5 \
   --collection.workers=1
@@ -477,11 +477,11 @@ pixi run -e sim sim-collect \
 检查质量摘要并回放：
 
 ```bash
-pixi run -e sim data-validate \
+pixi run data-validate \
   --config_path=configs/default.yaml \
   --collection.dataset_root=datasets/weldpath_raw_v2
 
-pixi run -e sim sim-replay \
+pixi run sim-replay \
   --episode=datasets/weldpath_raw_v2/episodes/episode_000000
 ```
 
@@ -492,7 +492,7 @@ EGL 和 H.264 编码器；并行数受 GPU 渲染上下文、CPU 编码和内存
 数据集保存总结，再释放整个采集进程组：
 
 ```bash
-pixi run -e sim sim-collect-all \
+pixi run sim-collect-all \
   --dataset-root=datasetss \
   --episodes=10 \
   --workers=4
@@ -501,7 +501,7 @@ pixi run -e sim sim-collect-all \
 把一个或多个 raw 数据集导出为统一 LeRobot Dataset：
 
 ```bash
-pixi run -e data export-lerobot \
+pixi run export-lerobot \
   --config_path=configs/smolvla.yaml \
   --dataset_glob='datasets/*_raw_v2' \
   --output=datasets/weldpath_lerobot_relative_v1 \
@@ -521,10 +521,10 @@ pixi run -e data export-lerobot \
 
 ```bash
 # raw：只替换每个 episode 的 global.mp4 / wrist.mp4
-pixi run -e sim rerender-dataset --dataset=datasets/weldpath_raw_v2
+pixi run rerender-dataset --dataset=datasets/weldpath_raw_v2
 
 # LeRobot：通过 manifest 查找 raw，校验低维数据不变后原子替换
-pixi run -e sim rerender-dataset \
+pixi run rerender-dataset \
   --dataset=datasets/weldpath_lerobot_relative_v1 \
   --raw_dataset_glob='datasets/*_raw_v2'
 ```

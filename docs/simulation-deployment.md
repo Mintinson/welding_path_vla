@@ -21,7 +21,7 @@
 优先使用已经组合好“基础场景 + 策略 checkpoint + 任务”的部署配置：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_l_joint.yaml \
   --deployment.include_tasks='["l_joint"]' \
   --deployment.episodes=5
@@ -30,7 +30,7 @@ pixi run -e policy-sim policy-sim-deploy \
 临时更换 checkpoint：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model \
   --deployment.include_tasks='["pipe_top"]' \
@@ -41,7 +41,7 @@ pixi run -e policy-sim policy-sim-deploy \
 `outputs/deploy/RUN/YYYY-MM-DD-HH-MM/pipe_top`。一次执行全部任务时，模型只加载一次：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
   --deployment.episodes=5
 ```
@@ -49,7 +49,7 @@ pixi run -e policy-sim policy-sim-deploy \
 默认执行全部任务；只运行一个任务时传入任务 ID：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
   --deployment.include_tasks='["pipe_top"]'
 ```
@@ -57,7 +57,7 @@ pixi run -e policy-sim policy-sim-deploy \
 进入环境后也可以直接运行脚本：
 
 ```bash
-pixi shell -e policy-sim
+pixi shell
 python scripts/deploy_simulation_policy.py \
   --config_path=configs/deploy/smolvla_pipe_top.yaml
 ```
@@ -430,18 +430,18 @@ trihedral_vertical
 
 ```bash
 # 同一个 SmolVLA checkpoint 切换任务
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_curve_plate.yaml
 
 # 同一个任务切换策略
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla_curve_plate.yaml
 ```
 
 默认即执行全部任务；只运行曲线平板任务时：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/trajectory_vla.yaml \
   --deployment.include_tasks='["curve_plate"]'
 ```

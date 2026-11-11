@@ -15,7 +15,7 @@ processor 和 checkpoint，不读取自然语言任务。
 target，公共 preprocessor 会在送入 ACT 前完成 relative 变换。
 
 ```bash
-pixi run -e train policy-data-check --config_path=configs/act.yaml
+pixi run policy-data-check --config_path=configs/act.yaml
 ```
 
 ## 训练
@@ -23,7 +23,7 @@ pixi run -e train policy-data-check --config_path=configs/act.yaml
 先预览配置：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/act.yaml \
   --dry_run=true
 ```
@@ -31,7 +31,7 @@ pixi run -e train train-policy \
 建议先运行四步 smoke test：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/act.yaml \
   --training.steps=4 \
   --training.batch_size=1 \
@@ -46,8 +46,8 @@ pixi run -e train train-policy \
 正式训练：
 
 ```bash
-pixi run -e train train-policy --config_path=configs/act.yaml
-pixi run -e train train-policy-2gpu --config_path=configs/act_a100.yaml
+pixi run train-policy --config_path=configs/act.yaml
+pixi run train-policy-2gpu --config_path=configs/act_a100.yaml
 ```
 
 输出目录包含 `train.log`、offline W&B 日志以及：
@@ -65,7 +65,7 @@ step，不是本次追加量。
 ## 离线评估
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/act.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model
 ```
@@ -75,7 +75,7 @@ pixi run -e train policy-evaluate \
 ## 仿真部署
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/act.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model \
   --deployment.episodes=5

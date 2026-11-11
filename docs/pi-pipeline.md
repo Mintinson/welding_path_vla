@@ -41,22 +41,22 @@ PaliGemma 或 π 模型参数。
 
 ```bash
 # 数据和配置检查
-pixi run -e train policy-data-check --config_path=configs/pi0_5.yaml
-pixi run -e train train-policy \
+pixi run policy-data-check --config_path=configs/pi0_5.yaml
+pixi run train-policy \
   --config_path=configs/pi0_5.yaml \
   --dry_run=true
 
 # 本机单进程
-pixi run -e train train-policy --config_path=configs/pi0_5.yaml
+pixi run train-policy --config_path=configs/pi0_5.yaml
 
 # 服务器双 A100
-pixi run -e train train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
+pixi run train-policy-2gpu --config_path=configs/pi0_5_a100.yaml
 ```
 
 恢复训练使用相同输出目录；`training.steps` 是最终总 step：
 
 ```bash
-pixi run -e train train-policy-2gpu \
+pixi run train-policy-2gpu \
   --config_path=configs/pi0_5_a100.yaml \
   --training.resume=true \
   --training.steps=500000
@@ -68,7 +68,7 @@ step。仅开始新微调实验时才使用 `policy.checkpoint` 加新输出目�
 ## 离线评估
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/pi0_5.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model
 ```
@@ -92,7 +92,7 @@ trihedral_vertical
 例如：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/pi0_5_pipe_top.yaml \
   --policy.checkpoint=outputs/train/pi0_5_weldpath_relative_v1_a100/checkpoints/last/pretrained_model \
   --deployment.episodes=5

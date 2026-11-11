@@ -21,7 +21,7 @@ LeRobot Parquet 中保留世界系 absolute target；共享 processor 在归一�
 检查数据：
 
 ```bash
-pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
+pixi run policy-data-check --config_path=configs/smolvla.yaml
 ```
 
 ## 训练与恢复
@@ -31,17 +31,17 @@ pixi run -e train policy-data-check --config_path=configs/smolvla.yaml
 
 ```bash
 # 预览最终 LeRobot 配置
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --dry_run=true
 
 # 新建单进程训练（当前本机入口保留 resume=true，故显式关闭）
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --training.resume=false
 
 # 双 A100 DDP
-pixi run -e train train-policy-2gpu --config_path=configs/smolvla_a100.yaml
+pixi run train-policy-2gpu --config_path=configs/smolvla_a100.yaml
 ```
 
 默认冻结视觉编码器和 VLM 主干，训练动作专家与状态投影。实际可训练参数、分辨率、batch、
@@ -51,7 +51,7 @@ scheduler 和 step 应以 `--dry_run=true` 输出为准，不在文档中复制�
 目录时应显式覆盖为 `false`。`Ctrl+C` 中断后，保持原 `training.output_dir` 并恢复：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --training.resume=true
 ```
@@ -62,7 +62,7 @@ pixi run -e train train-policy \
 只想从已有权重开始新实验，而不恢复 optimizer 和 step 时使用：
 
 ```bash
-pixi run -e train train-policy \
+pixi run train-policy \
   --config_path=configs/smolvla.yaml \
   --policy.checkpoint=CHECKPOINT/pretrained_model \
   --training.output_dir=outputs/train/smolvla_new_experiment
@@ -73,7 +73,7 @@ pixi run -e train train-policy \
 ## 离线评估
 
 ```bash
-pixi run -e train policy-evaluate \
+pixi run policy-evaluate \
   --config_path=configs/smolvla.yaml \
   --policy.checkpoint=CHECKPOINT/pretrained_model
 ```
@@ -86,24 +86,24 @@ pixi run -e train policy-evaluate \
 部署入口把基础场景、公共 checkpoint 和具体任务组合在一起。当前提供五类任务：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_l_joint.yaml
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_bottom.yaml
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_curve_plate.yaml
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_trihedral_horizontal.yaml
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_trihedral_vertical.yaml
 ```
 
 一次运行全部任务并自动写入 `outputs/deploy/smolvla_weldpath_relative_v1/YYYY-MM-DD-HH-MM/{task_id}`：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla.yaml \
   --deployment.include_tasks='["curve_plate"]'
 ```
@@ -111,7 +111,7 @@ pixi run -e policy-sim policy-sim-deploy \
 公共 checkpoint 位于 `configs/deploy/smolvla.yaml`。也可在命令行临时覆盖：
 
 ```bash
-pixi run -e policy-sim policy-sim-deploy \
+pixi run policy-sim-deploy \
   --config_path=configs/deploy/smolvla_pipe_top.yaml \
   --policy.checkpoint=outputs/train/RUN/checkpoints/last/pretrained_model \
   --deployment.episodes=5

@@ -29,69 +29,28 @@ fsspec = ">=2023.1,<=2026.2"
 aiohttp = ">=3.10,<4"
 setuptools = ">=71,<81"
 tqdm = ">=4.69.0,<5"
+mujoco = "3.10.*"
+ffmpeg = "8.1.*"
+pytest = ">=9,<10"
+ruff = ">=0.15,<0.16"
 
 [tool.pixi.pypi-dependencies]
 welding-path-vla = { path = ".", editable = true }
 draccus = "==0.10.0"
-
-[tool.pixi.feature.sim.dependencies]
-mujoco = "3.10.*"
-ffmpeg = "8.1.*"
-
-[tool.pixi.feature.sim.pypi-dependencies]
 # 1.5.2 固定 NumPy 1.x，与 LeRobot 0.6 的 NumPy 2.x 约束冲突。
 robosuite = "==1.5.1"
-lerobot = { version = "==0.6.0", extras = ["dataset"] }
+lerobot = { version = "==0.6.0", extras = ["core-scripts", "dataset", "viz", "peft", "pi", "training", "smolvla", "xvla"] }
 opencv-python = "==4.13.0.92"
 opencv-python-headless = "==4.13.0.92"
-
-[tool.pixi.feature.data.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["dataset", "viz"] }
-opencv-python-headless = "==4.13.0.92"
-
-[tool.pixi.feature.data.dependencies]
-ffmpeg = "8.1.*"
-
-[tool.pixi.feature.cpu.dependencies]
-pytorch-cpu = "2.9.1.*"
-torchvision = "0.24.1.*"
-
-[tool.pixi.feature.cpu.pypi-dependencies]
-torchcodec = "==0.9.1"
-
-[tool.pixi.feature.real.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["core-scripts"] }
-cps-client = { path = "packages/cps_client", editable = true }
-lerobot-robot-welding = { path = "packages/lerobot_robot_welding", editable = true }
-
-[tool.pixi.feature.train.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["peft", "pi", "training", "smolvla", "xvla"] }
+# 统一沿用训练环境的 PyTorch；TorchCodec 0.11 与 PyTorch 2.11 配套。
+torch = "==2.11.0"
+torchvision = "==0.26.0"
 torchcodec = "==0.11.1"
 timm = ">=1.0,<2"
-
-[tool.pixi.feature.deploy.pypi-dependencies]
-lerobot = { version = "==0.6.0", extras = ["peft", "pi", "smolvla", "xvla"] }
-timm = ">=1.0,<2"
-
-[tool.pixi.feature.dev.dependencies]
-pytest = ">=9,<10"
-ruff = ">=0.15,<0.16"
-
-[tool.pixi.feature.dev.pypi-dependencies]
-basedpyright = ">=1.31,<2"
 cps-client = { path = "packages/cps_client", editable = true }
-deepdiff = ">=7.0.1,<9"
 lerobot-robot-welding = { path = "packages/lerobot_robot_welding", editable = true }
-
-[tool.pixi.environments]
-default = { features = ["sim", "data", "cpu", "dev"], solve-group = "local" }
-sim = { features = ["sim"], solve-group = "local" }
-data = { features = ["data", "cpu"], solve-group = "local" }
-real = { features = ["real", "cpu"], solve-group = "local" }
-train = { features = ["train"], solve-group = "cuda" }
-deploy = { features = ["real", "deploy"], solve-group = "cuda" }
-policy-sim = { features = ["sim", "train"], solve-group = "policy-sim" }
-dev = { features = ["sim", "data", "cpu", "dev"], solve-group = "local" }
+basedpyright = ">=1.31,<2"
+deepdiff = ">=7.0.1,<9"
 
 [tool.pixi.tasks]
 format = "ruff format ."
@@ -142,6 +101,6 @@ pythonpath = ["src", "packages/cps_client", "packages/lerobot_robot_welding"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = ".pixi/envs"
-venv = "dev"
+venv = "default"
 reportAttributeAccessIssue = false
 reportMissingImports = false
