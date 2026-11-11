@@ -1,0 +1,10 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lerobot_robot_welding"
+version = "0.1.0"
+description = "Read-only Elfin5-Pro demonstration collection for LeRobot"
+requires-python = ">=3.12"
+dependencies = ["welding-path-vla", "cps_client>=0.1", "lerobot==0.6.0"]

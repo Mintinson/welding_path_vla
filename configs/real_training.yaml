@@ -1,0 +1,11 @@
+includes:
+  - base.yaml
+
+# 正式真机数据契约；训练时可另组合策略 YAML，并保持相同 horizon/stride。
+policy:
+  welding_prompt_fields: [direction]  # 其余提示字段仅在数据包含相应参数时启用。
+training:
+  dataset_repo_id: huayan/elfin_demo
+  dataset_root: datasets/real/elfin_demo
+  phase_sampling:
+    enabled: false

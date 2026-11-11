@@ -1,0 +1,58 @@
+# 此文件交给 record-real 薄封装，不使用项目的 AppConfig。
+# 仅用 dataset.root 指定数据目录；相机使用稳定设备路径。
+robot:
+  type: elfin_welding
+  host: 192.168.10.10
+  port: 10003
+  scene_config: configs/base.yaml
+  fps: 30
+  cameras:
+    global:
+      type: opencv
+      # RealSense 彩色接口 1.3；按 USB 物理端口绑定，避免 video 编号变化及 by-id 接口重名。
+      index_or_path: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:6:1.3-video-index0
+      backend: 200  # V4L2，避免自动回退到无法设置采集模式的 FFMPEG。
+      fourcc: YUYV  # RealSense 当前彩色采集模式；这里只取 RGB，不采集深度。
+      width: 640
+      height: 480
+      fps: 30
+    wrist:
+      type: opencv
+      index_or_path: /dev/v4l/by-id/usb-LRCP_ZWAK_LRCP_U3-JX02_SN0001-video-index0
+      backend: 200  # V4L2；使用图像采集节点 video-index0。
+      fourcc: MJPG  # LRCP 在 640x480 下使用 MJPG 才能设置 30 FPS。
+      width: 640
+      height: 480
+      fps: 30
+teleop:
+  type: elfin_passive
+dataset:
+  repo_id: huayan/elfin_welding_path_v1
+  root: datasets/real/elfin_welding_path_plate
+  single_task: Weld along the straight butt seam between the two flat plates.
+  fps: 30
+  num_episodes: 10
+  episode_time_s: 300
+  reset_time_s: 300
+  push_to_hub: false
+  video: true
+  streaming_encoding: true
+  encoder_threads: 2
+  rgb_encoder:
+    vcodec: av1
+    pix_fmt: yuv420p
+    g: 2
+    crf: 30
+    preset: 12
+    fast_decode: 0
+    video_backend: pyav
+    extra_options: {}
+display_data: false
+play_sounds: true
+require_task_labels: true  # 正式采集仅要求方向，parameters 和 extra 均可省略。
+
+# 用户填写的标签；由用户保证实际示范与标签一致，不自动推断或控制运动。
+task_conditions:
+  direction: reverse  # 正式采集前必须明确填写 forward 或 reverse，不预设未知标签。
+  parameters: {}  # 可选；提供时完整填写四项真实参数，名称和单位见真机采集文档。
+  extra: {}  # 任意自定义标量，例如 {fixture: jig_a, trial: 1, dry_run: true}。

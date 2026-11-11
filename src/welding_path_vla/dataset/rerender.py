@@ -283,6 +283,8 @@ def rerender_lerobot_dataset(
     """通过 raw 唯一事实源重建 LeRobot 视觉数据，并原地替换数据集。"""
     dataset = Path(root)
     manifest = json.loads((dataset / MANIFEST_PATH).read_text(encoding="utf-8"))
+    if manifest.get("source_kind") == "real_passive":
+        raise ValueError("真机图像没有仿真 raw 来源, 不支持重渲染")
     info = json.loads((dataset / "meta/info.json").read_text(encoding="utf-8"))
     source_count = sum(len(names) for names in manifest["sources"].values())
     if source_count != info["total_episodes"]:

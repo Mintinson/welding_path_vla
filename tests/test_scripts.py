@@ -12,6 +12,8 @@ SCRIPTS = (
     "rerender_dataset.py",
     "validate_dataset.py",
     "export_lerobot.py",
+    "prepare_real_dataset.py",
+    "record_real.py",
     "evaluate.py",
     "show_robot_config.py",
     "show_policy_config.py",

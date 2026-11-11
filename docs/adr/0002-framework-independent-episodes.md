@@ -1,6 +1,6 @@
 # ADR 0002：原始 episode 作为唯一事实源
 
-状态：已接受
+状态：仿真部分已接受；真机被动采集部分由 [ADR 0008](0008-passive-lerobot-storage.md) 替代。
 
 ## 背景
 

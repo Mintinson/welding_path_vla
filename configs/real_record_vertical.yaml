@@ -1,0 +1,11 @@
+includes:
+  - real_record.yaml
+
+dataset:
+  repo_id: huayan/elfin_welding_path_v1
+  root: datasets/real/elfin_welding_vertical
+  single_task: Weld along the vertical inner corner seam of the three-plate workpiece.
+
+# 用户填写的标签；由用户保证实际示范与标签一致，不自动推断或控制运动。
+task_conditions:
+  direction: reverse  # 正式采集前必须明确填写 forward 或 reverse，不预设未知标签。

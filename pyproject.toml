@@ -61,6 +61,8 @@ torchcodec = "==0.9.1"
 
 [tool.pixi.feature.real.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["core-scripts"] }
+cps-client = { path = "packages/cps_client", editable = true }
+lerobot-robot-welding = { path = "packages/lerobot_robot_welding", editable = true }
 
 [tool.pixi.feature.train.pypi-dependencies]
 lerobot = { version = "==0.6.0", extras = ["peft", "pi", "training", "smolvla", "xvla"] }
@@ -77,6 +79,9 @@ ruff = ">=0.15,<0.16"
 
 [tool.pixi.feature.dev.pypi-dependencies]
 basedpyright = ">=1.31,<2"
+cps-client = { path = "packages/cps_client", editable = true }
+deepdiff = ">=7.0.1,<9"
+lerobot-robot-welding = { path = "packages/lerobot_robot_welding", editable = true }
 
 [tool.pixi.environments]
 default = { features = ["sim", "data", "cpu", "dev"], solve-group = "local" }
@@ -112,6 +117,8 @@ train-policy-2gpu = "accelerate launch --num_processes=2 scripts/train_policy.py
 train-xvla-2gpu = "accelerate launch --num_processes=2 scripts/train_xvla.py --config_path=configs/xvla_a100.yaml"
 policy-data-check = "python scripts/check_policy_data.py"
 lerobot-info = "python scripts/inspect_lerobot_dataset.py"
+prepare-real-data = "python scripts/prepare_real_dataset.py"
+record-real = "python scripts/record_real.py --config_path=configs/real_record.yaml"
 policy-evaluate = "python scripts/evaluate_policy.py"
 policy-sim-deploy = "python scripts/deploy_simulation_policy.py"
 
@@ -119,6 +126,7 @@ policy-sim-deploy = "python scripts/deploy_simulation_policy.py"
 target-version = "py312"
 line-length = 100
 exclude = ["repo", "line2"]
+extend-exclude = ["packages/cps_client"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -126,7 +134,7 @@ ignore = ["RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "packages/cps_client", "packages/lerobot_robot_welding"]
 
 [tool.basedpyright]
 pythonVersion = "3.12"
