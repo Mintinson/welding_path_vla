@@ -72,6 +72,11 @@ class LeRobotPipeline:
             action_steps=config.deployment.action_steps,
             inference_steps=config.deployment.inference_steps,
         )
+        if config.deployment.zero_pair_residual:
+            disable = getattr(runtime.policy, "disable_pair_injection", None)
+            if disable is None:
+                raise ValueError("zero_pair_residual 需要 PAIR 策略")
+            disable()
         return deploy_episodes(config, runtime)
 
 

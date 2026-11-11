@@ -1,0 +1,18 @@
+includes:
+  - traj_vla_qwen_direct_geometry_vision_lora_a100.yaml
+
+policy:
+  checkpoint: null
+  parameters:
+    # 扩展有效视觉末端：DINO 15–22、SigLIP 18–25（零基编号）。
+    # 两塔同时适配 attention 和 MLP；Qwen 冻结，Direct Geometry 与 Expert 不变。
+    vision_lora_last_n_blocks: 8
+    vision_lora_include_mlp: true
+
+training:
+  # 从 Prismatic 基座单阶段训练，不覆盖此前四层 attention-only 实验。
+  output_dir: outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_plus_curve_plate
+  batch_size: 16
+  num_workers: 8
+  steps: 200000
+  resume: false

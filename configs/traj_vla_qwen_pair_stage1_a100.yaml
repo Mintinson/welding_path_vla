@@ -1,0 +1,37 @@
+includes:
+  - traj_vla_qwen_full_context_a100.yaml
+
+# 由 train_pair_action_ae.py 读取；网络只含小型动作 AE，不构造下面的 VLA。
+action_ae:
+  horizon: 30
+  action_dim: 9
+  hidden_dim: 256
+  num_heads: 4
+  encoder_layers: 2
+  decoder_layers: 1
+  mask_probability: 0.5
+  noise_std: 0.05
+
+policy:
+  checkpoint: null
+  parameters:
+    use_pair_bridge: false
+    compile_model: false
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_pair_action_ae_curve_plate
+  include_tasks: [curve_plate]
+  steps: 50000
+  batch_size: 256
+  num_workers: 4
+  lr: 3.0e-4
+  log_freq: 100
+  eval_steps: 1000
+  max_eval_samples: 4096
+  save_freq: 5000
+  image_aug: false
+  peft: null
+  wandb: false
+  resume: false
+  phase_sampling:
+    enabled: false

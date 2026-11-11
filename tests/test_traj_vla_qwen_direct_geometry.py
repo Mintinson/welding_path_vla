@@ -249,23 +249,37 @@ def test_vision_lora_profile_and_legacy_config(tmp_path: Path) -> None:
     assert not profile.policy.parameters["train_language_model"]
     assert profile.training.peft["r"] == 32
     assert profile.training.include_tasks == ["curve_plate"]
-    config = TrajVLAQwenConfig(lora_target="vision", vision_lora_last_n_blocks=2)
+    assert not TrajVLAQwenConfig().vision_lora_include_mlp
+    expanded = AppConfig.load("configs/traj_vla_qwen_direct_geometry_vision_lora_plus_a100.yaml")
+    assert expanded.policy.parameters["vision_lora_last_n_blocks"] == 8
+    assert expanded.policy.parameters["vision_lora_include_mlp"]
+    assert expanded.policy.parameters["lora_target"] == "vision"
+    assert not expanded.policy.parameters["train_language_model"]
+    assert expanded.training.peft == profile.training.peft
+    assert expanded.training.output_dir != profile.training.output_dir
+    config = TrajVLAQwenConfig(
+        lora_target="vision", vision_lora_last_n_blocks=2, vision_lora_include_mlp=True
+    )
     config.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.lora_target == "vision"
     assert restored.vision_lora_last_n_blocks == 2
+    assert restored.vision_lora_include_mlp
     saved = json.loads((tmp_path / "config.json").read_text())
     saved.pop("vision_lora_last_n_blocks")
     saved.pop("lora_target")
+    saved.pop("vision_lora_include_mlp")
     (tmp_path / "config.json").write_text(json.dumps(saved))
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.lora_target == "expert"
     assert restored.vision_lora_last_n_blocks == 4
+    assert not restored.vision_lora_include_mlp
     with pytest.raises(ValueError, match="vision_lora_last_n_blocks"):
         TrajVLAQwenConfig(vision_lora_last_n_blocks=0)
 
 
-def test_vision_lora_gradients_and_checkpoint(tmp_path: Path) -> None:
+@pytest.mark.parametrize("include_mlp", [False, True])
+def test_vision_lora_gradients_and_checkpoint(tmp_path: Path, include_mlp: bool) -> None:
     """验证视觉 LoRA、直接几何和共享 Expert 都更新，而基座冻结且可完整恢复。"""
     from peft import LoraConfig, PeftModel, get_peft_model
 
@@ -287,6 +301,9 @@ def test_vision_lora_gradients_and_checkpoint(tmp_path: Path) -> None:
                     block.attn = torch.nn.Module()
                     block.attn.qkv = torch.nn.Linear(4, 4)
                     block.attn.proj = torch.nn.Linear(4, 4)
+                    block.mlp = torch.nn.Module()
+                    block.mlp.fc1 = torch.nn.Linear(4, 8)
+                    block.mlp.fc2 = torch.nn.Linear(8, 4)
                     encoder.blocks.append(block)
                 setattr(vision, f"{name}_featurizer", encoder)
                 setattr(vision, f"{name}_layer", 2)
@@ -305,6 +322,7 @@ def test_vision_lora_gradients_and_checkpoint(tmp_path: Path) -> None:
                 hidden = inputs
                 for block in getattr(backbone.vision_encoder, f"{name}_featurizer").blocks[:3]:
                     hidden = hidden + block.attn.proj(block.attn.qkv(hidden).tanh())
+                    hidden = hidden + block.mlp.fc2(block.mlp.fc1(hidden).tanh())
                 features.append(hidden)
             patches = torch.stack(features).mean(0)
             mask = torch.ones(patches.shape[:3], dtype=torch.bool)
@@ -323,6 +341,7 @@ def test_vision_lora_gradients_and_checkpoint(tmp_path: Path) -> None:
     policy.config = TrajVLAQwenConfig(
         lora_target="vision",
         vision_lora_last_n_blocks=2,
+        vision_lora_include_mlp=include_mlp,
         attention_mode="cross_attn",
         use_geometry_branch=True,
         geometry_attention_mode="direct",
@@ -333,6 +352,8 @@ def test_vision_lora_gradients_and_checkpoint(tmp_path: Path) -> None:
     trainable = {n: p for n, p in wrapped.named_parameters() if p.requires_grad}
     assert not any("qwen" in n for n in trainable)
     assert not any("blocks.0." in n or "blocks.3." in n for n in trainable)
+    assert any(".mlp." in n for n in trainable) == include_mlp
+    assert sum("lora_B" in n for n in trainable) == (16 if include_mlp else 8)
     assert any("direct_geometry_encoder.modules_to_save.default" in n for n in trainable)
     assert any("expert_model.modules_to_save.default" in n for n in trainable)
     before = {n: p.detach().clone() for n, p in trainable.items()}

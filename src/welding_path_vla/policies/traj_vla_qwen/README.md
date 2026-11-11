@@ -2,7 +2,7 @@
 
 该策略把 MiniVLA 的预对齐 Prismatic 视觉—语言主干与 Trajectory-VLA 的
 Flow Matching 动作生成结合起来，并从现有冻结 DINOv2-L 分叉独立的稠密几何支路。
-当前实验在 Full-Token + Direct Geometry 上增加可选视觉末端 LoRA；默认 latent 模式结构如下：
+Full-Token + Direct Geometry 支持视觉末端 LoRA 和独立任务条件注意力；默认 latent 模式结构如下：
 
 ```text
 [双相机 RGB] ─► [DINOv2-L + SigLIP，一次视觉前向]
@@ -130,9 +130,11 @@ training:
     lora_alpha: 64
 ```
 
-- `vision` 只对 DINO/SigLIP 实际输出特征之前的末端 attention `qkv/proj` 加 LoRA。
+- `vision` 默认只对 DINO/SigLIP 实际输出特征之前的末端 attention `qkv/proj` 加 LoRA。
   当前四层范围分别为 DINO 的 19–22 层、SigLIP 的 22–25 层（零基编号），排除未参与
   特征输出的末层。`vision_lora_last_n_blocks` 可以调整范围。
+- `vision_lora_include_mlp=true` 额外适配这些 block 的 `mlp.fc1/fc2`；默认关闭，
+  已有配置和 adapter 仍使用原来的 attention-only 范围。
 - `train_vision_encoder=false` 冻结视觉基座权重，不会冻结 PEFT 注入的 LoRA 参数。
   Qwen 继续冻结；动作 Expert、动作头、状态投影、视觉投影器、直接几何编码器继续训练，
   并随 adapter 保存。两路相机共享同一组视觉 LoRA。
@@ -170,7 +172,108 @@ python scripts/deploy_simulation_policy.py \
 ```
 
 `SIGINT`/`SIGTERM` 不会自动保存当前步；恢复位置是最后一个已写完的 checkpoint。
-后台训练应使用独立进程组启动，停止时向该训练进程组发信号，避免只杀启动器留下 GPU 子进程。
+后台训练应使用独立进程组启动。Accelerate 的 worker 可能拥有各自的进程组，停止前应
+核对启动器与 worker 的 PID/PGID；向这些训练进程组发送 SIGTERM，避免留下 GPU 子进程。
+
+### 扩展视觉适配：八层 attention + MLP
+
+`configs/traj_vla_qwen_direct_geometry_vision_lora_plus_a100.yaml` 设置：
+
+```yaml
+policy:
+  parameters:
+    lora_target: vision
+    vision_lora_last_n_blocks: 8
+    vision_lora_include_mlp: true
+```
+
+实际范围为 DINO 15–22、SigLIP 18–25，每个 block 的 `attn.qkv/attn.proj/mlp.fc1/mlp.fc2`
+共 64 组 LoRA，rank=32、alpha=64。保持 Qwen 冻结、完整 patch、Direct Geometry、
+16 层 Expert、图像增强与单阶段训练；无需焊缝坐标和阶段标签。
+从 Prismatic 基座开始训练 200k，不直接恢复四层 attention-only 实验的优化器状态。
+该配置继承现有 eval 设置，但不以训练期 eval loss 选择 checkpoint；本实验不修改验证逻辑。
+更多视觉 block 需要反向传播，短训练应检查峰值显存和梯度，不能按 LoRA 参数量推算耗时。
+
+2026-10-19 已在双 A100 40 GiB 上验证每卡 batch=16：120 步真实数据训练，
+从第 120 步恢复到第 125 步，保存/恢复和部署入口缓存推理均通过。
+短测试用 20 步 warmup 提前达到峰值学习率 `5e-5`，正式配置仍为 4000 步 warmup。
+可训练参数为 118,294,912；全部 64 组视觉 LoRA B 都已更新，稳定更新约 0.69–0.74 秒/步，
+分配显存峰值约 28.6 GiB/卡。短测试验证执行可用性，不代表 rollout 收益或长期稳定性保证。
+
+```bash
+micromamba run -n welding_vla zsh -c '
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 accelerate launch \
+  --num_processes=2 --num_machines=1 --mixed_precision=bf16 --dynamo_backend=no \
+  scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_direct_geometry_vision_lora_plus_a100.yaml
+'
+```
+
+输出根目录为 `outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_plus_curve_plate`；
+恢复同一实验时追加 `--training.resume=true`。部署使用同一配置并通过
+`--policy.checkpoint=outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_plus_curve_plate/checkpoints/200000/pretrained_model`
+指定实际已保存的 checkpoint。
+
+## 独立任务条件注意力：从 Prismatic 单阶段训练
+
+`configs/traj_vla_qwen_task_condition_a100.yaml` 在四层视觉 LoRA 的 direct 架构上，
+给每个几何 CA 层增加文本与机器人状态的独立注意力。训练从 Prismatic 权重开始，
+动作 Expert 和条件模块重新初始化，不读取已有焊接策略或 ROI 热启动权重。
+
+```text
+同层动作 query ─┬→ 512 个 DINO patch 的 K/V → 几何 attention ─┐
+                └→ 同层 Qwen 文本＋状态的 K/V → 条件 attention ─┴→ 相加 → Expert 输出投影/MLP
+```
+
+- 两条 CA 使用独立 softmax，文本不与 512 个 patch 竞争同一组注意力权重；方向、速度
+  仍由现有 prompt 提供，不解析任务字符串，也不添加精确焊缝坐标或阶段监督。
+- 条件 K/V 来自本层更新后的 Qwen 隐藏状态，只取文本和状态片段；保留各任务词而非
+  平均池化。每层独立 LayerNorm 和 K/V 投影，padding token 被遮挡。
+- 两条路径共用动作 query，残差直接相加，没有零初始化标量门控。原偶数层联合 SA
+  不变，Context 仍不能读取带噪动作。只训练新增模块并不是本实验的训练方式。
+- 条件 K/V 每次观测只投影一次，在所有 Flow 去噪步骤复用。没有新增视觉前向或
+  Qwen token；增加的是八层条件投影、条件 CA 及缓存，不能声称训练速度完全不变。
+- 开关为 `policy.parameters.use_task_condition_attention`，默认 `false`，关闭时不
+  创建新参数。仅支持 `geometry_attention_mode=direct`；新 checkpoint 会保存开关及
+  所有条件模块，部署时自动恢复，不能把新权重当作关闭开关的模型加载。
+- 新配置关闭 ROI，保留四层 attention-only 视觉 LoRA、完整 patch、16 层 Expert、
+  图像增强和现有学习率设置。单阶段训练 200k、每 10k 保存；每卡 batch=16，双卡
+  global batch=32。不要加载已有焊接 checkpoint，也不要在首次训练时设置 resume。
+
+训练命令（项目根目录）：
+
+```bash
+micromamba run -n welding_vla zsh -c '
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 accelerate launch \
+  --num_processes=2 --num_machines=1 --mixed_precision=bf16 --dynamo_backend=no \
+  scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_task_condition_a100.yaml
+'
+```
+
+输出为 `outputs/train_v2/traj_vla_qwen_task_condition_curve_plate`。优先部署
+80k/140k/200k，不以训练期 eval loss 或最后一个 checkpoint 代替闭环结果。除了总体
+覆盖率、CTE 和安全停止，还要分 forward/reverse 比较；固定场景中两组场景不同，
+方向分组差异不能直接解释成模型忽略了方向指令。
+
+```bash
+micromamba run -n welding_vla zsh -c '
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_task_condition_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_task_condition_curve_plate/checkpoints/080000/pretrained_model
+'
+```
+
+部署沿用固定场景库与 `curve_plate` 过滤，输出保留
+`outputs/deploy/traj_vla_qwen_task_condition_curve_plate/日期到分钟/curve_plate`。
+此方案用于检验条件进入动作流的路径是否足够直接，不保证达到 VLA-Adapter 的性能。
+
+2026-10-22 验证：89 项相关回归测试通过；单 A100 每卡 batch=16，从 Prismatic
+初始化训练 40 步，短测以 10 步 warmup 达到正式峰值学习率 `5e-5`，分配显存峰值
+约 25.04 GiB。随后双卡恢复到 45 步，global batch=32，更新与保存正常；这次改变
+world size 的短测只验证恢复链路，不验证逐样本精确复现。正式配置仍使用 4000 步 warmup。
+条件模块新增 1,851,392 个参数，全部八层已更新并保存；正式部署入口加载后，8 层条件
+K/V 各计算一次并被 10 步去噪复用，动作有限。短测不代表长期稳定性或闭环质量保证。
 
 ## Qwen 输入缩放对照实验
 
@@ -662,6 +765,291 @@ pixi run -e policy-sim policy-sim-deploy \
   --config_path=configs/traj_vla_qwen.yaml \
   --policy.checkpoint=outputs/train/traj_vla_qwen_weldpath_relative_v1/checkpoints/last/pretrained_model
 ```
+
+## 腕部局部高分辨率分支
+
+`configs/traj_vla_qwen_wrist_roi_a100.yaml` 保留双相机全图、512 个全图几何 patch
+和原 Qwen Context，另从腕部原始 RGB 裁剪尖端附近区域，缩放为 224×224，
+仅通过共享 DINO（含已有视觉 LoRA）生成 256 个局部 patch。不重复运行 SigLIP，
+不把局部 patch 加入 Qwen，不使用焊缝坐标或阶段标注。
+
+```yaml
+policy:
+  parameters:
+    use_wrist_roi: true
+    wrist_roi_camera_key: observation.images.wrist
+    # 原图归一化 left/top/right/bottom；640×480 对应 256×256。
+    wrist_roi_box: [0.35, 0.25, 0.75, 0.7833333333]
+```
+
+局部编码器保留二维位置，每个几何 CA 层使用独立局部 K/V 和零初始化的
+`tanh(gate)` 输出残差。零门控初始化保持原模型预测，第一步梯度更新 gate，
+随后动作损失更新局部编码器、K/V 和共享 DINO。局部 attention 与全图 attention
+分别归一化，推理时按观测缓存局部 K/V，全部 Flow 去噪步复用。
+局部编码器服从 `train_geometry_encoder`，局部 K/V 与 gate 服从 `train_expert`。
+
+开关默认关闭，关闭时不创建局部参数、不改变旧模型输入。开启要求
+`geometry_attention_mode: direct`。实机必须依据腕部相机和工具安装位置校准裁剪框；
+不得用仅在仿真中可得的焊缝位置动态选择裁剪区域。保留全图可避免接近阶段或焊缝
+离开局部视野时丢失全局信息，但局部分支不保证能从单帧 RGB 精确恢复深度。
+
+从已有四层视觉 LoRA 模型热启动时，先创建包含新模块的初始化 checkpoint：
+
+```bash
+# 在已经激活的 micromamba welding_vla 环境中执行。
+python scripts/initialize_traj_vla_qwen_wrist_roi.py \
+  --source outputs/train_v2/traj_vla_qwen_direct_geometry_vision_lora_curve_plate/checkpoints/200000/pretrained_model \
+  --output outputs/train_v2/traj_vla_qwen_wrist_roi_initial/pretrained_model
+
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_wrist_roi_a100.yaml
+```
+
+初始化工具拒绝覆盖已有目录，逐张量验证旧 adapter/Expert/投影器权重完全保留，
+只允许新增 `wrist_roi_*` 参数，并复制原 relative-action 处理器和归一化统计。
+新增局部编码器和各层 K/V 从已学全图投影初始化，但参数独立，避免局部模块从随机
+特征空间起步；所有局部门控仍为零，因此初始动作保持不变。
+初始化工具仅负责权重扩展；训练学习率等由 YAML 指定，不恢复旧优化器。
+新实验为单阶段训练，新增步数从零计数。当前配置从旧 200k 权重再训练 100k，
+每卡 batch 16、学习率 2e-5、warmup 1000，每 10k 保存 checkpoint。
+新增一次 DINO 前向和局部注意力会增加计算量与显存，应以实际双卡测试为准。
+
+部署仍使用同一个配置，并显式选择新训练的 checkpoint：
+
+```bash
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_wrist_roi_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_wrist_roi_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+## 短时机器人运动状态
+
+`configs/traj_vla_qwen_state_history_a100.yaml` 从 Prismatic 开始单阶段训练，保留
+**四层视觉 attention LoRA、不 merge、直接几何注意力和任务条件注意力**，新增一个
+短时运动 token。它用于区分“当前位姿相近，但正在前进、停滞或回退”的观测；是否能
+改善跟踪需要用 rollout 验证，不能由训练 loss 或短训练通过直接推断。
+
+```yaml
+policy:
+  parameters:
+    use_state_history: true
+    state_history_offsets_s: [-0.26666666666666666, -0.13333333333333333, 0.0]
+    state_history_hidden_dim: 256
+    state_history_velocity_scales: [0.1, 0.01, 0.1]
+    use_task_condition_attention: true
+```
+
+30 Hz 数据对应 `t−8、t−4、t` 三个状态。对相邻两段分别计算关节速度（6 维）、世界系
+TCP 速度（3 维）、相对旋转矩阵前两行相对单位旋转的变化率（6 维）、实际间隔和有效位
+（各 1 维），共 34 维。三种速度分别除以 `0.1 rad/s、0.01 m/s、0.1 /s`，只调整量级，
+不截断输入。6D 旋转变化率不是欧拉角速度，四元数 `q/-q` 表示同一姿态，不会产生
+伪运动。34 维特征经 `Linear → SiLU → Linear → LayerNorm` 编成一枚 Qwen 宽度 token，
+追加在当前状态 token 后，所有已启用的条件 CA 均可读取它；去噪仍复用条件 K/V 缓存。
+运动编码器服从 `train_state_proj`，没有零初始化残差门控。
+
+历史仅查询 `observation.state`，两路图像仍只解码和编码当前帧。训练数据须遵守 LeRobot
+固定帧率的采集契约，采样秒数须对齐数据集帧率，时间间隔由配置决定；不规则采集的实机
+日志应先按时间戳重采样为固定频率的 LeRobot 数据。部署缓冲使用真实观测时间计算间隔，
+执行缓存的 8 个动作期间也记录状态，不增加图像编码。每个采样点只取其之前的最近观测，
+episode 起始不足的历史和超过预期间隔两倍的时间断层标为无效；`reset()` 清空历史。
+无需分阶段标记、精确焊缝坐标、未来目标或额外传感器。
+
+处理器在归一化前计算历史运动，然后把 `observation.state` 恢复为当前帧 13 维状态。
+相对动作的 TCP 锚点、状态统计和动作统计保持当前帧契约。历史配置随 processor 和模型
+checkpoint 保存，新增编码器纳入 PEFT 保存；训练、恢复、离线评估和部署共用这一契约。
+`use_state_history` 默认关闭，关闭时不创建新参数，已有配置和 checkpoint 使用原路径。
+
+本配置新增参数为 241,024 个，标准双相机 prefix 从 673 增至 674 token；视觉前向次数不变。
+这是低计算增量的状态分支，不能保证改善视觉定位误差，也不能单凭它检测焊缝偏离。
+
+```bash
+# 已激活 micromamba welding_vla 环境；每卡 batch 16，共训练 200k 步。
+accelerate launch --num_processes=2 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_state_history_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_state_history_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_state_history_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+每 10k 保存 checkpoint。优先在相同 scene 上验证 160k、180k、200k，按正反方向分别比较
+跟踪误差、覆盖率、成功率和碰撞；查看原先停滞、回退的场景是否改善。训练中的 eval loss
+不作为此实验的模型效果依据。
+
+## 完整 24 层单阶段训练
+
+`configs/traj_vla_qwen_full_depth_a100.yaml` 基于原四层视觉 LoRA 配置，从
+Prismatic 初始化完整 24 层 Qwen，并训练与之逐层配对的 24 层动作 Expert。
+Expert 宽度比例保持 `0.75`；Qwen 权重冻结，参与动作预测的上下文路径仍向视觉适配器、
+Projector 传播梯度。保留不合并 patch 的直接几何注意力，关闭状态历史、独立任务
+条件注意力和腕部局部分支。已有 16 层配置和 checkpoint 的加载方式不变。
+
+```bash
+# 已激活 micromamba welding_vla 环境，使用两张 GPU。
+accelerate launch --num_processes=2 --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_full_depth_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_full_depth_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_full_depth_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+完整训练为 200k 步，每 10k 保存一次。层数增加不等于整网耗时按同比例增加，应以
+实际显存峰值和样本吞吐选择 batch。中期即可用保存的 checkpoint 检查正反向覆盖率、
+沿缝误差和停滞场景，训练 eval loss 不作为部署效果依据。
+
+## PAIR：动作教师预训练与策略训练
+
+PAIR 配置提供独立的动作教师预训练和 VLA 训练。主策略从 Prismatic 初始化，
+不接续已有焊接策略。实现借鉴 [PAIR](https://arxiv.org/abs/2610.09016) 的动作
+自编码器监督、逐时间步 Bridge 对齐和动作输入门控注入；接入 Flow Matching、
+保留 direct geometry/full-context 路径是本项目的迁移设计。
+
+### 阶段一：轻量动作自编码器
+
+入口 `scripts/train_pair_action_ae.py`，配置
+`configs/traj_vla_qwen_pair_stage1_a100.yaml`。复用任务 ID 过滤、按 episode 的
+train/eval 划分及训练集 relative action 统计，只读取 Arrow 中的状态、动作列，
+不解码视频、不构造 Prismatic/Qwen。它使用相对于当前 TCP 共同锚点的 30×9 动作，
+不是逐帧累积 delta；有效维度不含策略补齐到 32 维的零值。
+
+默认 AE 宽度 256、4 heads、2 层 encoder、1 层 decoder；随机遮蔽 50% 有效动作步，
+加入标准差 0.05 的归一化空间噪声，使用有效步 L1 重建。padding 同时从注意力和
+损失中排除。默认 FP32、batch 256、AdamW 学习率 3e-4、50k 步，每 5k 保存。
+这些是待运行的初始参数，尚未完成训练或显存预检。
+
+```bash
+# 在项目根目录，激活服务器环境；这些命令应在设备空闲后执行。
+eval "$(micromamba shell hook --shell zsh)"
+micromamba activate welding_vla
+
+CUDA_VISIBLE_DEVICES=0 python scripts/train_pair_action_ae.py \
+  --config_path=configs/traj_vla_qwen_pair_stage1_a100.yaml
+```
+
+每 1k 步在留出 episode 上记录 `clean_l1`、`corrupt_l1`、`position_mm`、
+`orientation_deg`。物理误差由干净输入的重建结果计算；它用于检查教师是否丢失
+精细动作，不能代表 VLA rollout 质量。位置/姿态误差为有效时间步均值再按样本平均。
+需关注误差相对于任务跟踪容差是否足够小，而非仅看标准化 L1 下降。
+
+教师输出目录：
+
+```text
+outputs/train_v2/traj_vla_qwen_pair_action_ae_curve_plate/checkpoints/050000/
+  config.json           # AE 架构、episode 划分、动作步长和归一化统计
+  model.safetensors     # 完整 AE，供恢复/检查重建
+  encoder.safetensors   # 阶段二只加载这部分
+  progress.json         # step、数据迭代位置、最近一次重建评估
+  training_state/       # Accelerator 模型、优化器和随机数恢复状态
+```
+
+`checkpoints/last` 指向最近一次完整保存的目录；教师默认使用 last，不自动宣称它
+达到部署精度要求。阶段一恢复使用同一命令加 `--training.resume=true`；网络、
+数据、batch 和进程数应保持一致，`training.steps` 是恢复后的总目标步数。
+
+### 阶段二：冻结教师，从 Prismatic 训练 VLA
+
+入口仍为 `scripts/train_policy.py`，配置
+`configs/traj_vla_qwen_pair_stage2_a100.yaml`。默认保留完整 24 层、四层视觉
+attention LoRA、不合并视觉 token 和 direct geometry；关闭 full-context attention。
+新 Bridge 是附加路径，不替代稠密 patch。
+
+| 配置项 | 默认/本实验取值 | 含义 |
+| --- | --- | --- |
+| `use_pair_bridge` | 模型默认 false；阶段二 true | 关闭时无新模块、无辅助损失 |
+| `pair_teacher_checkpoint` | 阶段一 `checkpoints/last` | 新训练的冻结 encoder 来源 |
+| `pair_bridge_dim` / `pair_bridge_heads` | 256 / 8 | 小型 Bridge 宽度与 head 数 |
+| `pair_alignment_weight` | 0.1 | Flow Matching 之外的对齐损失权重；0 可做消融 |
+| `pair_load_teacher_weights` | 新训练 true | 恢复策略时自动关闭，使用策略内嵌教师 |
+| `pair_teacher_metadata` | 自动填充 | 随策略保存的教师结构及数据契约，无需手写 |
+
+Bridge 从进入 Qwen **之前**的投影视觉、语言 embedding、状态 token 中读取信息，
+经过一次 Cross-Attention 与一次 Self-Attention，产生 30 个未来时间位置的表示。
+并非读取第 24 层 Qwen 后再重复运行主干。预测 horizon 是 30，部署每次执行 8 步，
+所以 Query 数量跟随 `chunk_size=30`，不跟随 `n_action_steps=8`。
+
+两层 MLP 将 Bridge 投影到教师 latent 空间，以逐有效时间步余弦距离对齐固定教师；
+另一组 MLP 与零初始化的逐 token tanh 门控将原 Bridge 注入动作/Flow time 融合后
+的隐藏特征。零门控初期由对齐损失训练 Bridge，之后动作梯度也参与学习。
+不改变原始带噪轨迹、Flow Matching 速度目标或采样积分方向。
+
+```bash
+accelerate launch --multi_gpu --num_processes=2 --mixed_precision=bf16 \
+  --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_pair_stage2_a100.yaml
+```
+
+默认每卡 batch 12、全局 24，训练 200k 步，每 10k 保存。batch 12 是为新增模块
+预留显存的初始设置，尚未实测稳定性。阶段一的 AE 路径只填写在
+`policy.parameters.pair_teacher_checkpoint`，不要放在 `policy.checkpoint`。
+
+阶段二在加载大模型前核对两阶段的 episode 划分、动作时间索引、数据集 repo ID
+及 mean/std。若改变任务过滤、划分或动作 horizon，应为对应数据重新训练教师。
+教师只接收干净的归一化动作作为监督目标，FP32 编码且无梯度，真实动作不进入
+Bridge 或动作专家条件。日志增加 `pair_alignment_loss` 和 `pair_gate_abs`。
+
+### 恢复、部署与旧模型兼容
+
+`use_pair_bridge=false` 时，不构造 PAIR 参数或消耗其初始化随机数，原训练与推理
+路径保持不变；缺少新字段的已有配置默认关闭。阶段二同时保存 Bridge、冻结教师
+及教师元数据，包括 PEFT 权重。恢复时无需访问阶段一目录，且重新冻结 PEFT
+可能默认解冻的教师。恢复阶段二使用原有 `--training.resume=true` 流程。
+
+```bash
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_pair_stage2_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_pair_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+部署消融可添加 `--deployment.zero_pair_residual=true`；默认 false。此开关在加载 PAIR checkpoint 后仅将注入动作流的残差置零，保留 Bridge 的计算和上下文缓存。
+
+部署加载权重后删除动作教师，跳过对齐投影。Bridge 每次观测计算一次，缓存/非缓存
+两种动作采样路径都复用同一注入残差；不需要未来动作、焊缝坐标或阶段标签。
+关闭 PAIR 的旧模型仍按原配置加载；不能把已经训练的 PAIR 策略仅关闭开关就当作
+同一个模型，移除分支的性能需要单独做消融。
+
+本次仅实现并做静态检查，没有运行测试、模型前向、显存预检或后台训练。
+
+## 每层读取更新后的完整 Qwen Context
+
+`configs/traj_vla_qwen_full_context_a100.yaml` 基于完整 24 层配置，启用
+`policy.parameters.use_full_context_attention: true`。它保留四层视觉 LoRA 和直接
+DINO 几何注意力，并让每个几何 CA 层额外读取当前 Qwen 层完成注意力、残差和 MLP
+之后的完整视觉、文本及状态 token。最后一层 Qwen 的输出因此也直接参与动作预测。
+Qwen 权重仍冻结，但不截断向视觉适配器和 Projector 传播的梯度。
+
+完整 Context 使用独立 LayerNorm、K/V 投影及 softmax；与原几何结果相加后进入
+Expert 的输出投影和残差。每层的可学习门控初始化为 `tanh(0.1)`，约 0.10，既限制
+初始残差幅度，又让第一步的动作梯度就能到达新投影和末端 Qwen 输出。推理缓存
+完整 Context 的 K/V 及有效 token mask，多步去噪不会重复运行 Qwen 或新 K/V 投影。
+门控在 V 上应用一次，与缩放 attention 输出等价。
+
+该开关默认关闭，关闭时不新增参数或改变原路径；已有 checkpoint 缺少该字段时
+也使用关闭状态。新分支只支持 `geometry_attention_mode: direct`，与只读取文本/状态
+的 `use_task_condition_attention` 互斥，避免重复注入条件。它不增加视觉编码器前向
+次数或 Qwen 输入 token，不使用精确焊缝坐标、阶段标签、历史状态或 ActionQuery。
+
+```bash
+# 已激活 micromamba welding_vla；从 Prismatic 单阶段训练，不接续旧焊接 checkpoint。
+accelerate launch --multi_gpu --num_processes=2 --mixed_precision=bf16 --num_cpu_threads_per_process=4 scripts/train_policy.py \
+  --config_path=configs/traj_vla_qwen_full_context_a100.yaml
+
+python scripts/deploy_simulation_policy.py \
+  --config_path=configs/traj_vla_qwen_full_context_a100.yaml \
+  --policy.checkpoint=outputs/train_v2/traj_vla_qwen_full_context_curve_plate/checkpoints/last/pretrained_model \
+  --deployment.include_tasks='["curve_plate"]'
+```
+
+训练总计 200k 步，每 10k 保存。双 A100 40GB 的 60 步预检使用每卡 batch 16、
+全局 batch 32，稳定更新约 0.77–0.80 秒，PyTorch 分配峰值约 36.0 GiB，
+`nvidia-smi` 观测占用约 37.7 GiB；短程预检不能替代全程稳定性和部署验证。
+先核实末端层的动作影响与梯度、训练/缓存推理一致性、
+PEFT 重载，再以固定场景的覆盖率、共同区间跟踪误差和碰撞判断效果；增加连接本身
+不保证 rollout 改善。新增计算和显存需按实际硬件预检后选择 batch。
 
 ## 解冻主干
 

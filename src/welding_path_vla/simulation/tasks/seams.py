@@ -63,6 +63,7 @@ class SeamPath:
 
     seam_id: str
     length_m: float
+    is_closed: bool = False  # 只有几何上闭合的焊缝才使用周期弧长。
 
     def sample(self, progress: float) -> SeamFrame:
         """返回指定归一化进度处的焊缝标架。"""
@@ -457,6 +458,7 @@ class CircularSeamPath(SeamPath):
         # 3. 焊缝总长度: 弧长 = 圆心角 * 半径
         #    使用 abs 确保长度为正
         self.length_m = abs(sweep_rad) * self.effective_radius_m
+        self.is_closed = bool(np.isclose(abs(sweep_rad), 2 * np.pi, rtol=0, atol=1e-9))
 
     def sample(self, progress: float) -> SeamFrame:
         """根据归一化进度 (0~1) 采样焊缝上的位姿。

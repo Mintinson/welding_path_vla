@@ -36,7 +36,7 @@ policy:
 
 training:
   dataset_repo_id: mintinson/weldpath_relative_v3
-  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v5
+  dataset_root: datasets/lerobot/weldpath_lerobot_relative_v6
   output_dir: outputs/train/vla_adapter_weldpath_relative_v1
   lr: 1.0e-4
   batch_size: 4

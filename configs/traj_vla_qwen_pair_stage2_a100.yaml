@@ -1,0 +1,26 @@
+includes:
+  - traj_vla_qwen_full_context_a100.yaml
+
+policy:
+  # VLA 从 Prismatic 初始化；这里不是阶段一 AE 或旧焊接策略的路径。
+  checkpoint: null
+  parameters:
+    # 保留直接几何注意力，关闭继承配置中的 full-context 分支。
+    use_full_context_attention: false
+    use_pair_bridge: true
+    pair_teacher_checkpoint: outputs/train_v2/traj_vla_qwen_pair_action_ae_curve_plate/checkpoints/last
+    pair_load_teacher_weights: true
+    pair_bridge_dim: 256
+    pair_bridge_heads: 8
+    pair_alignment_weight: 0.1
+    compile_model: false
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_pair_curve_plate
+  include_tasks: [curve_plate]
+  steps: 200000
+  # 新模块尚未进行显存预检，先留余量；双卡全局 batch 24。
+  batch_size: 12
+  num_workers: 8
+  save_freq: 10000
+  resume: false

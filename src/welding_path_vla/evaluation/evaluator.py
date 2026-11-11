@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 
 import numpy as np
 
 from welding_path_vla.core.config import EvaluationConfig
-from welding_path_vla.evaluation.motion_metrics import completion_metrics, tracking_metrics
+from welding_path_vla.evaluation.motion_metrics import (
+    closed_seam_direction_ratio,
+    completion_metrics,
+    tracking_metrics,
+)
 from welding_path_vla.evaluation.schema import (
     EpisodeEvaluation,
     EvaluationSummary,
@@ -30,7 +35,9 @@ def safety_report(trace: EvaluationTrace) -> SafetyReport:
     return SafetyReport(not missing and not violations, violations, missing)
 
 
-def evaluate_trace(trace: EvaluationTrace, thresholds: EvaluationConfig) -> EpisodeEvaluation:
+def evaluate_trace(
+    trace: EvaluationTrace, thresholds: EvaluationConfig, *, seam_is_closed: bool = False
+) -> EpisodeEvaluation:
     """评估一条仿真或真机轨迹。"""
     mask = np.asarray(trace.track_mask, dtype=bool)
     timestamps = trace.timestamps[mask]
@@ -38,6 +45,14 @@ def evaluate_trace(trace: EvaluationTrace, thresholds: EvaluationConfig) -> Epis
     quaternions = trace.tcp_quaternions_wxyz[mask]
     projection = project_to_seam(positions, trace.seam.points)
     completion = completion_metrics(projection)
+    if seam_is_closed:
+        # 方向率用原始掩码，避免过滤跟踪帧后把离缝两侧当成相邻采样。
+        completion = replace(
+            completion,
+            direction_ratio=closed_seam_direction_ratio(
+                trace.tcp_positions, trace.seam.points, mask, thresholds.coverage_max_step_m
+            ),
+        )
     tracking = tracking_metrics(
         timestamps,
         positions,

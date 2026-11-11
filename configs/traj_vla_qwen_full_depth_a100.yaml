@@ -1,0 +1,31 @@
+includes:
+  - traj_vla_qwen_direct_geometry_vision_lora_a100.yaml
+
+policy:
+  # 从 Prismatic 单阶段训练，不接续已有焊接策略。
+  checkpoint: null
+  parameters:
+    load_prismatic_weights: true
+    load_base_weights: true
+    # 保留完整 Qwen，动作 Expert 与其逐层配对；宽度维持原配置。
+    num_vlm_layers: 24
+    num_expert_layers: 24
+    expert_width_multiplier: 0.75
+    # 保留不合并 patch 的直接几何路径和末端四层视觉 attention LoRA。
+    token_merge_factor: 1
+    geometry_attention_mode: direct
+    vision_lora_last_n_blocks: 4
+    vision_lora_include_mlp: false
+    use_state_history: false
+    use_task_condition_attention: false
+    use_wrist_roi: false
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_full_depth_curve_plate
+  include_tasks: [curve_plate]
+  steps: 200000
+  # 双 A100 40GB 实测每卡约 35.3 GiB 占用，保留余量；全局 batch 为 32。
+  batch_size: 16
+  num_workers: 8
+  save_freq: 10000
+  resume: false

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
+from math import isfinite
+from typing import Any
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
 from lerobot.optim import AdamWConfig, CosineDecayWithWarmupSchedulerConfig
@@ -93,8 +96,32 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     use_geometry_branch: bool = False
     # latent 保留重采样路径；direct 在全部几何 CA 层直接读取完整 patch。
     geometry_attention_mode: str = "latent"
+    # 每个 direct CA 层独立读取 Qwen 文本与状态，不与视觉 patch 共用 softmax。
+    use_task_condition_attention: bool = False
+    # 每个 direct CA 读取当前 Qwen 层更新后的完整视觉/文本/状态；默认关闭。
+    use_full_context_attention: bool = False
+    # PAIR 关闭时不构造新参数；阶段一教师与旧 grounding 两阶段完全独立。
+    use_pair_bridge: bool = False
+    pair_teacher_checkpoint: str | None = None
+    pair_bridge_dim: int = 256
+    pair_bridge_heads: int = 8
+    pair_alignment_weight: float = 0.1
+    # 在训练数据工厂填充，并随策略保存；恢复/部署不依赖阶段一外部路径。
+    pair_teacher_metadata: dict[str, Any] = field(default_factory=dict)
+    pair_load_teacher_weights: bool = True
+    # 仅新增一个运动状态 token；图像仍只采当前帧，旧 checkpoint 默认关闭。
+    use_state_history: bool = False
+    state_history_offsets_s: tuple[float, ...] = (-8 / 30, -4 / 30, 0.0)
+    state_history_hidden_dim: int = 256
+    # 分别为关节 rad/s、TCP m/s、6D 旋转变化率 1/s 的输入尺度。
+    state_history_velocity_scales: tuple[float, float, float] = (0.1, 0.01, 0.1)
     geometry_num_queries: int = 16
     geometry_num_heads: int = 8
+    # 从原始腕部图像裁剪局部区域，仅供动作专家读取，不增加 Qwen token。
+    use_wrist_roi: bool = False
+    wrist_roi_camera_key: str = "observation.images.wrist"
+    # 原图归一化边界 (left, top, right, bottom)；640×480 下为尖端附近 256×256。
+    wrist_roi_box: tuple[float, float, float, float] = (0.35, 0.25, 0.75, 0.7833333333)
     # 少量 CA 层额外读取未重采样的 DINO patch；关闭时不创建任何新参数。
     use_dense_geometry_attention: bool = False
     dense_geometry_attention_layers: tuple[int, ...] = (7, 15)
@@ -149,6 +176,8 @@ class TrajVLAQwenConfig(PreTrainedConfig):
     lora_target: str = "expert"
     # 从实际输出特征的层向前计数，不包含视觉塔未参与输出的最后一层。
     vision_lora_last_n_blocks: int = 4
+    # 在所选视觉 block 内同时适配 MLP；默认关闭，保持已有 attention-only adapter。
+    vision_lora_include_mlp: bool = False
     gradient_checkpointing_qwen: bool = False
     gradient_checkpointing_expert: bool = False
 
@@ -214,6 +243,49 @@ class TrajVLAQwenConfig(PreTrainedConfig):
                 )
         if self.geometry_num_queries < 1 or self.geometry_num_heads < 1:
             raise ValueError("geometry query and head counts must be positive")
+        if self.use_task_condition_attention and (
+            not self.use_geometry_branch or self.geometry_attention_mode != "direct"
+        ):
+            raise ValueError("task condition attention requires direct geometry attention")
+        if self.use_full_context_attention:
+            if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
+                raise ValueError("full context attention requires direct geometry attention")
+            if self.use_task_condition_attention:
+                raise ValueError("full context and task condition attention are mutually exclusive")
+        if self.use_pair_bridge:
+            if self.training_stage != "standard" or self.use_motion_latent:
+                raise ValueError("PAIR requires standard training without motion latent slots")
+            if min(self.pair_bridge_dim, self.pair_bridge_heads) < 1 or (
+                self.pair_bridge_dim % self.pair_bridge_heads
+            ):
+                raise ValueError("PAIR bridge width must be positive and divisible by heads")
+            if not isfinite(self.pair_alignment_weight) or self.pair_alignment_weight < 0:
+                raise ValueError("pair_alignment_weight must be finite and nonnegative")
+            if self.normalization_mapping["ACTION"] != NormalizationMode.MEAN_STD:
+                raise ValueError("PAIR action teacher requires ACTION MEAN_STD normalization")
+        if self.use_state_history:
+            offsets = self.state_history_offsets_s
+            if (
+                len(offsets) < 2
+                or offsets[-1] != 0
+                or any(not isfinite(left) or left >= right for left, right in pairwise(offsets))
+            ):
+                raise ValueError("state history offsets must strictly increase from the past to 0")
+            if self.state_history_hidden_dim < 1 or (
+                len(self.state_history_velocity_scales) != 3
+                or any(not isfinite(v) or v <= 0 for v in self.state_history_velocity_scales)
+            ):
+                raise ValueError(
+                    "state history hidden dimension and velocity scales must be positive"
+                )
+        if self.use_wrist_roi:
+            if not self.use_geometry_branch or self.geometry_attention_mode != "direct":
+                raise ValueError("wrist ROI requires direct geometry attention")
+            if len(self.wrist_roi_box) != 4:
+                raise ValueError("wrist_roi_box must contain left, top, right, bottom")
+            left, top, right, bottom = self.wrist_roi_box
+            if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+                raise ValueError("wrist_roi_box must define a nonempty normalized crop")
         if self.use_dense_geometry_attention:
             layers = self.dense_geometry_attention_layers
             if not self.use_geometry_branch:

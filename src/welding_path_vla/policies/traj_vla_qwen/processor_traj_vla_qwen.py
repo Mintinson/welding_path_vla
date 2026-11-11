@@ -13,6 +13,7 @@ from lerobot.processor import (
     ProcessorStepRegistry,
 )
 
+from welding_path_vla.policies.state_history import StateHistoryProcessorStep
 from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
     GeometryGroundingTargetProcessorStep,
 )
@@ -64,6 +65,15 @@ def make_traj_vla_qwen_pre_post_processors(
         dataset_stats,
         task_processor=QwenPromptProcessorStep(),
     )
+    if config.use_state_history:
+        # 在 AddBatchDimension 之后、任何使用当前 TCP 的 processor 之前恢复当前状态。
+        preprocessor.steps.insert(
+            2,
+            StateHistoryProcessorStep(
+                offsets_s=tuple(config.state_history_offsets_s),
+                velocity_scales=tuple(config.state_history_velocity_scales),
+            ),
+        )
     if config.use_geometry_grounding:
         target_step = GeometryGroundingTargetProcessorStep(
             camera_keys=tuple(config.geometry_camera_keys),

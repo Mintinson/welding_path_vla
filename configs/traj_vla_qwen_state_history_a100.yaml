@@ -1,0 +1,24 @@
+includes:
+  - traj_vla_qwen_task_condition_a100.yaml
+
+policy:
+  checkpoint: null
+  parameters:
+    # 从 Prismatic 单阶段训练：四层视觉 LoRA + 条件注意力 + 一个短时运动 token。
+    load_prismatic_weights: true
+    load_base_weights: true
+    use_task_condition_attention: true
+    use_state_history: true
+    # 30 Hz 数据的 t-8、t-4、t；只采历史 state，不采历史图像。
+    state_history_offsets_s: [-0.26666666666666666, -0.13333333333333333, 0.0]
+    state_history_hidden_dim: 256
+    state_history_velocity_scales: [0.1, 0.01, 0.1]
+    train_state_proj: true
+
+training:
+  output_dir: outputs/train_v2/traj_vla_qwen_state_history_curve_plate
+  steps: 200000
+  batch_size: 16
+  num_workers: 8
+  save_freq: 10000
+  resume: false

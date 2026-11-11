@@ -65,6 +65,9 @@ def make_tiny_paired_decoder(
     geometry_readout_from_latents: bool = False,
     dense_geometry_attention_layers: tuple[int, ...] = (),
     geometry_attention_mode: str = "latent",
+    use_wrist_roi: bool = False,
+    use_task_condition_attention: bool = False,
+    use_full_context_attention: bool = False,
 ) -> PairedLayerDecoder:
     """构造无需下载权重的两层 Qwen2.5 双流网络。"""
     transformers = pytest.importorskip("transformers")
@@ -104,6 +107,9 @@ def make_tiny_paired_decoder(
             dense_geometry_attention_layers=dense_geometry_attention_layers,
             geometry_attention_mode=geometry_attention_mode,
             geometry_patch_grid=2,
+            use_wrist_roi=use_wrist_roi,
+            use_task_condition_attention=use_task_condition_attention,
+            use_full_context_attention=use_full_context_attention,
             motion_action_size=32 if use_motion_latent else None,
             motion_latent_size=8,
         )
@@ -1279,6 +1285,24 @@ def test_lora_targets_can_select_qwen_or_expert() -> None:
             assert bool(re.fullmatch(targets["target_modules"], name)) == (
                 last - 1 <= index <= last
             )
+
+    # 八层 attention + MLP 只覆盖实际参与特征输出的 block。
+    policy.config.vision_lora_last_n_blocks = 8
+    policy.config.vision_lora_include_mlp = True
+    targets = policy._get_default_peft_targets()
+    for encoder, last in (("dino", 22), ("siglip", 25)):
+        for index in range(last + 2):
+            for projection in ("attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"):
+                name = (
+                    f"model.vlm_with_expert.vision_encoder.{encoder}_featurizer"
+                    f".blocks.{index}.{projection}"
+                )
+                assert bool(re.fullmatch(targets["target_modules"], name)) == (
+                    last - 7 <= index <= last
+                )
+    assert not re.fullmatch(
+        targets["target_modules"], "model.vlm_with_expert.qwen.model.layers.15.mlp.up_proj"
+    )
 
     policy.config.train_expert = False
     assert (

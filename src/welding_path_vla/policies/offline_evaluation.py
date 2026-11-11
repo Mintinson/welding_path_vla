@@ -82,6 +82,14 @@ def evaluate_checkpoint(
         config.policy,
         action_horizon=runtime.policy.config.chunk_size,
         action_steps=runtime.policy.config.n_action_steps,
+        # 历史采样由 checkpoint 决定，允许使用通用评估 YAML 加载新旧模型。
+        parameters={
+            **config.policy.parameters,
+            "use_state_history": getattr(runtime.policy.config, "use_state_history", False),
+            "state_history_offsets_s": getattr(
+                runtime.policy.config, "state_history_offsets_s", ()
+            ),
+        },
     )
     episodes = held_out_episode_indices(
         config.training,

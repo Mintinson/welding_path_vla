@@ -22,6 +22,9 @@ class DenseGeometryContext:
         state_mask: ``[B,L]``，标记 Qwen Context 中的状态 token。
         clean_actions: 可选的归一化 expert action chunk，仅供训练期 posterior。
         action_padding_mask: ``[B,H]``，标记 action chunk 的 episode 尾部 padding。
+        wrist_roi_tokens: 可选的 ``[B,P,D]`` 局部 DINO patch，不进入 Qwen。
+        wrist_roi_mask: 可选的 ``[B,P]`` 局部 patch 有效标记。
+        condition_start: 文本与状态连续片段的起点，用于排除前面的视觉 token。
     """
 
     patch_tokens: Tensor
@@ -30,6 +33,9 @@ class DenseGeometryContext:
     state_mask: Tensor
     clean_actions: Tensor | None = None
     action_padding_mask: Tensor | None = None
+    wrist_roi_tokens: Tensor | None = None
+    wrist_roi_mask: Tensor | None = None
+    condition_start: int = 0
 
 
 @dataclass(slots=True)
@@ -69,10 +75,15 @@ class DirectGeometryMemory:
     Attributes:
         tokens: ``[B,C*P,D_expert]``，按相机与行列顺序展平的完整 patch。
         mask: ``[B,C*P]``，真实相机的有效 patch 标记。
+        wrist_roi_tokens: 可选的 ``[B,P,D_expert]`` 独立局部 memory。
+        wrist_roi_mask: 可选的 ``[B,P]`` 局部 patch 有效标记。
     """
 
     tokens: Tensor
     mask: Tensor
+    # 独立局部 memory；与全图分开归一化 attention，避免新增 token 稀释全图注意力。
+    wrist_roi_tokens: Tensor | None = None
+    wrist_roi_mask: Tensor | None = None
 
     def auxiliary_outputs(self) -> dict[str, Tensor]:
         """暴露实际被动作读取的 memory，不伪造 latent/readout 输出。"""
@@ -327,6 +338,12 @@ class PrismaticVisionEncoder(nn.Module):
         dino = self.patch_tokens(self.dino_featurizer, dino_image, self.dino_layer)
         siglip = self.patch_tokens(self.siglip_featurizer, siglip_image, self.siglip_layer)
         return dino, torch.cat([dino, siglip], dim=-1)
+
+    def forward_dino(self, image: Tensor) -> Tensor:
+        """局部视图只运行共享 DINO；复用全图 LoRA，不额外执行 SigLIP。"""
+        dtype = next(self.dino_featurizer.parameters()).dtype
+        normalized = (image.to(dtype) - self.dino_mean.to(dtype)) / self.dino_std.to(dtype)
+        return self.patch_tokens(self.dino_featurizer, normalized, self.dino_layer)
 
     def forward(self, image: Tensor) -> Tensor:
         """保持原接口，仅返回 DINOv2 与 SigLIP 融合 patch token。"""

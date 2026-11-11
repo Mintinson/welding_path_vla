@@ -23,6 +23,7 @@ from welding_path_vla.policies.action_processors import make_relative_pre_post_p
 from welding_path_vla.policies.base import Observation
 from welding_path_vla.policies.checkpoint import resolve_checkpoint
 from welding_path_vla.policies.spec import LeRobotPolicySpec
+from welding_path_vla.policies.state_history import RobotStateHistory
 
 
 def load_policy_config(
@@ -95,6 +96,7 @@ class LeRobotRuntime:
         device: 实际推理设备。
         spec: 当前策略的输入和加载差异。
         action_queue: 同一 TCP 锚点解码后的待执行世界系目标。
+        state_history: 可选的短时状态缓冲；每次收到观测都更新，reset 清空。
     """
 
     policy: Any
@@ -103,6 +105,7 @@ class LeRobotRuntime:
     device: str
     spec: LeRobotPolicySpec
     action_queue: deque[np.ndarray] = field(default_factory=deque, init=False)
+    state_history: RobotStateHistory | None = field(default=None, init=False)
 
     @classmethod
     def from_pretrained(
@@ -158,6 +161,17 @@ class LeRobotRuntime:
         self.preprocessor.reset()
         self.postprocessor.reset()
         self.action_queue.clear()
+        if self.state_history is not None:
+            self.state_history.samples.clear()
+
+    def record_state(self, observation: Observation) -> None:
+        """只记录轻量机器人状态，动作复用期间不处理图像或调用模型。"""
+        config = getattr(self.policy, "config", None)
+        if not getattr(config, "use_state_history", False):
+            return
+        if self.state_history is None:
+            self.state_history = RobotStateHistory(tuple(config.state_history_offsets_s))
+        self.state_history.record(observation.timestamp, observation.state)
 
     def discard_pending_actions(self) -> None:
         """限幅后丢弃旧锚点的余下动作，下一步依据真实 TCP 重新预测。"""
@@ -169,6 +183,7 @@ class LeRobotRuntime:
 
         state = torch.as_tensor(observation.state, dtype=torch.float32)
         sample: dict[str, Any] = {"observation.state": state}
+        self.record_state(observation)
         for name, image in observation.images.items():
             sample[f"observation.images.{name}"] = (
                 torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32)
@@ -189,13 +204,15 @@ class LeRobotRuntime:
         )
         if all(value is not None for value in parameter_values):
             sample[TASK_PARAMETERS] = torch.tensor(parameter_values, dtype=torch.float32)
-        if self.spec.processor_adds_batch:
-            return sample
-        batched = {
-            key: value.unsqueeze(0) if hasattr(value, "unsqueeze") else [value]
-            for key, value in sample.items()
-        }
-        return batched
+        if not self.spec.processor_adds_batch:
+            sample = {
+                key: value.unsqueeze(0) if hasattr(value, "unsqueeze") else [value]
+                for key, value in sample.items()
+            }
+        if self.state_history is not None:
+            # 缓冲始终返回 batch=1，避免 H 被当作 batch 或被重复补 batch 维。
+            sample.update(self.state_history.observation())
+        return sample
 
     def predict_absolute_chunk(self, observation: Observation) -> np.ndarray:
         """预测相对动作块，用本次观测 TCP 一次解码为世界系目标。"""
@@ -211,6 +228,8 @@ class LeRobotRuntime:
 
     def select_action(self, observation: Observation) -> np.ndarray:
         """返回一个世界系绝对 EE 目标，并按 `n_action_steps` 复用动作块。"""
+        # 复用动作块时也保留每周期的实测状态，供下一次预测构造短时历史。
+        self.record_state(observation)
         if not self.action_queue:
             self.action_queue.extend(self.predict_absolute_chunk(observation))
         return self.action_queue.popleft()

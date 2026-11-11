@@ -391,6 +391,7 @@ def rollout_episode(
             termination_reason,
             config.evaluation,
             np.concatenate((np.array([False]), trajectory["track_mask"])),
+            seam_is_closed=seam.is_closed,
         ).as_dict()
         if config.evaluation.report_detailed_metrics and np.sum(trajectory["track_mask"]) >= 2:
             safety_signals = {
@@ -417,7 +418,9 @@ def rollout_episode(
                 Termination(termination_reason == "completed", termination_reason == "timeout"),
                 float(config.timing.policy_hz),
             )
-            detailed = evaluate_trace(trace, config.evaluation).as_dict()
+            detailed = evaluate_trace(
+                trace, config.evaluation, seam_is_closed=seam.is_closed
+            ).as_dict()
         else:
             detailed = None
         diagnostics = (

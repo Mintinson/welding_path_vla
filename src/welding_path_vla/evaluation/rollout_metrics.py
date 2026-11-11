@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from welding_path_vla.core.config import EvaluationConfig
+from welding_path_vla.evaluation.motion_metrics import closed_seam_direction_ratio, direction_ratio
 from welding_path_vla.evaluation.seam_geometry import project_to_seam
 
 
@@ -32,6 +33,8 @@ def evaluate_rollout(
     termination_reason: str,
     config: EvaluationConfig,
     track_mask: np.ndarray | None = None,
+    *,
+    seam_is_closed: bool | None = None,
 ) -> RolloutMetrics:
     """评价有向焊缝覆盖，并只在 tracking 阶段统计 CTE。
 
@@ -42,6 +45,8 @@ def evaluate_rollout(
         config: 全模型共用的评价阈值。
         track_mask: 与 ``positions`` 对齐的 tracking 阶段掩码；未提供时由
             ``tracking_band_m`` 根据焊缝距离推导。
+        seam_is_closed: 焊缝是否闭合，仅影响方向计算。未提供时，
+            只将首尾坐标在浮点误差内重合的参考折线视为闭环。
 
     Returns:
         三项连续轨迹指标和一次成功判定。非空轨迹始终有数值结果。
@@ -113,16 +118,15 @@ def evaluate_rollout(
 
     coverage = float(np.mean(covered))  # 已覆盖 bin 的比例
 
-    # ---------- 计算方向一致率 ----------
-    # 使用更严格的跟踪带（tracking_band_m）来判断是否处于有效跟踪状态
-    in_band = tracking
-    delta = np.diff(arc)  # 相邻帧的弧长变化
-    # 只考虑连续两帧都在跟踪带内的情况
-    valid_pairs = in_band[:-1] & in_band[1:]
-    travel = delta[valid_pairs]  # 这些有效对之间的弧长变化
-    total_travel = float(np.sum(np.abs(travel)))  # 总绝对弧长变化
-    # 方向一致率 = 正向弧长变化之和 / 总绝对弧长变化
-    direction = float(np.sum(np.clip(travel, 0, None)) / total_travel) if total_travel else 0.0
+    # 覆盖率和起终点沿用原始折线，仅方向率使用闭环弧长。
+    if seam_is_closed is None:
+        seam_is_closed = bool(np.allclose(seam_points[0], seam_points[-1], rtol=0, atol=1e-9))
+    if seam_is_closed:
+        direction = closed_seam_direction_ratio(
+            positions, seam_points, tracking, config.coverage_max_step_m
+        )
+    else:
+        direction = direction_ratio(np.diff(arc)[tracking[:-1] & tracking[1:]])
 
     # ---------- 计算 tracking 阶段 CTE 的 95 分位数 ----------
     # approach 和 retreat 只用于判断是否到达与覆盖，不混入焊缝跟踪误差。

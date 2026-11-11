@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor
+from torch import Tensor, nn
 
+from welding_path_vla.policies.state_history import MOTION_FEATURES, MOTION_INTERVAL_DIM
 from welding_path_vla.policies.traj_vla_qwen.configuration_traj_vla_qwen import (
     TrajVLAQwenConfig,
 )
 from welding_path_vla.policies.traj_vla_qwen.geometry_grounding import (
     GeometryGroundingHeads,
     geometry_grounding_losses,
+)
+from welding_path_vla.policies.traj_vla_qwen.pair import (
+    ActionAEConfig,
+    ActionBridge,
+    ActionTeacher,
+    pair_alignment_loss,
 )
 from welding_path_vla.policies.traj_vla_qwen.prismatic import DenseGeometryContext
 from welding_path_vla.policies.traj_vla_qwen.processor_traj_vla_qwen import (
@@ -38,13 +47,52 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
     """复用公共 Flow Matching，只替换双流多模态主干。"""
 
     def __init__(self, config: TrajVLAQwenConfig) -> None:
+        self.zero_pair_residual = False
         backbone = PrismaticQwenWithExpert(config)
         super().__init__(config, vlm_with_expert=backbone)
+        if config.use_state_history:
+            # 非零初始化、无标量门控，使动作损失从第一步即可到达运动编码器。
+            width = self.state_proj.out_features
+            self.state_history_encoder = nn.Sequential(
+                nn.Linear(
+                    (len(config.state_history_offsets_s) - 1) * MOTION_INTERVAL_DIM,
+                    config.state_history_hidden_dim,
+                ),
+                nn.SiLU(),
+                nn.Linear(config.state_history_hidden_dim, width),
+                nn.LayerNorm(width),
+            )
+            self.state_history_encoder.requires_grad_(config.train_state_proj)
         self.geometry_grounding_heads = (
             GeometryGroundingHeads(backbone.expert_hidden_size)
             if config.use_geometry_grounding
             else None
         )
+        if config.use_pair_bridge:
+            if not config.pair_teacher_metadata:
+                if not config.pair_load_teacher_weights or not config.pair_teacher_checkpoint:
+                    raise ValueError("PAIR requires Stage 1 teacher metadata")
+                config.pair_teacher_metadata = json.loads(
+                    (Path(config.pair_teacher_checkpoint) / "config.json").read_text()
+                )
+            teacher_config = ActionAEConfig(**config.pair_teacher_metadata["model"])
+            if teacher_config.horizon != config.chunk_size or (
+                teacher_config.action_dim != config.output_features["action"].shape[0]
+            ):
+                raise ValueError("PAIR teacher horizon/action dimension does not match policy")
+            self.pair_teacher = ActionTeacher(teacher_config)
+            if config.pair_load_teacher_weights:
+                if not config.pair_teacher_checkpoint:
+                    raise ValueError("fresh PAIR training requires pair_teacher_checkpoint")
+                self.pair_teacher.load_encoder(config.pair_teacher_checkpoint)
+            self.pair_bridge = ActionBridge(
+                self.state_proj.out_features,
+                backbone.expert_hidden_size,
+                config.chunk_size,
+                config.pair_bridge_dim,
+                config.pair_bridge_heads,
+                teacher_config.hidden_dim,
+            )
         if config.training_stage == "grounding_warmup":
             self.requires_grad_(False)
             resampler = backbone.decoder.geometry_resampler
@@ -59,12 +107,52 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             return embedding
         return super().scale_context_embedding(embedding)
 
+    def embed_context_state(self, state: Tensor) -> Tensor:
+        """把内部打包张量拆为当前状态和运动特征，产生两个独立状态 token。"""
+        if not self.config.use_state_history:
+            return super().embed_context_state(state)
+        current = self.state_proj(state[:, : self.config.max_state_dim])
+        motion = self.state_history_encoder(state[:, self.config.max_state_dim :])
+        # motion 位于 current 后面，可读取当前状态；两者均进入现有条件注意力。
+        return torch.stack((current, motion), dim=1)
+
     def embed_context_image(self, image: Tensor) -> tuple[Tensor, Tensor | None]:
         """启用几何支路时同时取得压缩前 DINOv2 patch。"""
         if not self.config.use_geometry_branch:
             return super().embed_context_image(image)
         semantic, dense = self.vlm_with_expert.embed_image_with_geometry(image)
         return semantic, dense
+
+    def encode_context(
+        self,
+        images: list[Tensor],
+        image_masks: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        state: Tensor,
+    ) -> TokenSequence:
+        """局部图像位于列表末尾，只生成专家 memory，保持全图 Context 长度不变。"""
+        local = self.config.use_wrist_roi
+        context = super().encode_context(
+            images[:-1] if local else images,
+            image_masks[:-1] if local else image_masks,
+            language_tokens,
+            language_mask,
+            state,
+        )
+        if local:
+            tokens = self.vlm_with_expert.vision_encoder.forward_dino(images[-1])
+            context.expert_context.wrist_roi_tokens = tokens
+            context.expert_context.wrist_roi_mask = image_masks[-1][:, None].expand(
+                -1, tokens.shape[1]
+            )
+        if self.config.use_pair_bridge:
+            context.action_condition, context.auxiliary_outputs = self.pair_bridge(
+                context.embeddings, context.padding_mask, align=self.pair_teacher is not None
+            )
+            if self.zero_pair_residual and not self.training:
+                context.action_condition = torch.zeros_like(context.action_condition)
+        return context
 
     def attach_expert_context(
         self,
@@ -94,6 +182,7 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
             patch_mask,
             language_mask,
             state_mask,
+            condition_start=language_slice.start,
         )
         return context
 
@@ -149,7 +238,9 @@ class QwenTrajectoryFlowModel(TrajectoryFlowModel):
         prediction = super().predict_velocity_output(context, action_tokens)
         return VelocityPrediction(
             prediction.velocity,
-            self.add_grounding_predictions(prediction.auxiliary_outputs),
+            self.add_grounding_predictions(
+                {**prediction.auxiliary_outputs, **context.auxiliary_outputs}
+            ),
         )
 
     def grounding_intermediates(self, context: TokenSequence) -> dict[str, Tensor]:
@@ -197,6 +288,7 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             return cls.make_peft_base(config)
         config.load_prismatic_weights = False
         config.load_base_weights = False
+        config.pair_load_teacher_weights = False
         return super().from_pretrained(
             pretrained_name_or_path,
             config=config,
@@ -208,6 +300,8 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         """从 Prismatic 权重重建没有独立 policy 路径的 LoRA 基模型。"""
         config.load_prismatic_weights = True
         config.load_base_weights = True
+        # 调用方接着加载完整策略/PEFT 权重，教师已嵌入其中，无需阶段一目录。
+        config.pair_load_teacher_weights = False
         return cls(config)
 
     def wrap_with_peft(
@@ -218,13 +312,37 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         """让 PEFT checkpoint 记录可重建内部加载基座的 Prismatic 来源。"""
         if not self.config.pretrained_path and self.config.load_prismatic_weights:
             self.name_or_path = self.config.prismatic_repo_id
-        return super().wrap_with_peft(peft_config, peft_cli_overrides)
+        policy = super().wrap_with_peft(peft_config, peft_cli_overrides)
+        if self.config.use_pair_bridge:
+            self.model.pair_teacher.requires_grad_(False)
+        if self.config.use_state_history and not self.config.train_state_proj:
+            self.model.state_history_encoder.requires_grad_(False)
+        if self.config.use_task_condition_attention and not self.config.train_expert:
+            self.model.vlm_with_expert.decoder.task_condition_kv.requires_grad_(False)
+        if self.config.use_full_context_attention and not self.config.train_expert:
+            self.model.vlm_with_expert.decoder.full_context_kv.requires_grad_(False)
+        if self.config.use_wrist_roi:
+            # 新增模块即使冻结也必须保存；不能依赖 Prismatic 重建其随机初始化权重。
+            decoder = self.model.vlm_with_expert.decoder
+            if not self.config.train_geometry_encoder:
+                decoder.wrist_roi_encoder.requires_grad_(False)
+            if not self.config.train_expert:
+                decoder.wrist_roi_kv.requires_grad_(False)
+                decoder.wrist_roi_attention.requires_grad_(False)
+        return policy
+
+    def prepare_state(self, batch: dict[str, Tensor]) -> Tensor:
+        """保持归一化后的当前状态不变，仅在模型内部附加已按物理尺度处理的运动。"""
+        state = super().prepare_state(batch)
+        if self.config.use_state_history:
+            state = torch.cat((state, batch[MOTION_FEATURES].to(state)), dim=-1)
+        return state
 
     def prepare_images(
         self,
         batch: dict[str, Tensor],
     ) -> tuple[list[Tensor], list[Tensor]]:
-        """把多相机 RGB 直接缩放到 Prismatic 的 224×224 输入。"""
+        """把全图缩放到 224×224；开启 ROI 时另从原图裁剪并缩放局部输入。"""
         images: list[Tensor] = []
         masks: list[Tensor] = []
         present = [key for key in self.config.image_features if key in batch]
@@ -252,15 +370,52 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         for _ in range(min(len(missing), self.config.empty_cameras)):
             images.append(torch.zeros_like(images[0]))
             masks.append(torch.zeros_like(masks[0]))
+        if self.config.use_wrist_roi:
+            key = self.config.wrist_roi_camera_key
+            if key not in present:
+                raise ValueError(f"wrist ROI camera is missing: {key}")
+            source = batch[key][:, -1] if batch[key].ndim == 5 else batch[key]
+            height, width = source.shape[-2:]
+            left, top, right, bottom = self.config.wrist_roi_box
+            # 必须在原图上裁剪；不能把已缩小的全图再次放大冒充高分辨率。
+            crop = source[
+                ...,
+                round(top * height) : round(bottom * height),
+                round(left * width) : round(right * width),
+            ]
+            images.append(
+                F.interpolate(
+                    crop,
+                    size=target,
+                    mode="bicubic",
+                    align_corners=False,
+                    antialias=True,
+                ).clamp(0, 1)
+            )
+            masks.append(masks[present.index(key)])
         return images, masks
 
     def get_optim_params(self) -> Any:
         """只返回显式解冻的模块参数。"""
+        if self.config.use_pair_bridge:
+            # PEFT 的 modules_to_save 默认解冻，恢复训练也必须重新冻结动作教师。
+            self.model.pair_teacher.requires_grad_(False)
+        if self.config.use_state_history and not self.config.train_state_proj:
+            # PEFT 续训会重新解冻 modules_to_save；创建优化器时恢复用户的冻结约束。
+            self.model.state_history_encoder.requires_grad_(False)
         return (parameter for parameter in self.parameters() if parameter.requires_grad)
+
+    def disable_pair_injection(self) -> None:
+        """在加载部署权重后关闭残差注入，保留相同的 Bridge 计算与去噪路径。"""
+        if not self.config.use_pair_bridge:
+            raise ValueError("zero_pair_residual 需要启用 Bridge 的 checkpoint")
+        self.model.zero_pair_residual = True
 
     def prepare_for_inference(self) -> None:
         """删除只在训练期使用的 grounding heads 与 motion posterior。"""
         self.model.geometry_grounding_heads = None
+        if self.config.use_pair_bridge:
+            self.model.pair_teacher = None
         if hasattr(self.model.vlm_with_expert.decoder, "motion_latent"):
             motion = self.model.vlm_with_expert.decoder.motion_latent
             if motion is not None:
@@ -318,6 +473,21 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 reduction,
             )
         loss = weighted if flow_loss is None else flow_loss + weighted
+        pair_loss = None
+        if self.config.use_pair_bridge:
+            if self.model.pair_teacher is None:
+                raise RuntimeError("PAIR teacher was discarded for deployment; reload to train")
+            padding = batch.get("action_is_pad")
+            if padding is None:
+                padding = torch.zeros(
+                    batch["action"].shape[:2], dtype=torch.bool, device=batch["action"].device
+                )
+            # 只使用 processor 输出的 9D clean action，不使用补齐维或带噪动作。
+            target = self.model.pair_teacher(batch["action"], padding)
+            pair_loss = pair_alignment_loss(auxiliary["pair.prediction"], target, padding)
+            loss = loss + self.config.pair_alignment_weight * self.reduce_auxiliary_loss(
+                pair_loss, reduction
+            )
         logged = loss.mean() if loss.ndim else loss
         info: dict[str, Any] = {"loss": float(logged.detach())}
         if flow_loss is not None and output is not None:
@@ -337,6 +507,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         )
         if motion_kl is not None:
             info["motion_kl_loss"] = float(motion_kl.mean().detach())
+        if pair_loss is not None:
+            info["pair_alignment_loss"] = float(pair_loss.mean().detach())
+            info["pair_gate_abs"] = float(auxiliary["pair.gate"].detach().abs().mean())
         return loss, info
 
     def _get_default_peft_targets(self) -> dict[str, Any]:
@@ -355,6 +528,9 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
         )
         if self.config.lora_target in {"vision", "all"}:
             vision = self.model.vlm_with_expert.vision_encoder
+            projections = r"attn\.(qkv|proj)"
+            if self.config.vision_lora_include_mlp:
+                projections = rf"({projections}|mlp\.(fc1|fc2))"
             for encoder in ("dino", "siglip"):
                 # 只适配参与特征输出的末端 block，早期视觉层仍保持冻结。
                 output_layer = getattr(vision, f"{encoder}_layer")
@@ -362,7 +538,7 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 blocks = "|".join(str(index) for index in range(first_layer, output_layer + 1))
                 selected.append(
                     rf"model\.vlm_with_expert\.vision_encoder\.{encoder}_featurizer"
-                    rf"\.blocks\.({blocks})\.attn\.(qkv|proj)"
+                    rf"\.blocks\.({blocks})\.{projections}"
                 )
         modules_to_save = [
             "model.action_in_proj",
@@ -370,8 +546,13 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
             "model.action_time_mlp_in",
             "model.action_time_mlp_out",
         ]
+        if self.config.use_pair_bridge:
+            modules_to_save.extend(["model.pair_bridge", "model.pair_teacher"])
         if self.config.train_state_proj:
             modules_to_save.append("model.state_proj")
+        if self.config.use_state_history:
+            # 包括冻结场景，确保新增模块能够从 PEFT checkpoint 精确恢复。
+            modules_to_save.append("model.state_history_encoder")
         if self.config.train_token_merger:
             modules_to_save.append("model.vlm_with_expert.token_merger")
         if self.config.train_projector:
@@ -384,6 +565,30 @@ class TrajVLAQwenPolicy(TrajectoryVLAPolicy):
                 modules_to_save.append("model.vlm_with_expert.decoder.geometry_resampler")
         if self.config.use_geometry_grounding:
             modules_to_save.append("model.geometry_grounding_heads")
+        if self.config.use_full_context_attention:
+            # 逐层保存投影和门控；即使冻结也保存，确保恢复时不依赖随机初始化。
+            modules_to_save.extend(
+                f"model.vlm_with_expert.decoder.full_context_kv.{index}"
+                for index in range(self.config.num_expert_layers)
+                if index % self.config.self_attn_every_n_layers != 0
+            )
+        if self.config.use_task_condition_attention:
+            # 逐层保存有 forward 的模块，避免 PEFT 漏训条件投影或重载后随机初始化。
+            modules_to_save.extend(
+                f"model.vlm_with_expert.decoder.task_condition_kv.{index}"
+                for index in range(self.config.num_expert_layers)
+                if index % self.config.self_attn_every_n_layers != 0
+            )
+        if self.config.use_wrist_roi:
+            modules_to_save.append("model.vlm_with_expert.decoder.wrist_roi_encoder")
+            decoder = self.model.vlm_with_expert.decoder
+            for index in decoder.wrist_roi_attention:
+                modules_to_save.extend(
+                    [
+                        f"model.vlm_with_expert.decoder.wrist_roi_kv.{index}",
+                        f"model.vlm_with_expert.decoder.wrist_roi_attention.{index}",
+                    ]
+                )
         if self.config.use_motion_latent:
             modules_to_save.append("model.vlm_with_expert.decoder.motion_latent")
         if self.config.use_dense_geometry_attention and self.config.train_expert:
