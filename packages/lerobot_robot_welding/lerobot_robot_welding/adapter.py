@@ -1,8 +1,9 @@
-"""Elfin5-Pro 的 LeRobot 被动采集和实测动作标签。"""
+"""Elfin5-Pro 的 LeRobot 采集、ServoP 控制和实测动作标签。"""
 
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,14 +23,18 @@ from lerobot.teleoperators.teleoperator import Teleoperator
 
 from welding_path_vla.core.config import AppConfig
 from welding_path_vla.core.geometry import (
+    absolute_ee_action_to_pose,
     quaternion_to_matrix,
     rotation_to_6d_rows,
 )
 from welding_path_vla.dataset.actions import ABSOLUTE_ACTION_NAMES
 from welding_path_vla.dataset.export_lerobot import MANIFEST_PATH, OBSERVATION_STATE_NAMES
 from welding_path_vla.dataset.real_capture import CAPTURE_CONTRACT
+from welding_path_vla.policies.base import Observation
 from welding_path_vla.robot.cps_reader import CapturedState, CPSStateReader
+from welding_path_vla.robot.cps_servo import CPSServo, RolloutServo
 
+from .black_camera import BlackCamera, BlackCameraConfig
 
 # 原生命令在同一进程依次调用 Robot 和 Teleoperator，用 ID 共享只读采集对象。
 CAPTURE_SESSIONS: dict[str, ElfinWelding] = {}
@@ -38,12 +43,13 @@ CAPTURE_SESSIONS: dict[str, ElfinWelding] = {}
 @RobotConfig.register_subclass("elfin_welding")
 @dataclass
 class ElfinWeldingConfig(RobotConfig):
-    """被动采集配置。
+    """共享的采集和主动控制配置。
 
     Attributes:
         scene_config: 复用项目 YAML 中的机器人基座到 world 安装外参。
         fps: 首对观测的目标采样频率，必须等于 dataset.fps；后续节拍由原生循环控制。
         bridge_id: 本进程内与 ElfinPassive 对应的唯一会话 ID。
+        active: 显式启用 ServoP，默认用于被动采集。
     """
 
     scene_config: str = "configs/base.yaml"
@@ -53,6 +59,7 @@ class ElfinWeldingConfig(RobotConfig):
     rbt_id: int = 0
     fps: int = 30
     bridge_id: str = "elfin"
+    active: bool = False
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
             "global": OpenCVCameraConfig(index_or_path=0, fps=30, width=640, height=480),
@@ -105,8 +112,11 @@ class ElfinWelding(Robot):
             self.scene,
             config.box_id,
             config.rbt_id,
+            lock_calibration=not config.active,
         )
-        self.cameras = make_cameras_from_configs(config.cameras)
+        self.servo = CPSServo(self.reader) if config.active else None
+        self.rollout_servo: RolloutServo | None = None
+        self.cameras = {} if config.active else make_cameras_from_configs(config.cameras)
         self.connected = False
         self.source: CapturedObservation | None = None
         self.target: CapturedObservation | None = None
@@ -117,15 +127,17 @@ class ElfinWelding(Robot):
     @property
     def observation_features(self) -> dict:
         """与仿真导出保持相同的 13D 状态顺序和双相机命名。"""
+        suffix = ".pos" if self.config.active else ""
         return {
-            **{name: float for name in OBSERVATION_STATE_NAMES},
+            **{f"{name}{suffix}": float for name in OBSERVATION_STATE_NAMES},
             **{name: (cfg.height, cfg.width, 3) for name, cfg in self.config.cameras.items()},
         }
 
     @property
     def action_features(self) -> dict:
         """保存世界系绝对 TCP 位置和 rotation-6D。"""
-        return {name: float for name in ABSOLUTE_ACTION_NAMES}
+        suffix = ".pos" if self.config.active else ""
+        return {f"{name}{suffix}": float for name in ABSOLUTE_ACTION_NAMES}
 
     @property
     def is_connected(self) -> bool:
@@ -142,7 +154,7 @@ class ElfinWelding(Robot):
         """不改变示教器、Servo、override 或其他控制模式。"""
 
     def connect(self, calibrate: bool = True) -> None:
-        """连接机器人与双相机，不改变控制模式。"""
+        """连接设备；主动控制逐路尝试真实相机，采集仍要求原设备。"""
         if self.connected or self.config.bridge_id in CAPTURE_SESSIONS:
             raise RuntimeError("采集会话已连接或 bridge_id 已被使用")
         root = self.dataset_root
@@ -153,8 +165,26 @@ class ElfinWelding(Robot):
         try:
             self.reader.connect(self.config.host, self.config.port)
             self.reader.read()
-            for camera in self.cameras.values():
-                camera.connect()
+            if self.config.active:
+                self.cameras = make_cameras_from_configs(self.config.cameras)
+            for name, camera in self.cameras.items():
+                try:
+                    camera.connect()
+                except (OSError, RuntimeError) as error:
+                    if not self.config.active:
+                        raise
+                    if camera.is_connected:
+                        camera.disconnect()
+                    logging.warning("%s 相机连接失败, 使用黑帧 (%s)", name, error)
+                    config = self.config.cameras[name]
+                    self.cameras[name] = BlackCamera(
+                        BlackCameraConfig(
+                            width=config.width or 640,
+                            height=config.height or 480,
+                            fps=config.fps or self.config.fps,
+                        )
+                    )
+                    self.cameras[name].connect()
             if root is not None:
                 self.start_session_log(root)
             self.connected = True
@@ -227,7 +257,16 @@ class ElfinWelding(Robot):
             self.source = self.target = None
 
     def get_observation(self) -> dict:
-        """按原生循环返回已配对的上一帧观测。"""
+        """主动控制读取当前观测，采集按原生循环返回已配对的上一帧。"""
+        if self.config.active:
+            if self.rollout_servo is not None:
+                self.rollout_servo.check_error()
+            # 官方 rollout 只把 .pos 标量纳入策略状态；采集字段不加后缀。
+            values = self.read_observation().values
+            return {
+                f"{key}.pos" if key in OBSERVATION_STATE_NAMES else key: value
+                for key, value in values.items()
+            }
         if self.target is None:
             raise RuntimeError("请通过 record-real 入口启动连续观测配对")
         self.source, self.target = self.target, self.read_observation()
@@ -255,12 +294,46 @@ class ElfinWelding(Robot):
         self.source = None
         return dict(zip(ABSOLUTE_ACTION_NAMES, map(float, action), strict=True))
 
+    def policy_observation(self, instruction: str) -> Observation:
+        """读取一次实测状态和相机，整理为与仿真相同的策略输入。"""
+        if self.rollout_servo is not None:
+            self.rollout_servo.check_error()
+        captured = self.read_observation()
+        return Observation.from_state(
+            captured.state.receive_time,
+            {name: captured.values[name] for name in self.cameras},
+            captured.state.values,
+            self.task,
+            instruction,
+        )
+
+    def start_servo(self, action_hz: float | None = None) -> None:
+        """开启主动控制；提供动作频率时由执行线程插值下发。"""
+        if self.servo is None or not self.connected:
+            raise RuntimeError("请先连接主动控制设备")
+        if action_hz is None:
+            self.servo.start()
+        else:
+            self.rollout_servo = RolloutServo(self.servo, action_hz)
+
+    def wait_for_actions(self) -> None:
+        """等到已提交的最后一个动作完成，供有限时长测试收尾。"""
+        if self.rollout_servo is not None:
+            self.rollout_servo.wait()
+
     def send_action(self, action: dict) -> dict:
-        """原样返回实测动作标签，不向机械臂发送运动命令。"""
+        """主动模式下发送世界系 9D 动作，采集时原样返回标签。"""
+        if self.servo is not None:
+            values = {key.removesuffix(".pos"): value for key, value in action.items()}
+            target = np.array([values[key] for key in ABSOLUTE_ACTION_NAMES])
+            if self.rollout_servo is None:
+                self.servo.send_pose(absolute_ee_action_to_pose(target))
+            else:
+                self.rollout_servo.submit(target)
         return action
 
     def disconnect(self) -> None:
-        """关闭本会话的日志、相机和通信。"""
+        """结束本会话的主动控制并关闭相机和通信。"""
         if CAPTURE_SESSIONS.get(self.config.bridge_id) is self:
             CAPTURE_SESSIONS.pop(self.config.bridge_id)
         self.connected, self.source, self.target = False, None, None
@@ -272,6 +345,11 @@ class ElfinWelding(Robot):
             for camera in self.cameras.values():
                 if camera.is_connected:
                     cleanup.callback(camera.disconnect)
+            if self.servo is not None:
+                cleanup.callback(self.servo.stop)
+            if self.rollout_servo is not None:
+                cleanup.callback(self.rollout_servo.close)
+                self.rollout_servo = None
 
 
 class ElfinPassive(Teleoperator):

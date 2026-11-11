@@ -5,6 +5,8 @@ from typing import Protocol
 
 import numpy as np
 
+from welding_path_vla.core.config import TaskConfig
+
 
 @dataclass(frozen=True, slots=True)
 class Observation:
@@ -17,6 +19,28 @@ class Observation:
     work_angle_deg: float | None = None
     travel_angle_deg: float | None = None
     tool_roll_deg: float | None = None
+
+    @classmethod
+    def from_state(
+        cls,
+        timestamp: float,
+        images: dict[str, np.ndarray],
+        state: np.ndarray,
+        task: TaskConfig,
+        instruction: str | None = None,
+    ) -> Observation:
+        """用统一状态和任务参数构造仿真或实机的策略输入。"""
+        return cls(
+            timestamp,
+            images,
+            state,
+            instruction or task.instruction,
+            task.direction,
+            task.speed_mps,
+            task.work_angle_deg,
+            task.travel_angle_deg,
+            task.tool_roll_deg,
+        )
 
 
 class Policy(Protocol):

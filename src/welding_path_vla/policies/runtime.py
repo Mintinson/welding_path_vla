@@ -197,20 +197,22 @@ class LeRobotRuntime:
         }
         return batched
 
-    def select_action(self, observation: Observation) -> np.ndarray:
-        """返回一个世界系绝对 EE 目标，并按 `n_action_steps` 复用动作块。"""
+    def predict_absolute_chunk(self, observation: Observation) -> np.ndarray:
+        """预测相对动作块，用本次观测 TCP 一次解码为世界系目标。"""
         import torch
 
+        processed = self.preprocessor(self.observation_sample(observation))
+        with torch.inference_mode():
+            relative_chunk = self.policy.predict_action_chunk(processed)
+            # postprocessor 先反归一化，再用共享锚点恢复整段世界系位姿。
+            absolute_chunk: torch.Tensor = self.postprocessor(relative_chunk)
+        count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
+        return absolute_chunk[0, :count].detach().to(torch.float64).cpu().numpy()
+
+    def select_action(self, observation: Observation) -> np.ndarray:
+        """返回一个世界系绝对 EE 目标，并按 `n_action_steps` 复用动作块。"""
         if not self.action_queue:
-            processed = self.preprocessor(self.observation_sample(observation))
-            with torch.inference_mode():
-                relative_chunk = self.policy.predict_action_chunk(processed)
-                # postprocessor 已在反归一化前把动作提升到 FP32；这里仅在控制接口边界转 float64。
-                absolute_chunk: torch.Tensor = self.postprocessor(relative_chunk)
-            count = min(self.policy.config.n_action_steps, absolute_chunk.shape[1])
-            self.action_queue.extend(
-                absolute_chunk[0, :count].detach().to(torch.float64).cpu().numpy()
-            )
+            self.action_queue.extend(self.predict_absolute_chunk(observation))
         return self.action_queue.popleft()
 
 

@@ -219,20 +219,15 @@ def rollout_episode(
                 recorder.append(images)
 
             # 构造统一的 Observation：包含时间、图像、状态向量、任务指令和工艺参数。
-            observation = Observation(
+            observation = Observation.from_state(
                 step / config.timing.policy_hz,
                 images,
                 np.concatenate(
                     (state.joint_position, state.tcp.position, state.tcp.quaternion_wxyz)
                 ).astype(np.float32),
-                config.task.instruction,
-                config.task.direction,
-                config.task.speed_mps,
-                config.task.work_angle_deg,
-                config.task.travel_angle_deg,
-                config.task.tool_roll_deg,
+                config.task,
             )
-            # 策略推理：返回绝对末端执行器动作（位置 + 四元数）
+            # 策略推理：返回绝对末端执行器动作（位置 + rotation-6D）。
             action = runtime.select_action(observation)
 
             # 初始化本步诊断变量；若执行失败，这些字段保持默认值（NaN/False/空）。
